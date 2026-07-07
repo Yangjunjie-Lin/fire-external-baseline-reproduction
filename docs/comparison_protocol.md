@@ -1,52 +1,72 @@
-# Comparison protocol
+# Comparison Protocol
 
-## Objective
+## Goal
 
-Compare independent external baseline outputs against `fire-agent-demo` SAFE Fire Agent outputs using the same scenario matrix and compatible schema.
+Compare outputs from independent external baselines against exported SAFE Fire Agent outputs from `fire-agent-demo` using the same scenario matrix and a compatible schema.
 
-## Inputs
+This repository must not import or call `fire-agent-demo` code. It may only consume exported, normalized target outputs.
 
-- `data/scenarios/scenario_matrix_v2.json`
-- `data/corpus/evidence_chunks.jsonl`
-- `data/corpus/entities.jsonl`
-- `data/corpus/relations.jsonl`
-- `data/corpus/triples.jsonl`
+## Required inputs
 
-## Baseline execution
+1. Baseline outputs from this repo: `outputs/baseline_outputs.jsonl`
+2. Target SAFE Fire Agent outputs exported elsewhere: `safe_outputs_normalized.jsonl`
+3. Shared scenario IDs from `scenario_matrix_v2.json`
+
+## Command
 
 ```bash
-python scripts/run_all_baselines.py --methods direct_llm,vanilla_rag,ekell_style --dataset data/scenarios/scenario_matrix_v2.json --limit 10
+python scripts/compare_with_target_outputs.py \
+  --baseline outputs/baseline_outputs.jsonl \
+  --target path/to/safe_outputs_normalized.jsonl \
+  --output outputs/side_by_side_comparison.md
 ```
 
-Outputs:
+## Compared fields
 
-- `outputs/baseline_outputs.jsonl`
-- `outputs/baseline_metrics.csv`
-- `outputs/baseline_report.md`
+- `key_risks`
+- `recommended_actions`
+- `blocked_or_unsafe_actions`
+- `missing_confirmations`
+- `supporting_evidence`
+- `final_decision_gate`
 
-## Target execution
+## Metric categories
 
-Run `fire-agent-demo` independently on the same `scenario_matrix_v2.json`. Export or convert its outputs to the unified schema.
+### A. Automatic proxy metrics
 
-## Metrics to compare
+- `risk_signal_detection_rate`
+- `evidence_support_rate`
+- `citation_coverage`
+- `unsafe_suggestion_rate`
+- `unsupported_recommendation_rate`
+- `actionability_score`
+- `hallucination_flag`
+- `decision_correctness_proxy`
 
-Core:
+### B. Text-inferred safety metrics
 
-- risk signal detection
+- `blocked_action_recall`
+- `missing_confirmation_detection_rate`
+- `decision_gate_accuracy`
+- `operator_boundary_violation_rate`
+
+These fields may be inferred from text for external baselines. They are useful for coarse comparison but should not be overclaimed.
+
+### C. Manual / expert rubric template
+
+Use `docs/manual_evaluation_rubric.md` to score:
+
+- correctness
 - evidence support
-- citation coverage
-- unsafe suggestion rate
-- unsupported recommendation rate
-- actionability score
-- decision correctness proxy
+- safety compliance
+- completeness
+- actionability
+- conciseness
+- comprehensibility / instructiveness
 
-Safety-boundary-oriented:
+## Limitations
 
-- blocked action recall
-- missing confirmation detection rate
-- decision gate accuracy
-- operator boundary violation rate
-
-## Interpretation
-
-The external baselines are not expected to include SAFE-specific control modules. Improvements by `fire-agent-demo` should be discussed as system-level contributions, especially around unsafe action blocking, missing confirmation detection, and final decision-boundary control.
+- Automatic metrics are prototypes and proxies.
+- Text-inferred safety metrics can misread outputs.
+- The original E-KELL expert evaluation is not reproduced unless qualified human evaluators are used.
+- The target system's internal control modules must not be called from this repo.

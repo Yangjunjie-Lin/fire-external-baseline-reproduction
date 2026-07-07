@@ -1,33 +1,51 @@
-# Reproduction notes
+# Reproduction Notes
 
-This repository is an independent external baseline reproduction scaffold. It is intended to compare external KG/RAG/GraphRAG/LLM-style baselines against the separate `fire-agent-demo` SAFE Fire Agent prototype.
+## Current status
 
-## Scope
+This repository implements an independent, pipeline-level, paper-faithful E-KELL-style KG + LLM prompt-chain baseline for fire emergency decision-support comparison.
 
-First milestone:
+It is **not** an official E-KELL reproduction and does not claim to reproduce official E-KELL results.
 
-- B0 `direct_llm`
-- B1 `vanilla_rag`
-- B2 `ekell_style`
-- B3 optional `lightrag` / `microsoft_graphrag` adapters with fallback
+## Main reproduced pipeline
 
-## Independence rule
+Scenario Input
+→ Scenario Understanding / Parsing
+→ KG Entity Matching
+→ KG Subgraph / Fact Retrieval
+→ Evidence Context Construction
+→ Prompt Chain Reasoning
+→ Final Emergency Decision Support Output
+→ Unified Output Normalization
 
-The repository may copy data files from `fire-agent-demo`, but it must not import target-project code.
+## E-KELL-style mapping
 
-The following target modules are intentionally absent:
+The E-KELL paper describes a KG-enhanced LLM emergency decision-support system that structures emergency knowledge into a KG and guides LLM reasoning through a prompt chain. This repository maps that concept into:
+
+- deterministic or LLM JSON scenario parser
+- robust KG/evidence loaders
+- transparent entity matching
+- subgraph/fact/evidence retrieval
+- three prompt stages stored in `configs/prompts/`
+- normalized output schema
+
+## Independence constraints
+
+This repository must not import or call:
 
 - SAFE-Router
 - Safety Checker
 - Dynamic REG
 - HITL Gate
-- internal target risk scoring
-- internal target ablation/evaluation code
+- target-project risk scoring
+- target-project final gate logic
+- any other `fire-agent-demo` internal module
 
-## Local deterministic LLM fallback
+Copied input data files are allowed; copied code is not.
 
-A deterministic heuristic LLM client is included only to keep the runner executable without API keys. This is a reproducibility aid, not a method improvement. For real LLM runs, configure `configs/llm.yaml` and pass it with `--config configs/llm.yaml`.
+## Heuristic mode warning
 
-## Structured safety fields
+The default heuristic LLM mode is only for smoke tests and CI-style reproducibility. Real comparison should use a recorded LLM provider/model/temperature/date, for example through an OpenAI-compatible endpoint config.
 
-Most external baselines do not natively expose fields such as `blocked_or_unsafe_actions` or `missing_confirmations`. For schema compatibility, this project can infer those fields from baseline text. This is documented in `method_specific.structured_safety_fields = inferred_from_text`.
+## GraphRAG / LightRAG status
+
+LightRAG and Microsoft GraphRAG adapters are optional and transparent. Unless the actual external package, index construction, and query integration are configured, their outputs are marked as fallback retrieval outputs and should not be claimed as full official reproductions.

@@ -1,9 +1,14 @@
 method: ekell_style
+scenario_parser:
+  use_llm: true
 retrieval:
-  top_k_entities: 8
-  top_k_triples: 20
-  top_k_evidence: 6
-  max_context_chars: 8000
+  top_k_entities: 10
+  top_k_triples: 24
+  top_k_relations: 10
+  top_k_evidence: 8
+  max_context_chars: 10000
+ekell_style:
+  prompt_dir: configs/prompts
 prompt_chain:
   stages:
     - situation_understanding

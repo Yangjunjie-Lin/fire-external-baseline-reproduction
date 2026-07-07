@@ -1,10 +1,9 @@
 # Limitations
 
-1. This is a prototype comparison scaffold, not a certified emergency decision system.
-2. E-KELL-style implementation is paper-faithful at the pipeline level but not official author code.
-3. Copied data may not match the original external papers' corpora.
-4. Deterministic local LLM fallback is not equivalent to a real LLM.
-5. Text-inferred safety fields are approximate and can introduce false positives or false negatives.
-6. GraphRAG/LightRAG adapters require optional external installation and project-specific indexing configuration.
-7. Metrics are proxies for research comparison and should not be overclaimed.
-8. This project intentionally avoids target-project safety modules, so results may appear less safe by design.
+- This is not official E-KELL code.
+- Official E-KELL KG, prompts, data, and result reproduction are not integrated.
+- The default heuristic LLM mode is for smoke tests only.
+- Automatic metrics are prototype proxies, not certified emergency-response evaluation.
+- Text-inferred safety fields are compatibility fields, not a Safety Checker.
+- LightRAG and Microsoft GraphRAG adapters are fallback adapters unless official indexing/query integration is explicitly configured.
+- The project is for research comparison only and does not provide real-world emergency advice.

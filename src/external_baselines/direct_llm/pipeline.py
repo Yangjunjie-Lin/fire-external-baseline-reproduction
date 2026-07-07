@@ -3,11 +3,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from external_baselines.common.llm_client import LLMClient, build_llm_client
+from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary
 from external_baselines.common.schema import normalize_response_payload
 from external_baselines.common.text_utils import extract_json_object
 from external_baselines.evaluation.normalizer import infer_structured_safety_fields
-
 
 METHOD = "direct_llm"
 
@@ -52,6 +51,13 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
     output.latency_sec = round(time.perf_counter() - start, 4)
     output.raw_output = {"text": raw_text, "parsed": payload}
+    output.method_specific = {
+        "baseline_name": "Direct LLM no-retrieval baseline",
+        "llm_config_summary": llm_config_summary(config, llm),
+        "retrieval_used": False,
+        "kg_used": False,
+        "structured_safety_fields": "inferred_from_text",
+    }
     result = output.to_dict()
     if config.get("normalization", {}).get("infer_structured_safety_fields", True):
         result = infer_structured_safety_fields(result)

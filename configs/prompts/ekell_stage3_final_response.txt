@@ -1,0 +1,30 @@
+Stage 3: Final Emergency Response
+
+Generate a concise emergency decision-support response for the external E-KELL-style baseline.
+Use only the scenario, Stage 1 understanding, Stage 2 KG-grounded reasoning, and retrieved KG/evidence contexts.
+The response is for research comparison only and must not claim to be official E-KELL output.
+Do not use SAFE-Router, Safety Checker, Dynamic REG, HITL Gate, target risk scoring, or target final gate logic.
+
+Scenario:
+{scenario_text}
+
+Stage 1 situation understanding:
+{stage1_json}
+
+Stage 2 KG-grounded decision reasoning:
+{stage2_json}
+
+Retrieved KG facts and evidence:
+{context_block}
+
+Return valid JSON only using this schema:
+{
+  "situation_summary": "",
+  "key_risks": [],
+  "recommended_actions": [],
+  "blocked_or_unsafe_actions": [],
+  "missing_confirmations": [],
+  "supporting_evidence": [],
+  "citations": [],
+  "final_decision_gate": ""
+}

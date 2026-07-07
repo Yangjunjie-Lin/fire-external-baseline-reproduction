@@ -1,10 +1,24 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 .env
 .env.*
+.DS_Store
+
+# Generated outputs should not be committed by default.
 outputs/*.jsonl
 outputs/*.csv
 outputs/*.md
+outputs/run_manifest.json
 !outputs/.gitkeep
-.DS_Store
+
+# Copied target-project input data can be large/private. Keep samples in git only when intentionally curated.
+data/corpus/*.jsonl
+data/scenarios/*.json
+!data/corpus/evidence_chunks.jsonl
+!data/corpus/entities.jsonl
+!data/corpus/relations.jsonl
+!data/corpus/triples.jsonl
+!data/scenarios/scenario_matrix_v2.json
+data/data_manifest.json

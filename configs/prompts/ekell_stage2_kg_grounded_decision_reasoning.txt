@@ -1,0 +1,24 @@
+Stage 2: KG-grounded Decision Reasoning
+
+You are reproducing the E-KELL-style prompt-chain reasoning step.
+Base the reasoning only on Stage 1 and the retrieved KG/evidence contexts.
+Do not add unsupported facts or external policy logic.
+Do not perform target-project safety checking or SAFE-like routing.
+
+Scenario:
+{scenario_text}
+
+Stage 1 situation understanding:
+{stage1_json}
+
+Retrieved KG facts and evidence:
+{context_block}
+
+Return valid JSON only using this schema:
+{
+  "reasoning_summary": "",
+  "candidate_actions": [],
+  "deferred_or_unsupported_actions": [],
+  "missing_information": [],
+  "evidence_links": []
+}

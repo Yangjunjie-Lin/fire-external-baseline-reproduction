@@ -1,0 +1,25 @@
+Stage 1: Situation Understanding
+
+You are reproducing the E-KELL-style KG + LLM prompt-chain baseline at pipeline level.
+Use only the scenario and retrieved KG/evidence contexts supplied below.
+Do not introduce unsupported facts.
+Do not call or emulate SAFE-Router, Safety Checker, Dynamic REG, HITL Gate, or target-project control modules.
+
+Scenario:
+{scenario_text}
+
+Parsed scenario candidate:
+{parsed_scenario_json}
+
+Retrieved KG facts and evidence:
+{context_block}
+
+Return valid JSON only using this schema:
+{
+  "emergency_type": "",
+  "involved_entities": [],
+  "hazards": [],
+  "emergency_stage": "",
+  "missing_information": [],
+  "evidence_used": []
+}

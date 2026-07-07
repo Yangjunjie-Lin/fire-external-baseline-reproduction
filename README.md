@@ -1,60 +1,116 @@
 # fire-external-baseline-reproduction
 
-Independent external baseline reproduction project for fire emergency decision-support comparison.
+Independent external baseline reproduction project for system-level comparison with [`fire-agent-demo`](https://github.com/Yangjunjie-Lin/fire-agent-demo).
 
-This repository is intentionally separate from [`fire-agent-demo`](https://github.com/Yangjunjie-Lin/fire-agent-demo). It does **not** contain, import, or call SAFE-Router, Safety Checker, Dynamic REG, HITL Gate, or any internal control module from the target project.
+This repository is for **research comparison only**. It does **not** provide real-world emergency advice.
 
-The goal is to reproduce or adapt external baseline pipelines as faithfully and transparently as possible, then run them on the same fire emergency scenario matrix and copied evidence corpus for system-level comparison.
+## Current reproduction status
 
-> Research-only warning: this project does not provide real-world emergency advice and must not be used for live emergency operations.
+Primary reproduction target:
 
-## Implemented first milestone
+- **E-KELL: Enhancing Emergency Decision-making with Knowledge Graphs and Large Language Models**
+- Paper: https://arxiv.org/abs/2311.08732
 
-| Method | Status | Description |
-|---|---:|---|
-| `direct_llm` | runnable | B0 no-retrieval LLM baseline |
-| `vanilla_rag` | runnable | B1 lexical BM25/TF-IDF-style text retrieval over `evidence_chunks.jsonl` |
-| `ekell_style` | runnable | B2 E-KELL-style KG + LLM prompt-chain reimplementation |
-| `lightrag` | adapter/fallback | Optional external LightRAG adapter; falls back to local graph/text retrieval when package is unavailable |
-| `microsoft_graphrag` | adapter/fallback | Optional Microsoft GraphRAG adapter placeholder with clear fallback behavior |
+Current label:
 
-The `ekell_style` method should be cited as:
+> **E-KELL-style paper-faithful pipeline-level reimplementation, not official reproduction.**
 
-**E-KELL-style paper-faithful reimplementation**
+Supported claim:
 
-It is **not** an official E-KELL reproduction unless official authors' code is used.
+> This project implements an independent, pipeline-level, paper-faithful E-KELL-style KG + LLM prompt-chain baseline for fire emergency decision-support comparison. It is not an official E-KELL reproduction, but it maximizes reproduction fidelity using available public paper-level details, copied fire emergency KG/evidence inputs, transparent deviations, and reproducible execution protocols.
 
-## External methods mapped
+Unsupported claim:
 
-- E-KELL: *Enhancing Emergency Decision-making with Knowledge Graphs and Large Language Models*, arXiv:2311.08732.
-- Microsoft GraphRAG: <https://github.com/microsoft/graphrag>
-- LightRAG: <https://github.com/HKUDS/LightRAG>
-- KG2RAG: <https://github.com/nju-websoft/KG2RAG> *(documented as second-stage optional)*
-- PathRAG: <https://github.com/BUPT-GAMMA/PathRAG> *(documented as second-stage optional)*
+> This project fully reproduces the official E-KELL results.
+
+## Fidelity level
+
+Current achieved level: **Level 3 — data-compatible pipeline-level reproduction**, when copied KG/evidence/scenario inputs are present.
+
+See [`docs/reproduction_fidelity_audit.md`](docs/reproduction_fidelity_audit.md).
+
+## Independence boundary
+
+This repository must remain completely independent from `fire-agent-demo`.
+
+Allowed:
+
+1. Copy input fire scenario files.
+2. Copy fire corpus / evidence files.
+3. Output results in a compatible schema.
+
+Not allowed:
+
+- importing `fire_agent_demo`
+- calling SAFE-Router
+- calling Safety Checker
+- calling Dynamic REG
+- calling HITL Gate
+- using target-project risk scoring
+- using target-project final gate logic
+- silently adding target-project policy routing or safety modules
+
+## What is reproduced
+
+- B0 Direct LLM baseline
+- B1 Vanilla lexical RAG baseline
+- B2 E-KELL-style KG + LLM prompt-chain baseline
+- B3 LightRAG / Microsoft GraphRAG adapter stubs with explicit fallback status
+- unified output schema
+- run manifest
+- corpus/data validation
+- lightweight proxy metrics
+- manual evaluation rubric template
+- side-by-side comparison script
+
+E-KELL-style pipeline:
+
+```text
+Scenario Input
+→ Scenario Understanding / Parsing
+→ KG Entity Matching
+→ KG Subgraph / Fact Retrieval
+→ Evidence Context Construction
+→ Prompt Chain Reasoning
+→ Final Emergency Decision Support Output
+→ Unified Output Normalization
+```
+
+## What is not reproduced
+
+- official E-KELL KG
+- official E-KELL code
+- official E-KELL data preprocessing pipeline
+- official exact prompt templates if not public
+- official expert evaluation with emergency commanders / firefighters
+- official exact results
+
+See [`docs/official_code_data_search.md`](docs/official_code_data_search.md).
 
 ## Install
 
 ```bash
+pip install -e .
 pip install -r requirements.txt
 ```
 
-For local development:
+For tests:
 
 ```bash
-pip install -e .
+python -m pytest -q
 ```
 
-LLM use is optional. If no API key/client is configured, the project uses a deterministic local heuristic client so that the baseline runner remains reproducible and testable.
+## Data preparation
 
-## Prepare data
-
-Copy only data files from the target project. Do not import target project code.
+Copy data from a local `fire-agent-demo` checkout:
 
 ```bash
 python scripts/prepare_data.py --source ../fire-agent-demo --target data/
 ```
 
-Expected copied files:
+This copies data only. It does not copy or import code.
+
+Expected input files:
 
 ```text
 data/corpus/evidence_chunks.jsonl
@@ -64,69 +120,112 @@ data/corpus/triples.jsonl
 data/scenarios/scenario_matrix_v2.json
 ```
 
-The script searches common target-project locations, especially:
+A `data/data_manifest.json` file is generated with source paths, sizes, checksums, and copy timestamp.
 
-```text
-../fire-agent-demo/data/processed/4B_fire_kg_graphrag/
-../fire-agent-demo/data/examples/scenario_matrix_v2.json
-```
-
-## Run one baseline
+## Validate data
 
 ```bash
-python scripts/run_baseline.py --method ekell_style --dataset data/scenarios/scenario_matrix_v2.json --limit 10
+python scripts/validate_data.py
+python scripts/audit_corpus.py --corpus data/corpus
 ```
 
-## Run all first-milestone baselines
+## Heuristic smoke test warning
 
-```bash
-python scripts/run_all_baselines.py --methods direct_llm,vanilla_rag,ekell_style --dataset data/scenarios/scenario_matrix_v2.json --limit 10
+The default config uses:
+
+```yaml
+llm:
+  provider: heuristic
 ```
 
-## Export report
+This is only for smoke tests and reproducibility checks. It is **not** final experimental output.
 
-```bash
-python scripts/export_report.py --input outputs/baseline_outputs.jsonl --output outputs/baseline_report.md
-```
+For final comparison, use a real LLM provider and record:
 
-## Unified output schema
+- provider
+- model
+- temperature
+- max tokens
+- run date
+- dataset version / checksum
 
-Every baseline writes JSONL records with this schema:
+Every output includes:
 
 ```json
-{
-  "scenario_id": "...",
-  "method": "...",
-  "situation_summary": "...",
-  "key_risks": [],
-  "recommended_actions": [],
-  "blocked_or_unsafe_actions": [],
-  "missing_confirmations": [],
-  "supporting_evidence": [],
-  "citations": [],
-  "final_decision_gate": "...",
-  "retrieved_contexts": [],
-  "latency_sec": 0.0,
-  "raw_output": {},
-  "method_specific": {}
-}
-```
-
-For external baselines, structured safety fields may be inferred from generated text because the original methods may not natively expose fields such as `blocked_or_unsafe_actions`, `missing_confirmations`, or `final_decision_gate`. Such outputs are marked with:
-
-```json
-{
-  "method_specific": {
-    "structured_safety_fields": "inferred_from_text"
+"method_specific": {
+  "llm_config_summary": {
+    "provider": "...",
+    "model": "...",
+    "temperature": 0.0,
+    "heuristic_fallback": true
   }
 }
 ```
 
-## Evaluation scope
+## Real LLM config examples
 
-The evaluation utilities are lightweight and prototype-level. They are designed for relative system comparison, not certified emergency-response validation.
+OpenAI-compatible:
 
-Implemented/estimated metrics include:
+```bash
+cp configs/llm_openai_compatible.yaml.example configs/llm_local.yaml
+export OPENAI_API_KEY=...
+export OPENAI_BASE_URL=...   # optional for compatible endpoints
+python scripts/run_all_baselines.py \
+  --config configs/llm_local.yaml \
+  --methods direct_llm,vanilla_rag,ekell_style \
+  --dataset data/scenarios/scenario_matrix_v2.json \
+  --limit 3
+```
+
+DeepSeek / Qwen example configs are provided as:
+
+- `configs/llm_deepseek.yaml.example`
+- `configs/llm_qwen.yaml.example`
+
+They use OpenAI-compatible client wiring through environment variables.
+
+## Run baselines
+
+Run one baseline:
+
+```bash
+python scripts/run_baseline.py \
+  --method ekell_style \
+  --dataset data/scenarios/scenario_matrix_v2.json \
+  --limit 10
+```
+
+Run all first-milestone baselines:
+
+```bash
+python scripts/run_all_baselines.py \
+  --methods direct_llm,vanilla_rag,ekell_style \
+  --dataset data/scenarios/scenario_matrix_v2.json \
+  --limit 10
+```
+
+Expected outputs:
+
+```text
+outputs/baseline_outputs.jsonl
+outputs/baseline_metrics.csv
+outputs/baseline_report.md
+outputs/run_manifest.json
+```
+
+Export report from existing outputs:
+
+```bash
+python scripts/export_report.py \
+  --input outputs/baseline_outputs.jsonl \
+  --output outputs/baseline_report.md
+```
+
+## Evaluation
+
+Metric categories:
+
+### A. Automatic proxy metrics
 
 - `risk_signal_detection_rate`
 - `evidence_support_rate`
@@ -136,52 +235,69 @@ Implemented/estimated metrics include:
 - `actionability_score`
 - `hallucination_flag`
 - `decision_correctness_proxy`
+
+### B. Text-inferred safety metrics
+
 - `blocked_action_recall`
 - `missing_confirmation_detection_rate`
 - `decision_gate_accuracy`
 - `operator_boundary_violation_rate`
 
-Safety-related metrics are marked as inferred from text.
+### C. Manual / expert rubric template
 
-## Project boundaries
+See [`docs/manual_evaluation_rubric.md`](docs/manual_evaluation_rubric.md).
 
-This repository may reuse copied input data from `fire-agent-demo`, but it must not reuse implementation modules from that project.
+The automatic metrics are prototype proxies. They do not reproduce the original E-KELL expert evaluation unless qualified human evaluators are used.
 
-Allowed interaction:
+## Compare with fire-agent-demo outputs
 
-1. Use the same input fire scenarios.
-2. Use the same or copied fire corpus/evidence files.
-3. Output comparable schema for later comparison.
+First export normalized SAFE Fire Agent outputs from `fire-agent-demo` externally. Then run:
 
-Not allowed:
-
-1. Import target project modules.
-2. Call SAFE-Router, Safety Checker, Dynamic REG, or HITL Gate.
-3. Add SAFE-like improvements to external baselines.
-4. Claim external baseline methods are improved or certified.
-
-## Repository map
-
-```text
-configs/                   Baseline and LLM configuration examples
-data/                      Copied input data only
-src/external_baselines/     Baseline pipeline implementations
-scripts/                   CLI wrappers
-docs/                      Reproduction notes and protocol
-outputs/                   Generated output files
+```bash
+python scripts/compare_with_target_outputs.py \
+  --baseline outputs/baseline_outputs.jsonl \
+  --target path/to/safe_outputs_normalized.jsonl \
+  --output outputs/side_by_side_comparison.md
 ```
 
-## Comparison objective
+This script matches by `scenario_id` and compares:
 
-After running this project and the target `fire-agent-demo` on the same scenario matrix, compare outputs on:
+- `key_risks`
+- `recommended_actions`
+- `blocked_or_unsafe_actions`
+- `missing_confirmations`
+- `supporting_evidence`
+- `final_decision_gate`
 
-- safety compliance
-- risk recognition
-- evidence support
-- unsafe action blocking
-- missing confirmation detection
-- decision boundary control
+It does not import target-project code.
 
-Research question:
+## GraphRAG / LightRAG transparency
 
-> Does the SAFE Fire Agent system improve over external KG/RAG/GraphRAG/LLM baseline systems in safety compliance, risk recognition, evidence support, unsafe action blocking, missing confirmation detection, and decision boundary control?
+The `lightrag` and `microsoft_graphrag` methods are currently transparent adapters. Unless their actual external packages, indexing, and query pipelines are configured, they fall back to local graph/text retrieval and mark:
+
+- `actual_external_package_used: false`
+- `fallback_retrieval_used: true`
+- `indexing_performed: false`
+- external repository URL
+- deviation from official system
+
+Do not claim complete LightRAG or Microsoft GraphRAG reproduction unless actual indexing and query integration is implemented.
+
+## Development checks
+
+```bash
+python scripts/validate_data.py
+python scripts/run_all_baselines.py --methods direct_llm,vanilla_rag,ekell_style --dataset data/scenarios/scenario_matrix_v2.json --limit 3
+python scripts/export_report.py --input outputs/baseline_outputs.jsonl --output outputs/baseline_report.md
+python -m compileall src scripts tests
+python -m pytest -q
+```
+
+## Limitations
+
+- Not official E-KELL reproduction.
+- Not certified emergency-response advice.
+- Default heuristic mode is smoke-test only.
+- Original E-KELL expert evaluation is not reproduced.
+- Copied input data may not match official E-KELL data.
+- GraphRAG / LightRAG adapters are not complete official reproductions unless explicitly configured.

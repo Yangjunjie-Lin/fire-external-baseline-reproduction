@@ -1,3 +1,5 @@
 PyYAML>=6.0
 # Optional; only needed when you want real LLM calls instead of deterministic local fallback.
 openai>=1.0.0
+# Development / smoke tests
+pytest>=8.0.0
