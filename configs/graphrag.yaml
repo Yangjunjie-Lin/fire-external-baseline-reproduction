@@ -1,0 +1,9 @@
+method: graphrag_adapter
+preferred_backend: lightrag
+fallback: fallback_graph_retrieval
+optional_dependencies:
+  lightrag: false
+  microsoft_graphrag: false
+constraints:
+  vendor_external_repos: false
+  no_safe_modules: true

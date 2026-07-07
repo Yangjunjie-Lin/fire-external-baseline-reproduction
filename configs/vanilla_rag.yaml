@@ -1,0 +1,8 @@
+method: vanilla_rag
+retrieval:
+  retriever: lexical_bm25
+  top_k: 5
+  max_context_chars: 6000
+constraints:
+  use_kg_triples: false
+  no_safe_modules: true

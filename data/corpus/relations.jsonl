@@ -1,0 +1,2 @@
+{"source":"electrical fire","predicate":"requires_confirmation","target":"power isolation","source_id":"example_fire_corpus"}
+{"source":"high smoke","predicate":"requires","target":"respiratory protection","source_id":"example_fire_corpus"}

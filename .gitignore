@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+outputs/*.jsonl
+outputs/*.csv
+outputs/*.md
+!outputs/.gitkeep
+.DS_Store

@@ -1,0 +1,16 @@
+method: ekell_style
+retrieval:
+  top_k_entities: 8
+  top_k_triples: 20
+  top_k_evidence: 6
+  max_context_chars: 8000
+prompt_chain:
+  stages:
+    - situation_understanding
+    - kg_grounded_decision_reasoning
+    - final_emergency_response
+constraints:
+  no_safe_modules: true
+  no_safety_checker: true
+  no_hitl_gate: true
+  structured_safety_fields: inferred_from_text
