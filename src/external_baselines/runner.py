@@ -37,20 +37,39 @@ def get_pipeline(method: str) -> Callable[..., dict[str, Any]]:
 
 def _data_counts(corpus_dir: str | Path) -> dict[str, Any]:
     audit = audit_corpus(corpus_dir)
-    return {"entities": audit["entity_count"], "relations": audit["relation_count"], "triples": audit["triple_count"], "evidence_chunks": audit["evidence_chunk_count"], "missing_files": audit["missing_files"], "schema_warning_count": len(audit["schema_warnings"])}
+    return {
+        "entities": audit["entity_count"],
+        "relations": audit["relation_count"],
+        "triples": audit["triple_count"],
+        "evidence_chunks": audit["evidence_chunk_count"],
+        "missing_files": audit["missing_files"],
+        "schema_warning_count": len(audit["schema_warnings"]),
+    }
 
 
-def run_methods(*, methods: list[str], dataset: str | Path, config_paths: list[str | Path] | None = None, limit: int | None = None, output_path: str | Path = "outputs/baseline_outputs.jsonl", metrics_path: str | Path = "outputs/baseline_metrics.csv", report_path: str | Path = "outputs/baseline_report.md", manifest_path: str | Path = "outputs/run_manifest.json") -> list[dict[str, Any]]:
+def run_methods(
+    *,
+    methods: list[str],
+    dataset: str | Path,
+    config_paths: list[str | Path] | None = None,
+    limit: int | None = None,
+    output_path: str | Path = "outputs/baseline_outputs.jsonl",
+    metrics_path: str | Path = "outputs/baseline_metrics.csv",
+    report_path: str | Path = "outputs/baseline_report.md",
+    manifest_path: str | Path = "outputs/run_manifest.json",
+) -> list[dict[str, Any]]:
     config = load_config("configs/default.yaml", *(config_paths or []))
     config.setdefault("paths", {})["scenario_file"] = str(dataset)
     scenarios = load_scenarios(dataset, limit=limit)
     llm = build_llm_client(config)
     corpus_dir = config.get("paths", {}).get("corpus_dir", "data/corpus")
+
     outputs: list[dict[str, Any]] = []
     for method in methods:
         pipeline = get_pipeline(method)
         for scenario in scenarios:
             outputs.append(pipeline(scenario, config=config, llm=llm))
+
     write_jsonl(output_path, outputs)
     expected_by_id = {s["scenario_id"]: s.get("expected", {}) for s in scenarios}
     scored = [score_output(out, expected_by_id.get(str(out.get("scenario_id")), {})) for out in outputs]
@@ -60,7 +79,7 @@ def run_methods(*, methods: list[str], dataset: str | Path, config_paths: list[s
     manifest = build_run_manifest(methods=methods, dataset=str(dataset), limit=limit, config=config)
     manifest["data_counts"].update(_data_counts(corpus_dir))
     write_run_manifest(manifest, manifest_path)
-    Path(report_path).write_text(build_report(outputs, aggregated, manifest=manifest), encoding="utf-8")
+    Path(report_path).write_text(build_report(outputs, aggregated), encoding="utf-8")
     return outputs
 
 
@@ -76,8 +95,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--report", default="outputs/baseline_report.md")
     parser.add_argument("--manifest", default="outputs/run_manifest.json")
     args = parser.parse_args(argv)
+
     methods = [args.method] if args.method else [m.strip() for m in args.methods.split(",") if m.strip()]
-    outputs = run_methods(methods=methods, dataset=args.dataset, config_paths=args.config, limit=args.limit, output_path=args.output, metrics_path=args.metrics, report_path=args.report, manifest_path=args.manifest)
+    outputs = run_methods(
+        methods=methods,
+        dataset=args.dataset,
+        config_paths=args.config,
+        limit=args.limit,
+        output_path=args.output,
+        metrics_path=args.metrics,
+        report_path=args.report,
+        manifest_path=args.manifest,
+    )
     print(f"Wrote {len(outputs)} baseline outputs to {args.output}")
     print(f"Wrote metrics to {args.metrics}")
     print(f"Wrote report to {args.report}")
