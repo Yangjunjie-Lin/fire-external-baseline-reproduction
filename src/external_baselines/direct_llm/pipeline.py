@@ -8,6 +8,7 @@ from external_baselines.common.schema import normalize_response_payload
 from external_baselines.common.text_utils import extract_json_object
 from external_baselines.evaluation.normalizer import infer_structured_safety_fields
 
+
 METHOD = "direct_llm"
 
 

@@ -17,9 +17,22 @@ def is_available() -> bool:
 
 
 def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = None, llm=None) -> dict[str, Any]:
-    """Microsoft GraphRAG adapter with explicit fallback status."""
+    """Microsoft GraphRAG adapter with explicit fallback status.
+
+    This project keeps Microsoft GraphRAG as an optional dependency and does not
+    copy the repository. Full reproduction requires a separate official GraphRAG
+    workspace/index. Until that is wired, the adapter returns a compatible
+    fallback result and records the deviation explicitly.
+    """
     package_available = is_available()
     result = fallback_run(scenario, config=config, llm=llm, method=METHOD)
     ms = result.setdefault("method_specific", {})
-    ms.update({"adapter_status": "actual_package_available_but_workspace_not_configured_used_fallback" if package_available else "microsoft_graphrag_not_installed_used_fallback", "actual_external_package_used": False, "fallback_retrieval_used": True, "indexing_performed": False, "external_repository": EXTERNAL_REPOSITORY, "deviation_from_official_system": "No official Microsoft GraphRAG workspace/index/query output is executed by this adapter yet."})
+    ms.update({
+        "adapter_status": "actual_package_available_but_workspace_not_configured_used_fallback" if package_available else "microsoft_graphrag_not_installed_used_fallback",
+        "actual_external_package_used": False,
+        "fallback_retrieval_used": True,
+        "indexing_performed": False,
+        "external_repository": EXTERNAL_REPOSITORY,
+        "deviation_from_official_system": "No official Microsoft GraphRAG workspace/index/query output is executed by this adapter yet.",
+    })
     return result

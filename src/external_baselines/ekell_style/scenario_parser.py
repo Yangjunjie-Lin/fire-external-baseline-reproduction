@@ -6,7 +6,16 @@ from typing import Any
 from external_baselines.common.llm_client import LLMClient
 from external_baselines.common.text_utils import extract_json_object, normalize_text
 
-SCENARIO_PARSE_SCHEMA_KEYS = ["incident_type", "location", "building_type", "hazards", "affected_people", "resources_or_equipment", "emergency_stage", "information_gaps"]
+SCENARIO_PARSE_SCHEMA_KEYS = [
+    "incident_type",
+    "location",
+    "building_type",
+    "hazards",
+    "affected_people",
+    "resources_or_equipment",
+    "emergency_stage",
+    "information_gaps",
+]
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -19,6 +28,7 @@ def deterministic_parse(scenario_text: str) -> dict[str, Any]:
     gaps: list[str] = []
     people: list[str] = []
     resources: list[str] = []
+
     incident_type = "unspecified_fire_emergency"
     if any(x in text for x in ["electrical", "power", "电气", "电力", "配电", "电"]):
         incident_type = "electrical_fire"
@@ -30,6 +40,7 @@ def deterministic_parse(scenario_text: str) -> dict[str, Any]:
         gaps.append("hazardous material or gas identity")
     elif "fire" in text or "火" in text:
         incident_type = "fire_emergency"
+
     location = "unspecified_location"
     building_type = "unspecified_building_type"
     if any(x in text for x in ["shopping mall", "mall", "commercial complex", "商场", "商业综合体"]):
@@ -44,6 +55,7 @@ def deterministic_parse(scenario_text: str) -> dict[str, Any]:
         building_type = "warehouse"
     elif "building" in text or "建筑" in text:
         location = "building"
+
     if "smoke" in text or "烟" in text:
         hazards.append("smoke_exposure")
         resources.append("respiratory_protection")
@@ -57,7 +69,19 @@ def deterministic_parse(scenario_text: str) -> dict[str, Any]:
         gaps.append("victim location and condition")
     if "sprinkler" in text or "extinguisher" in text or "hose" in text or "灭火器" in text or "消防栓" in text:
         resources.append("fire_suppression_equipment")
-    return {"incident_type": incident_type, "location": location, "building_type": building_type, "hazards": _unique(hazards), "affected_people": _unique(people), "resources_or_equipment": _unique(resources), "emergency_stage": "initial_response", "information_gaps": _unique(gaps), "parser_mode": "deterministic", "parser_fallback_used": False}
+
+    return {
+        "incident_type": incident_type,
+        "location": location,
+        "building_type": building_type,
+        "hazards": _unique(hazards),
+        "affected_people": _unique(people),
+        "resources_or_equipment": _unique(resources),
+        "emergency_stage": "initial_response",
+        "information_gaps": _unique(gaps),
+        "parser_mode": "deterministic",
+        "parser_fallback_used": False,
+    }
 
 
 def normalize_parsed_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -81,14 +105,27 @@ def normalize_parsed_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def parse_scenario(scenario_text: str, *, llm: LLMClient | None = None, use_llm: bool = False) -> dict[str, Any]:
     if not use_llm or llm is None:
         return deterministic_parse(scenario_text)
-    system = "You are performing E-KELL-style emergency scenario understanding for an external baseline. Return valid JSON only. Do not call or emulate target-project SAFE modules."
+
+    system = (
+        "You are performing E-KELL-style emergency scenario understanding for an external baseline. "
+        "Return valid JSON only. Do not call or emulate target-project SAFE modules."
+    )
     user = f"""
 Scenario parsing task.
 Scenario:
 {scenario_text}
 
 Parser output schema:
-{json.dumps({"incident_type": "", "location": "", "building_type": "", "hazards": [], "affected_people": [], "resources_or_equipment": [], "emergency_stage": "", "information_gaps": []}, indent=2)}
+{json.dumps({
+    "incident_type": "",
+    "location": "",
+    "building_type": "",
+    "hazards": [],
+    "affected_people": [],
+    "resources_or_equipment": [],
+    "emergency_stage": "",
+    "information_gaps": [],
+}, indent=2)}
 
 Return only JSON matching this schema.
 """.strip()

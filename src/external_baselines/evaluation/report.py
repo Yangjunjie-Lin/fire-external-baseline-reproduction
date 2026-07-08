@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.io import ensure_dir, read_jsonl
-from external_baselines.evaluation.metrics import aggregate_metrics, score_output
+from external_baselines.evaluation.metrics import (
+    AUTOMATIC_PROXY_METRICS,
+    TEXT_INFERRED_SAFETY_METRICS,
+    aggregate_metrics,
+    score_output,
+)
 
 
 def write_metrics_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
@@ -31,21 +36,26 @@ def markdown_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_report(outputs: list[dict[str, Any]], metrics: list[dict[str, Any]] | None = None) -> str:
-    metrics = metrics or aggregate_metrics([score_output(o, {}) for o in outputs])
-    methods = sorted({str(o.get("method")) for o in outputs})
-    scenario_ids = sorted({str(o.get("scenario_id")) for o in outputs})
-
-    examples = []
+def _examples(outputs: list[dict[str, Any]]) -> str:
+    blocks = []
     for row in outputs[: min(6, len(outputs))]:
-        examples.append(
+        blocks.append(
             "### " + str(row.get("scenario_id")) + " / " + str(row.get("method")) + "\n\n"
             + "**Situation summary:** " + str(row.get("situation_summary", "")) + "\n\n"
             + "**Key risks:** " + ", ".join(str(x) for x in row.get("key_risks", [])) + "\n\n"
             + "**Recommended actions:** " + ", ".join(str(x) for x in row.get("recommended_actions", [])) + "\n\n"
+            + "**Blocked/unsafe actions:** " + ", ".join(str(x) for x in row.get("blocked_or_unsafe_actions", [])) + "\n\n"
             + "**Missing confirmations:** " + ", ".join(str(x) for x in row.get("missing_confirmations", [])) + "\n\n"
             + "**Decision gate:** " + str(row.get("final_decision_gate", "")) + "\n"
         )
+    return "\n".join(blocks) if blocks else "No examples available."
+
+
+def build_report(outputs: list[dict[str, Any]], metrics: list[dict[str, Any]] | None = None, *, manifest: dict[str, Any] | None = None) -> str:
+    metrics = metrics or aggregate_metrics([score_output(o, {}) for o in outputs])
+    methods = sorted({str(o.get("method")) for o in outputs})
+    scenario_ids = sorted({str(o.get("scenario_id")) for o in outputs})
+    manifest = manifest or {}
 
     return f"""# External Baseline Reproduction Report
 
@@ -55,7 +65,15 @@ This report summarizes outputs from `fire-external-baseline-reproduction`, an in
 
 This project does not contain SAFE-Router, Safety Checker, Dynamic REG, HITL Gate, or target-project internal control modules.
 
-## 2. External methods reproduced
+## 2. Reproduction status
+
+Current E-KELL label: **E-KELL-style paper-faithful pipeline-level reimplementation, not official reproduction.**
+
+Run reproduction label: {manifest.get('reproduction_label', 'not recorded')}
+
+Heuristic fallback used: {manifest.get('heuristic_fallback', 'not recorded')}
+
+## 3. External methods reproduced
 
 Observed methods in this run: {', '.join(methods) if methods else 'none'}.
 
@@ -64,9 +82,9 @@ Primary mapped methods:
 - B0 Direct LLM baseline
 - B1 Vanilla lexical RAG baseline
 - B2 E-KELL-style KG + LLM prompt-chain baseline
-- B3 Optional GraphRAG / LightRAG adapters with fallback graph/text retrieval
+- B3 Optional GraphRAG / LightRAG adapters with explicit fallback status
 
-## 3. Original papers / repositories
+## 4. Original papers / repositories
 
 - E-KELL: https://arxiv.org/abs/2311.08732
 - Microsoft GraphRAG: https://github.com/microsoft/graphrag
@@ -74,49 +92,64 @@ Primary mapped methods:
 - KG2RAG: https://github.com/nju-websoft/KG2RAG
 - PathRAG: https://github.com/BUPT-GAMMA/PathRAG
 
-## 4. Implementation details
+## 5. Implementation details
 
-The first milestone prioritizes runnable, transparent reproduction scaffolding. The E-KELL-style baseline uses scenario parsing, KG entity matching, subgraph retrieval, prompt-chain reasoning, and unified output normalization. Vanilla RAG uses lexical retrieval over evidence chunks only. Direct LLM uses no retrieval.
+The E-KELL-style baseline follows scenario parsing, KG entity matching, KG subgraph/fact retrieval, evidence context construction, three-stage prompt-chain reasoning, final response generation, and unified output normalization. Vanilla RAG uses lexical retrieval over evidence chunks only. Direct LLM uses no retrieval.
 
-## 5. Deviations from original papers
+## 6. Deviations from original papers
 
-- This is not official E-KELL code unless official implementation is later integrated.
-- The KG and corpus are copied fire-agent-demo input data, not the original E-KELL emergency KG.
-- Optional GraphRAG/LightRAG adapters do not vendor external repositories.
-- When no LLM provider is configured, a deterministic local heuristic fallback is used for reproducibility.
+- This is not official E-KELL code.
+- The KG and corpus are copied fire emergency input data, not the original E-KELL emergency KG.
+- Official exact prompt templates and official result tables are not reproduced unless later made available.
+- Optional GraphRAG/LightRAG adapters do not claim full official reproduction unless actual external indexing/query integration is configured.
+- When no LLM provider is configured, a deterministic local heuristic fallback is used for smoke tests only.
 - Structured safety fields are inferred from text for comparability, not generated by a target-project Safety Checker.
 
-## 6. Data used
+## 7. Data used
 
 Scenario count: {len(scenario_ids)}
 
+Data counts: {manifest.get('data_counts', {})}
+
 Scenario IDs: {', '.join(scenario_ids[:20])}{' ...' if len(scenario_ids) > 20 else ''}
 
-## 7. Metric table
+## 8. Metric categories
+
+### A. Automatic proxy metrics
+
+{', '.join(AUTOMATIC_PROXY_METRICS)}
+
+### B. Text-inferred safety metrics
+
+{', '.join(TEXT_INFERRED_SAFETY_METRICS)}
+
+### C. Manual / expert rubric
+
+Use `docs/manual_evaluation_rubric.md` for 0-3 scoring of correctness, evidence support, safety compliance, completeness, actionability, conciseness, and instructiveness.
+
+These metrics are prototype comparison aids. They do not reproduce E-KELL's original expert evaluation unless qualified human evaluators are used.
+
+## 9. Metric table
 
 {markdown_table(metrics)}
 
-## 8. Side-by-side examples
+## 10. Side-by-side examples
 
-{chr(10).join(examples) if examples else 'No examples available.'}
+{_examples(outputs)}
 
-## 9. Limitations
+## 11. Limitations
 
 - Metrics are prototype proxies and should not be treated as certified emergency-response evaluation.
 - Text-inferred safety fields can over- or under-estimate actual baseline behavior.
 - External baselines are adapted to a fire emergency dataset, so paper-faithful deviations must be documented.
-- Deterministic local fallback is useful for smoke tests but is not equivalent to a production LLM.
+- Deterministic local fallback is useful for smoke tests but is not equivalent to final experimental LLM output.
 
-## 10. Instructions for comparison against fire-agent-demo outputs
+## 12. Instructions for comparison against fire-agent-demo outputs
 
-1. Run this project on the copied `scenario_matrix_v2.json`.
-2. Run `fire-agent-demo` on the same scenario matrix.
-3. Normalize both outputs to the shared schema.
+1. Run this project on the copied `scenario_matrix_v2.json` with a recorded real LLM configuration for final comparison.
+2. Export SAFE Fire Agent outputs from `fire-agent-demo` into the same normalized schema.
+3. Run `scripts/compare_with_target_outputs.py` with both JSONL files.
 4. Compare safety compliance, risk recognition, evidence support, unsafe action blocking, missing confirmation detection, and decision boundary control.
-
-Research question:
-
-> Does the SAFE Fire Agent system improve over external KG/RAG/GraphRAG/LLM baseline systems in safety compliance, risk recognition, evidence support, unsafe action blocking, missing confirmation detection, and decision boundary control?
 """
 
 

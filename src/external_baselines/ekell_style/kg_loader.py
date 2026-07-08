@@ -25,7 +25,12 @@ class FireKG:
     schema_warnings: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
-        return {"entities": len(self.entities), "relations": len(self.relations), "triples": len(self.triples), "evidence_chunks": len(self.evidence_chunks)}
+        return {
+            "entities": len(self.entities),
+            "relations": len(self.relations),
+            "triples": len(self.triples),
+            "evidence_chunks": len(self.evidence_chunks),
+        }
 
 
 def _first(row: dict[str, Any], keys: list[str], default: Any = "") -> Any:
@@ -138,7 +143,14 @@ def load_kg(corpus_dir: str | Path, *, require_any: bool = False) -> FireKG:
         rows = load_asset(path)
         data[kind] = rows
         warnings.extend(_schema_warnings(kind, rows))
-    kg = FireKG(entities=data["entities"], relations=data["relations"], triples=data["triples"], evidence_chunks=data["evidence_chunks"], missing_files=missing, schema_warnings=warnings)
+    kg = FireKG(
+        entities=data["entities"],
+        relations=data["relations"],
+        triples=data["triples"],
+        evidence_chunks=data["evidence_chunks"],
+        missing_files=missing,
+        schema_warnings=warnings,
+    )
     if require_any and sum(kg.counts().values()) == 0:
         raise FileNotFoundError(f"No corpus assets found in {corpus_dir}")
     return kg
@@ -147,7 +159,14 @@ def load_kg(corpus_dir: str | Path, *, require_any: bool = False) -> FireKG:
 def audit_corpus(corpus_dir: str | Path) -> dict[str, Any]:
     kg = load_kg(corpus_dir)
     counts = kg.counts()
-    return {"entity_count": counts["entities"], "relation_count": counts["relations"], "triple_count": counts["triples"], "evidence_chunk_count": counts["evidence_chunks"], "missing_files": kg.missing_files, "schema_warnings": kg.schema_warnings}
+    return {
+        "entity_count": counts["entities"],
+        "relation_count": counts["relations"],
+        "triple_count": counts["triples"],
+        "evidence_chunk_count": counts["evidence_chunks"],
+        "missing_files": kg.missing_files,
+        "schema_warnings": kg.schema_warnings,
+    }
 
 
 def normalized_entity_index(entities: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

@@ -65,6 +65,7 @@ class HeuristicLLMClient:
             found = sorted(set(re.findall(r"(?:citation|source_id|chunk_id|context_id)[:=]\s*([A-Za-z0-9_:\-./]+)", user)))
             citations.extend(found[:8])
 
+        # Scenario parser schema.
         if "scenario parsing task" in user.lower() or "parser output schema" in user.lower():
             payload = {
                 "incident_type": "electrical_fire" if ("electrical" in text or "power" in text or "电" in text) else ("hazmat_fire" if "chemical" in text or "hazmat" in text or "化学" in text else "fire_emergency"),
@@ -78,6 +79,7 @@ class HeuristicLLMClient:
             }
             return json.dumps(payload, ensure_ascii=False)
 
+        # E-KELL prompt-chain stage schemas.
         if "stage 1" in user.lower() and "situation understanding" in user.lower():
             return json.dumps({
                 "emergency_type": "electrical_fire" if ("electrical" in text or "power" in text) else "fire_emergency",
@@ -121,7 +123,7 @@ class OpenAIChatClient:
     def complete(self, *, system: str, user: str, temperature: float = 0.0, max_tokens: int = 1200) -> str:
         try:
             from openai import OpenAI
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("openai package is not installed. Use heuristic provider or install openai.") from exc
         api_key = os.getenv(self.api_key_env)
         if not api_key:
@@ -150,7 +152,12 @@ def build_llm_client(config: dict[str, Any] | None = None) -> LLMClient:
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
     if provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
-        return OpenAIChatClient(model=model, api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")), base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")), provider=provider)
+        return OpenAIChatClient(
+            model=model,
+            api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")),
+            base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")),
+            provider=provider,
+        )
     return HeuristicLLMClient(model=model, provider=provider or "heuristic")
 
 

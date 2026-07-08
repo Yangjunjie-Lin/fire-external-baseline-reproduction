@@ -32,6 +32,7 @@ def _expanded_terms(text: str) -> set[str]:
             terms.add(eng_norm)
             terms.update(normalize_text(x) for x in zh_terms)
             terms.update(tokenize(eng_norm))
+    # Add individual CJK characters only as weak signals for mixed-language matching.
     for ch in text:
         if "\u4e00" <= ch <= "\u9fff":
             terms.add(ch)
@@ -40,7 +41,15 @@ def _expanded_terms(text: str) -> set[str]:
 
 def _query_text(scenario_text: str, parsed: dict[str, Any]) -> str:
     parts = [scenario_text]
-    for key in ["incident_type", "location", "building_type", "hazards", "affected_people", "resources_or_equipment", "information_gaps"]:
+    for key in [
+        "incident_type",
+        "location",
+        "building_type",
+        "hazards",
+        "affected_people",
+        "resources_or_equipment",
+        "information_gaps",
+    ]:
         value = parsed.get(key)
         if isinstance(value, list):
             parts.extend(str(v) for v in value)
@@ -55,16 +64,21 @@ def _score_alias(query_norm: str, query_terms: set[str], alias: str, embedding_s
         return 0.0, "empty_alias", []
     alias_terms = _expanded_terms(alias)
     matched_terms = sorted((query_terms & alias_terms) | ({alias_norm} if alias_norm and alias_norm in query_norm else set()))
+
     if alias_norm == query_norm:
         return 1.0, "exact_full_text_match", matched_terms or [alias]
     if alias_norm in query_norm:
         return 0.92 + min(0.05, len(alias_norm) / 300), "exact_or_substring_match", matched_terms or [alias]
     if normalize_text(alias) in query_terms:
         return 0.86, "normalized_term_match", matched_terms or [alias]
-    token_score = len(query_terms & alias_terms) / max(len(alias_terms), 1) if alias_terms else 0.0
+
+    token_score = 0.0
+    if alias_terms:
+        token_score = len(query_terms & alias_terms) / max(len(alias_terms), 1)
     overlap = keyword_overlap(query_norm, alias_norm)
     score = max(overlap, token_score * 0.78)
     reason = "token_overlap" if token_score >= overlap else "keyword_overlap"
+
     if embedding_scorer is not None:
         try:
             emb_score = float(embedding_scorer(query_norm, alias_norm))
@@ -76,11 +90,20 @@ def _score_alias(query_norm: str, query_terms: set[str], alias: str, embedding_s
     return score, reason, matched_terms
 
 
-def match_entities(scenario_text: str, parsed: dict[str, Any], entities: list[dict[str, Any]], *, top_k: int = 8, min_score: float = 0.08, embedding_scorer: EmbeddingScorer | None = None) -> list[dict[str, Any]]:
+def match_entities(
+    scenario_text: str,
+    parsed: dict[str, Any],
+    entities: list[dict[str, Any]],
+    *,
+    top_k: int = 8,
+    min_score: float = 0.08,
+    embedding_scorer: EmbeddingScorer | None = None,
+) -> list[dict[str, Any]]:
     """Match scenario terms to KG entities using transparent non-target-project heuristics."""
     query = _query_text(scenario_text, parsed)
     q_norm = normalize_text(query)
     q_terms = _expanded_terms(query)
+
     scored: list[tuple[float, dict[str, Any]]] = []
     for entity in entities:
         best_score = 0.0
@@ -100,5 +123,6 @@ def match_entities(scenario_text: str, parsed: dict[str, Any], entities: list[di
             enriched["match_reason"] = best_reason
             enriched["matched_terms"] = sorted(all_terms)[:20]
             scored.append((best_score, enriched))
+
     scored.sort(key=lambda item: (item[0], str(item[1].get("name"))), reverse=True)
     return [entity for _, entity in scored[:top_k]]

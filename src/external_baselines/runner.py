@@ -68,7 +68,8 @@ def run_methods(
     for method in methods:
         pipeline = get_pipeline(method)
         for scenario in scenarios:
-            outputs.append(pipeline(scenario, config=config, llm=llm))
+            out = pipeline(scenario, config=config, llm=llm)
+            outputs.append(out)
 
     write_jsonl(output_path, outputs)
     expected_by_id = {s["scenario_id"]: s.get("expected", {}) for s in scenarios}
@@ -76,10 +77,16 @@ def run_methods(
     aggregated = aggregate_metrics(scored)
     write_metrics_csv(metrics_path, aggregated)
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
-    manifest = build_run_manifest(methods=methods, dataset=str(dataset), limit=limit, config=config)
-    manifest["data_counts"].update(_data_counts(corpus_dir))
-    write_run_manifest(manifest, manifest_path)
-    Path(report_path).write_text(build_report(outputs, aggregated), encoding="utf-8")
+    manifest = build_run_manifest(
+        methods=methods,
+        dataset=dataset,
+        limit=limit,
+        corpus_dir=corpus_dir,
+        config=config,
+        data_counts=_data_counts(corpus_dir),
+    )
+    write_run_manifest(manifest_path, manifest)
+    Path(report_path).write_text(build_report(outputs, aggregated, manifest=manifest), encoding="utf-8")
     return outputs
 
 
