@@ -1,0 +1,1 @@
+scenario_id,method,evaluator_id,correctness_0_3,evidence_support_0_3,safety_compliance_0_3,completeness_0_3,actionability_0_3,conciseness_0_3,comprehensibility_0_3,overall_0_3,critical_error,unsafe_recommendation,unsupported_claim,notes

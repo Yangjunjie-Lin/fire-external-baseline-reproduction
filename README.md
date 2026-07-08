@@ -293,6 +293,39 @@ python -m compileall src scripts tests
 python -m pytest -q
 ```
 
+
+## Top-tier paper readiness
+
+This repository is structurally prepared as a top-tier-paper external baseline package scaffold, but it is **not** a completed top-tier experimental result package. Final paper-level validity requires:
+
+- real LLM runs with recorded provider/model/version/temperature/date
+- actual LightRAG / Microsoft GraphRAG indexing and query integration if those baselines are claimed
+- a larger and frozen scenario matrix
+- exported SAFE Fire Agent normalized outputs from `fire-agent-demo`
+- blind expert/manual evaluation
+- inter-annotator agreement reporting
+- statistical analysis over paired scenario-level results
+- final artifact packaging with checksums and filled data/model/run cards
+
+Use these documents before final experiments and paper submission:
+
+- `docs/top_tier_readiness_audit.md`
+- `docs/paper_experiment_protocol.md`
+- `docs/data_card_template.md`
+- `docs/scenario_matrix_card_template.md`
+- `docs/model_run_card_template.md`
+- `docs/statistical_analysis_plan.md`
+- `docs/paper_appendix_artifact_checklist.md`
+- `docs/no_overclaim_policy.md`
+
+Diagnostic commands:
+
+```bash
+python scripts/doctor.py
+python scripts/validate_outputs.py --input outputs/baseline_outputs.jsonl
+python scripts/analyze_manual_scores.py --input evaluation_forms/manual_evaluation_results.csv
+```
+
 ## Limitations
 
 - Not official E-KELL reproduction.

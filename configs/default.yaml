@@ -28,3 +28,7 @@ retrieval:
 
 normalization:
   infer_structured_safety_fields: true
+
+
+graphrag_adapters:
+  strict_external_package: false
