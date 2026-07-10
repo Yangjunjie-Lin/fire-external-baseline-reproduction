@@ -21,7 +21,7 @@ first stable model version and formal Runner Bundle.
 
 engineering complete
 configuration prepared
-execution intentionally deferred
+execution safely deferred
 waiting for main project v1
 ```
 
@@ -38,6 +38,8 @@ Readiness gates:
 | main_project_v1_ready | false |
 | cross_repository_real_dry_run | false |
 | formal_experiment_started | false |
+
+**Model authority:** Formal model identity is frozen in YAML configuration. Environment variables provide credentials and endpoint settings only. `SILICONFLOW_MODEL` does not silently override formal YAML model identity.
 
 Stage plan: [`docs/experiments/staged_execution_plan.md`](docs/experiments/staged_execution_plan.md)
 
@@ -78,10 +80,23 @@ python scripts/validate_formal_config.py \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
+  --execution-stage formal \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/runner_bundle \
   --output outputs/interop/predictions.jsonl \
   --manifest outputs/interop/run_manifest.json
+```
+
+Dry-run (after main project v1; not paper results):
+
+```bash
+python scripts/run_interop_baselines.py \
+  --execution-stage dry_run \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle path/to/runner_bundle \
+  --limit 3 \
+  --output outputs/dry_run/controlled_v1/predictions.jsonl \
+  --manifest outputs/dry_run/controlled_v1/run_manifest.json
 ```
 
 Paper-fidelity track (separate experiment):

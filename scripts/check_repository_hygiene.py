@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,24 +16,47 @@ SECRET_PATTERNS = [
     re.compile(r"-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----"),
 ]
 
-IGNORE_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__"}
-TRACKED_OUTPUT_GLOBS = ["outputs/**/*.jsonl", "outputs/**/*.csv"]
+IGNORE_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__", "node_modules"}
 BLOCKED_EXTENSIONS = {".pt", ".bin", ".safetensors", ".ckpt", ".sqlite", ".db"}
+BUILD_ARTIFACT_PREFIXES = ("dist/", "build/")
+BUILD_ARTIFACT_SUFFIXES = (".whl",)
+
+
+def _tracked_paths() -> set[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return {line.replace("\\", "/") for line in out.splitlines() if line.strip()}
+    except Exception:
+        return set()
+
+
+def _is_build_artifact(rel: str) -> bool:
+    if any(rel.startswith(prefix) for prefix in BUILD_ARTIFACT_PREFIXES):
+        return True
+    if rel.endswith(BUILD_ARTIFACT_SUFFIXES):
+        return True
+    # Source tarballs under dist/ only; avoid fixtures named *.tar.gz elsewhere.
+    if rel.startswith("dist/") and rel.endswith(".tar.gz"):
+        return True
+    return False
 
 
 def scan() -> dict[str, object]:
     findings: list[dict[str, str]] = []
+    tracked = _tracked_paths()
     for path in ROOT.rglob("*"):
         if path.is_dir():
-            if path.name in IGNORE_DIRS:
-                continue
             continue
         if any(part in IGNORE_DIRS for part in path.parts):
             continue
         rel = str(path.relative_to(ROOT)).replace("\\", "/")
-        if rel.startswith("outputs/") and path.suffix in {".jsonl", ".csv", ".md"} and path.name != "README.md":
-            # allowed locally but flagged if tracked — git check omitted; pattern only
-            pass
+        if _is_build_artifact(rel) and rel in tracked:
+            findings.append({"type": "build_artifact", "path": rel})
         if path.suffix in BLOCKED_EXTENSIONS:
             findings.append({"type": "large_artifact", "path": rel})
         if path.name == ".env" and ".git" not in path.parts:
@@ -51,7 +75,17 @@ def scan() -> dict[str, object]:
                 if pattern.search(text) and ".env.example" not in rel:
                     findings.append({"type": "secret_pattern", "path": rel})
 
-    return {"ok": len(findings) == 0, "finding_count": len(findings), "findings": findings[:50]}
+    # Deduplicate
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for item in findings:
+        key = (item["type"], item["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    return {"ok": len(unique) == 0, "finding_count": len(unique), "findings": unique[:50]}
 
 
 def main() -> None:

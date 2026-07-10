@@ -113,6 +113,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--config", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument(
+        "--execution-stage",
+        choices=["dry_run", "formal"],
+        default="formal",
+        help="dry_run: limited real API check; formal: frozen TEST run (default).",
+    )
+    parser.add_argument(
         "--override-readiness-lock",
         action="store_true",
         help="Manual bypass only; never use in CI or automation.",
@@ -126,16 +132,22 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     experiment = load_experiment_manifest(args.experiment_manifest)
+    bundle_path = args.bundle or experiment.get("bundle")
+    output = args.output or experiment.get("output")
+    limit = args.limit if args.limit is not None else experiment.get("limit")
 
-    from external_baselines.common.execution_lock import assert_formal_execution_allowed  # noqa: E402
+    from external_baselines.common.execution_lock import assert_execution_allowed  # noqa: E402
 
-    assert_formal_execution_allowed(
+    lock_audit = assert_execution_allowed(
         experiment_manifest=experiment,
-        bundle_path=args.bundle or experiment.get("bundle"),
+        bundle_path=bundle_path,
+        execution_stage=args.execution_stage,
+        limit=limit,
+        output_path=output,
+        allow_partial=bool(args.allow_partial),
         override_readiness_lock=bool(args.override_readiness_lock),
     )
 
-    bundle_path = args.bundle or experiment.get("bundle")
     if not bundle_path:
         raise SystemExit("Runner Bundle path required via --bundle or experiment manifest.bundle")
 
@@ -177,10 +189,8 @@ def main(argv: list[str] | None = None) -> None:
         methods.append(mid)
     fairness_report = validate_cross_method_fairness(method_configs)
 
-    output = args.output or experiment.get("output")
     legacy_output = args.legacy_output or experiment.get("legacy_output")
     run_manifest = args.manifest or experiment.get("run_manifest")
-    limit = args.limit if args.limit is not None else experiment.get("limit")
 
     cases = load_scenarios(bundle["scenarios_path"], limit=limit)
     case_ids = [str(c.get("case_id") or c.get("scenario_id")) for c in cases]
@@ -255,6 +265,9 @@ def main(argv: list[str] | None = None) -> None:
             "coverage": coverage,
             "n_predictions": len(interop_rows),
             "output": output,
+            "execution_stage": args.execution_stage,
+            "execution_lock_overridden": bool(lock_audit.get("execution_lock_overridden")),
+            "paper_valid": bool(lock_audit.get("paper_valid")) and not lock_audit.get("execution_lock_overridden"),
             "cross_repository_interop_verified": False,
         },
     )

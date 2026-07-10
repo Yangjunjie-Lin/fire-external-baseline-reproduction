@@ -5,7 +5,6 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -289,20 +288,32 @@ DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
 
 
 def _maybe_load_dotenv() -> None:
-    """Load .env from baseline repo, then fire-agent-demo sibling (read-only; no code import)."""
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        return
-    root = Path(__file__).resolve().parents[3]
-    load_dotenv(root / ".env", override=False)
-    demo_env = os.getenv("FIRE_AGENT_DEMO_ENV_PATH")
-    if demo_env:
-        load_dotenv(Path(demo_env), override=False)
-        return
-    sibling = root.parent / "fire-agent-demo" / ".env"
-    if sibling.is_file():
-        load_dotenv(sibling, override=False)
+    """Deprecated wrapper — use load_local_environment()."""
+    from external_baselines.common.environment import load_local_environment
+
+    load_local_environment()
+
+
+def resolve_siliconflow_model(llm_cfg: dict[str, Any], *, paper_final: bool = False) -> tuple[str, str]:
+    """Resolve SiliconFlow model. YAML is the formal authority.
+
+    Returns (model, model_source).
+    """
+    yaml_model = str(llm_cfg.get("model") or "").strip()
+    allow_override = bool(llm_cfg.get("allow_model_env_override", False))
+    env_model = str(os.getenv("SILICONFLOW_MODEL") or "").strip()
+
+    if paper_final and allow_override:
+        raise ValueError(
+            "paper_final=true forbids llm.allow_model_env_override=true. "
+            "Formal model identity must come from YAML."
+        )
+
+    if allow_override and not paper_final and env_model:
+        return env_model, "env_override"
+    if yaml_model:
+        return yaml_model, "yaml_config"
+    return DEFAULT_SILICONFLOW_MODEL, "default_constant"
 
 
 def resolve_api_key(llm_cfg: dict[str, Any]) -> tuple[str, str]:
@@ -406,18 +417,18 @@ def _llm_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool = True) -> LLMClient:
-    _maybe_load_dotenv()
+    from external_baselines.common.environment import load_local_environment
+
+    load_local_environment()
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
+    paper_final = bool((config or {}).get("paper_final", False))
+    model_source = "yaml_config"
 
     # Align with fire-agent-demo SiliconFlow OpenAI-compatible client.
     if provider in {"siliconflow", "silicon-flow"}:
-        model = str(
-            llm_cfg.get("model")
-            or os.getenv("SILICONFLOW_MODEL")
-            or DEFAULT_SILICONFLOW_MODEL
-        )
+        model, model_source = resolve_siliconflow_model(llm_cfg, paper_final=paper_final)
         inner: Any = OpenAIChatClient(
             model=model,
             api_key_env=str(llm_cfg.get("api_key_env", "SILICONFLOW_API_KEY")),
@@ -436,6 +447,7 @@ def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool 
                 else None
             ),
         )
+        setattr(inner, "model_source", model_source)
     elif provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
         inner = OpenAIChatClient(
             model=model,
@@ -446,10 +458,14 @@ def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool 
             max_retries=int(llm_cfg.get("max_retries", 2)),
             model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or "") or None,
         )
+        setattr(inner, "model_source", "yaml_config")
     else:
         inner = HeuristicLLMClient(model=model, provider=provider or "heuristic")
+        setattr(inner, "model_source", "yaml_config")
     if track_usage:
-        return UsageTrackingLLMClient(inner=inner)
+        client = UsageTrackingLLMClient(inner=inner)
+        setattr(client, "model_source", model_source)
+        return client
     return inner
 
 
@@ -467,12 +483,26 @@ def llm_runtime_snapshot(llm: Any | None = None) -> dict[str, Any]:
 def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = None) -> dict[str, Any]:
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider") or getattr(llm, "provider", "heuristic"))
-    model = str(llm_cfg.get("model") or getattr(llm, "model", "unknown"))
+    paper_final = bool((config or {}).get("paper_final", False))
+    model_source = "yaml_config"
+    if provider.lower() in {"siliconflow", "silicon-flow"}:
+        model, model_source = resolve_siliconflow_model(llm_cfg, paper_final=paper_final)
+    else:
+        model = str(llm_cfg.get("model") or getattr(llm, "model", "unknown"))
+        model_source = str(getattr(llm, "model_source", None) or getattr(getattr(llm, "inner", None), "model_source", None) or "yaml_config")
+    if llm is not None:
+        model = str(getattr(llm, "model", None) or getattr(getattr(llm, "inner", None), "model", None) or model)
+        model_source = str(
+            getattr(llm, "model_source", None)
+            or getattr(getattr(llm, "inner", None), "model_source", None)
+            or model_source
+        )
     inner = getattr(llm, "inner", llm)
     return {
         "provider": provider,
         "model": model,
-        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version") or getattr(inner, "model_version", None),
+        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version") or getattr(inner, "model_version", None) or model,
+        "model_source": model_source,
         "temperature": float(llm_cfg.get("temperature", 0.0)),
         "top_p": llm_cfg.get("top_p"),
         "max_tokens": int(llm_cfg.get("max_tokens", 1200)),

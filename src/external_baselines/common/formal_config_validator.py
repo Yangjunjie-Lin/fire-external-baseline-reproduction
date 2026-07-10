@@ -166,7 +166,11 @@ def validate_llm_for_formal(config: dict[str, Any], *, allow_placeholders: bool 
         raise FormalConfigError("Formal config requires llm.model (non-placeholder).")
     if _is_placeholder(model_version) and not allow_placeholders:
         raise FormalConfigError("Formal config requires llm.model_version (non-placeholder).")
-
+    if bool(config.get("paper_final", False)) and bool(llm.get("allow_model_env_override", False)):
+        raise FormalConfigError(
+            "paper_final=true forbids llm.allow_model_env_override=true; "
+            "formal model identity must come from YAML."
+        )
 
 def validate_ekell_vector_for_formal(
     config: dict[str, Any], *, allow_placeholders: bool = False

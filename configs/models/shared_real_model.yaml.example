@@ -1,6 +1,7 @@
 # Shared SiliconFlow LLM config aligned with fire-agent-demo.
 # Copy to configs/models/shared_real_model.yaml and set env vars.
 # NEVER commit API keys.
+# Formal model identity comes from this YAML (not SILICONFLOW_MODEL).
 paper_final: true
 require_bundle_checksum: true
 
@@ -8,6 +9,7 @@ llm:
   provider: siliconflow
   model: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
   model_version: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+  allow_model_env_override: false
   api_key_env: SILICONFLOW_API_KEY
   base_url_env: SILICONFLOW_BASE_URL
   temperature: 0.0

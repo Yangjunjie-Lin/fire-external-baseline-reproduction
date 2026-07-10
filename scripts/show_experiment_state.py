@@ -5,30 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from external_baselines.common.environment import (  # noqa: E402
+    DEFAULT_PRESENCE_VARS,
+    environment_variable_presence,
+    load_local_environment,
+)
 from external_baselines.common.io import read_yaml  # noqa: E402
 from external_baselines.common.main_project_readiness import assess_main_project_readiness  # noqa: E402
-
-ENV_VARS = (
-    "SILICONFLOW_API_KEY",
-    "SILICONFLOW_BASE_URL",
-    "SILICONFLOW_MODEL",
-    "LLM_API_KEY",
-    "OPENAI_API_KEY",
-)
-
-
-def _env_presence() -> dict[str, str]:
-    out: dict[str, str] = {}
-    for name in ENV_VARS:
-        out[name] = "present" if os.getenv(name) else "missing"
-    return out
 
 
 def _load_yaml(path: Path) -> dict:
@@ -44,6 +33,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--resources", default="configs/local/experiment_resources.yaml")
     args = parser.parse_args(argv)
 
+    env_meta = load_local_environment()
     state = _load_yaml(ROOT / args.state)
     resources = _load_yaml(ROOT / args.resources)
     readiness = assess_main_project_readiness(ROOT / args.resources) if (ROOT / args.resources).is_file() else {}
@@ -55,7 +45,12 @@ def main(argv: list[str] | None = None) -> None:
         "resource_status": resources.get("resource_status"),
         "execution_flags": resources.get("execution"),
         "main_project_readiness": readiness,
-        "api_env_presence": _env_presence(),
+        "api_env_presence": environment_variable_presence(DEFAULT_PRESENCE_VARS),
+        "env_sources": {
+            "loaded_sources": env_meta.get("loaded_sources"),
+            "discovered_sources": env_meta.get("discovered_sources"),
+            "override": False,
+        },
     }
     print(json.dumps(report, indent=2))
 

@@ -20,10 +20,27 @@ python scripts/validate_formal_config.py \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
+  --execution-stage formal \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/formal_runner_bundle \
   --output outputs/interop/controlled_main_table_v1/predictions.jsonl
 ```
+
+Formal stage forbids `--limit` and `--allow-partial`.
+
+Dry-run (after main project v1; not paper results):
+
+```bash
+python scripts/run_interop_baselines.py \
+  --execution-stage dry_run \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle path/to/runner_bundle \
+  --limit 3 \
+  --output outputs/dry_run/controlled_v1/predictions.jsonl \
+  --manifest outputs/dry_run/controlled_v1/run_manifest.json
+```
+
+Formal model identity is frozen in YAML (`configs/models/shared_real_model.yaml`). Env vars supply credentials/endpoints only; `SILICONFLOW_MODEL` does not silently override YAML.
 
 Main-table methods: `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`.
 

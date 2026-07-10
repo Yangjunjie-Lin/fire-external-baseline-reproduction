@@ -3,11 +3,15 @@
 ## Current phase
 
 ```text
-Configuration prepared — execution intentionally deferred
+Configuration prepared — execution safely deferred
 waiting for main project first_model_v1_ready + formal Runner Bundle
 ```
 
 Baseline engineering and formal configuration are prepared. Real cross-repository dry runs and formal experiments remain **locked** until the main project publishes its first stable model version.
+
+Manual `status.main_project_v1_ready: true` is an approval signal only and cannot bypass branch/bundle/schema/checksum validation.
+
+Formal model identity is frozen in YAML. Environment variables provide credentials and endpoints only.
 
 ## Valid claim
 

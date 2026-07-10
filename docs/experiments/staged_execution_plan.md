@@ -3,6 +3,13 @@
 Baseline engineering and formal configuration are prepared. **No stage below is executed automatically.**
 Real cross-repository runs remain locked until the main project publishes its first stable model and formal Runner Bundle.
 
+```text
+engineering complete
+configuration prepared
+execution safely deferred
+waiting for main project v1
+```
+
 ## Stage 0 — Current (configuration prepared)
 
 **Goal:** static validation, readiness checks, no paid API, no index build.
@@ -28,6 +35,16 @@ python scripts/validate_formal_config.py \
 
 **Goal:** verify API path, embedding path, schema, token/latency, parser, case completeness. **Not paper results.**
 
+Requires:
+
+- `main_project_v1_ready == true` (structure + approval; manual status alone cannot bypass validation)
+- `allow_real_model_calls: true`
+- `allow_cross_repo_test: true`
+- `--limit` in 1–10
+- output under `outputs/dry_run/`
+
+Does **not** require `allow_formal_evaluation`, `configs_frozen`, or `real_dry_run_completed`.
+
 **Future commands (do not run until readiness gates open):**
 
 ```bash
@@ -35,6 +52,7 @@ python scripts/validate_formal_config.py \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
+  --execution-stage dry_run \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle <runner_bundle> \
   --limit 3 \
@@ -44,7 +62,7 @@ python scripts/run_interop_baselines.py \
 
 Update `configs/local/experiment_resources.yaml`:
 
-- set `main_project.runner_bundle_path`
+- set `main_project.runner_bundle_path` (explicit; discovered candidates are informational only)
 - set `execution.allow_real_model_calls: true` (only for controlled dry run)
 - set `execution.allow_cross_repo_test: true` only after main-project approval
 
@@ -62,6 +80,8 @@ Tune on DEV only:
 
 Outputs stay **provisional** (`freeze_status: provisional`).
 
+Dense/Hybrid configs are prepared but real embedding index/query wiring is pending. They remain disabled supplemental methods.
+
 ---
 
 ## Stage 3 — Configuration freeze
@@ -72,8 +92,10 @@ Requirements before TEST:
 - manifest + method configs updated to `freeze_status: frozen` (human decision)
 - config checksums recorded
 - prompt hash fixed
-- LLM `model_version` fixed (env `SILICONFLOW_MODEL` overrides must be recorded in run manifest)
+- LLM `model` / `model_version` frozen in YAML (`model_source=yaml_config`)
 - embedding `model_version` fixed (replace `REQUIRED_BEFORE_REAL_INDEX_BUILD`)
+
+Formal model identity is frozen in YAML configuration. Environment variables provide credentials and endpoint settings only. `SILICONFLOW_MODEL` does not silently override formal YAML model identity.
 
 ---
 
@@ -81,8 +103,18 @@ Requirements before TEST:
 
 One-shot run with frozen configs on the TEST split / formal Runner Bundle.
 
+Requires:
+
+- `allow_formal_evaluation: true`
+- `configs_frozen: true`
+- `real_dry_run_completed: true`
+- **no** `--limit`
+- **no** `--allow-partial`
+- output under `outputs/interop/` (or formal directory)
+
 ```bash
 python scripts/run_interop_baselines.py \
+  --execution-stage formal \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle <frozen_runner_bundle>
 ```
@@ -118,4 +150,4 @@ real_dry_run_passed    →  enables Stage 2 DEV tuning
 configs_frozen         →  enables Stage 4 TEST
 ```
 
-`--override-readiness-lock` exists for manual debugging only. **CI and automation must not use it.**
+`--override-readiness-lock` exists for manual debugging only. **CI and automation must not use it.** Override is recorded and does not make a run paper-valid.

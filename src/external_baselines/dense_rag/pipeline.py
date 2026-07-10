@@ -214,7 +214,7 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
             model_name=model_name,
             model_version=str(model_version) if model_version else None,
             backend=backend,
-            dim=int(dense_cfg.get("dim", 64)),
+            dim=int(dense_cfg.get("dimension", dense_cfg.get("dim", 64))),
             cache_path=cache_path,
         )
     retriever = DenseRetriever(index)

@@ -18,6 +18,9 @@
 | formal_interop_entrypoint | true | `scripts/run_interop_baselines.py` (+ readiness lock) |
 | formal_config_validator_ready | true | template + formal modes |
 | execution_intentionally_deferred | true | see `docs/experiments/staged_execution_plan.md` |
+| dry_run_formal_stages_separated | true | `--execution-stage dry_run|formal` |
+| yaml_model_authority | true | `SILICONFLOW_MODEL` does not silently override formal YAML |
+| dist_build_artifacts_ignored | true | `dist/` / `build/` gitignored; hygiene rejects tracked wheels |
 | cross_repository_interop_verified | false | formal shared-LLM + main evaluator still pending |
 | cross_repository_contract_tool_ready | true | `scripts/verify_cross_repo_contract.py` |
 | cross_repository_contract_verified | false | heuristic contract smoke only; not formal experiment |

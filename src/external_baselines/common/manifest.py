@@ -47,6 +47,8 @@ def build_run_manifest(
         "corpus_dir": str(corpus_dir),
         "llm_provider": llm_summary["provider"],
         "llm_model": llm_summary["model"],
+        "llm_model_version": llm_summary.get("model_version"),
+        "llm_model_source": llm_summary.get("model_source"),
         "temperature": llm_summary["temperature"],
         "heuristic_fallback": llm_summary["heuristic_fallback"],
         "git_commit_if_available": get_git_commit_if_available(),

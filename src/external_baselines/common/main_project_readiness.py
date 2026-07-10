@@ -49,12 +49,8 @@ def _first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
 
 
 def _discover_runner_bundle(main_repo: Path, resources: dict[str, Any]) -> Path | None:
+    """Informational discovery only — never used to mark v1 ready."""
     main_cfg = resources.get("main_project") or {}
-    explicit = main_cfg.get("runner_bundle_path")
-    resolved = _resolve_path(ROOT, str(explicit)) if explicit else None
-    if resolved and resolved.is_dir():
-        return resolved
-
     for rel in main_cfg.get("runner_bundle_candidates") or []:
         candidate = _resolve_path(main_repo, str(rel))
         if candidate and candidate.is_dir():
@@ -155,103 +151,137 @@ def assess_main_project_readiness(
     *,
     require_v1_marker: bool = False,
 ) -> dict[str, Any]:
-    """Return readiness report without secrets or API key material."""
+    """Return readiness report without secrets or API key material.
+
+    Manual ``status.main_project_v1_ready`` is an approval signal only.
+    It cannot override repository, branch, bundle, schema, or checksum failures.
+    """
     resources = load_experiment_resources(resources_path)
-    reasons: list[str] = []
+    repository_reasons: list[str] = []
+    bundle_reasons: list[str] = []
+    approval_reasons: list[str] = []
+
     main_cfg = dict(resources.get("main_project") or {})
+    status = dict(resources.get("status") or {})
+    execution = dict(resources.get("execution") or {})
     repo_rel = str(main_cfg.get("repository_path") or "../fire-agent-demo")
     main_repo = _resolve_path(ROOT, repo_rel)
     expected_branch = str(main_cfg.get("expected_branch") or "evaluation/benchmark-v1")
 
     if not main_repo or not main_repo.is_dir():
-        reasons.append("main_project_repository_missing")
-        return _finalize(
+        repository_reasons.append("main_project_repository_missing")
+        return _build_report(
             resources=resources,
-            reasons=reasons,
+            repository_reasons=repository_reasons,
+            bundle_reasons=["runner_bundle_path_not_configured"],
+            approval_reasons=["approval_missing"],
             main_repo=None,
             branch=None,
             commit=None,
             bundle_root=None,
             v1_marker=False,
+            manual_approval=bool(status.get("main_project_v1_ready")),
+            bundle_report={},
         )
 
     branch = _git(["branch", "--show-current"], main_repo)
     if branch != expected_branch:
-        reasons.append("main_project_branch_mismatch")
+        repository_reasons.append("main_project_branch_mismatch")
 
     commit = _git(["rev-parse", "HEAD"], main_repo) or None
     v1_marker = _readiness_marker_present(main_repo)
     if require_v1_marker and not v1_marker:
-        reasons.append("main_project_v1_marker_missing")
+        approval_reasons.append("main_project_v1_marker_missing")
 
     configured_bundle = main_cfg.get("runner_bundle_path")
     bundle_root: Path | None = None
+    bundle_report: dict[str, Any] = {}
+
     if configured_bundle in (None, "", "null"):
-        reasons.append("runner_bundle_path_not_configured")
+        bundle_reasons.append("runner_bundle_path_not_configured")
         discovered = _discover_runner_bundle(main_repo, resources)
         if discovered and discovered.is_dir():
-            bundle_report_hint = _bundle_artifacts(discovered)
-            # Informational only — does not satisfy v1 readiness while path is null.
-            bundle_root = None
-        else:
-            bundle_report_hint = {}
+            hint = _bundle_artifacts(discovered)
+            bundle_report = {"discovered_candidate_bundle": hint.get("bundle_root")}
     else:
         bundle_root = _resolve_path(ROOT, str(configured_bundle))
         if not bundle_root or not bundle_root.is_dir():
-            reasons.append("runner_bundle_path_missing")
-        bundle_report_hint = {}
+            bundle_reasons.append("runner_bundle_path_missing")
+            bundle_root = None
+        else:
+            artifacts = _bundle_artifacts(bundle_root)
+            if not artifacts.get("manifest_path"):
+                bundle_reasons.append("runner_bundle_manifest_missing")
+            if not artifacts.get("input_cases_path"):
+                bundle_reasons.append("runner_bundle_input_cases_missing")
+            if not artifacts.get("prediction_schema_path"):
+                bundle_reasons.append("runner_bundle_prediction_schema_missing")
+            checksum = _validate_bundle_checksum(bundle_root)
+            bundle_report = {**artifacts, **checksum}
+            if not checksum.get("ok"):
+                bundle_reasons.append("runner_bundle_checksum_failed")
 
-    bundle_report: dict[str, Any] = {}
-    if bundle_root:
-        artifacts = _bundle_artifacts(bundle_root)
-        if not artifacts.get("manifest_path"):
-            reasons.append("runner_bundle_manifest_missing")
-        if not artifacts.get("input_cases_path"):
-            reasons.append("runner_bundle_input_cases_missing")
-        if not artifacts.get("prediction_schema_path"):
-            reasons.append("runner_bundle_prediction_schema_missing")
-        checksum = _validate_bundle_checksum(bundle_root)
-        bundle_report = {**artifacts, **checksum}
-        if not checksum.get("ok"):
-            reasons.append("runner_bundle_checksum_failed")
+    manual_approval = bool(status.get("main_project_v1_ready"))
+    marker_approval = bool(v1_marker)
+    approval_present = manual_approval or marker_approval
+    if not approval_present:
+        approval_reasons.append("approval_missing")
 
-    if bundle_report_hint and not bundle_report:
-        bundle_report = {"discovered_candidate_bundle": bundle_report_hint.get("bundle_root")}
-
-    return _finalize(
+    return _build_report(
         resources=resources,
-        reasons=sorted(set(reasons)),
+        repository_reasons=repository_reasons,
+        bundle_reasons=bundle_reasons,
+        approval_reasons=approval_reasons,
         main_repo=main_repo,
         branch=branch or None,
         commit=commit,
         bundle_root=bundle_root,
         v1_marker=v1_marker,
+        manual_approval=manual_approval,
         bundle_report=bundle_report,
+        expected_branch=expected_branch,
+        execution=execution,
+        status=status,
     )
 
 
-def _finalize(
+def _build_report(
     *,
     resources: dict[str, Any],
-    reasons: list[str],
+    repository_reasons: list[str],
+    bundle_reasons: list[str],
+    approval_reasons: list[str],
     main_repo: Path | None,
     branch: str | None,
     commit: str | None,
     bundle_root: Path | None,
     v1_marker: bool,
-    bundle_report: dict[str, Any] | None = None,
+    manual_approval: bool,
+    bundle_report: dict[str, Any],
+    expected_branch: str | None = None,
+    execution: dict[str, Any] | None = None,
+    status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    status = dict(resources.get("status") or {})
-    execution = dict(resources.get("execution") or {})
-    configured_ready = bool(status.get("main_project_v1_ready"))
-    main_cfg = resources.get("main_project") or {}
-    explicit_bundle = main_cfg.get("runner_bundle_path")
-    if explicit_bundle in (None, "", "null"):
-        main_project_v1_ready = False
-    else:
-        main_project_v1_ready = configured_ready or (v1_marker and bundle_root is not None and not reasons)
+    status = status if status is not None else dict(resources.get("status") or {})
+    execution = execution if execution is not None else dict(resources.get("execution") or {})
+    expected_branch = expected_branch or str(
+        (resources.get("main_project") or {}).get("expected_branch") or "evaluation/benchmark-v1"
+    )
 
-    reasons = sorted(set(reasons))
+    repository_valid = (
+        main_repo is not None
+        and main_repo.is_dir()
+        and branch == expected_branch
+        and not repository_reasons
+    )
+    bundle_valid = bundle_root is not None and not bundle_reasons
+    approval_present = manual_approval or v1_marker
+
+    main_project_v1_ready = repository_valid and bundle_valid and approval_present
+
+    reasons = sorted(set(repository_reasons + bundle_reasons + approval_reasons))
+    if main_project_v1_ready:
+        reasons = []
 
     safe_dry_run = (
         main_project_v1_ready
@@ -268,6 +298,13 @@ def _finalize(
     out: dict[str, Any] = {
         "main_project_v1_ready": main_project_v1_ready,
         "reasons": reasons,
+        "repository_reasons": sorted(set(repository_reasons)),
+        "bundle_reasons": sorted(set(bundle_reasons)),
+        "approval_reasons": sorted(set(approval_reasons)),
+        "manual_approval": manual_approval,
+        "marker_approval": v1_marker,
+        "repository_valid": repository_valid,
+        "bundle_valid": bundle_valid,
         "safe_to_run_real_dry_run": safe_dry_run,
         "safe_to_run_formal_experiment": safe_formal,
         "main_project_repository_available": bool(main_repo and main_repo.is_dir()),
@@ -283,4 +320,6 @@ def _finalize(
             k: bundle_report.get(k)
             for k in ("manifest_path", "input_cases_path", "prediction_schema_path")
         }
+        if bundle_report.get("discovered_candidate_bundle"):
+            out["discovered_candidate_bundle"] = bundle_report["discovered_candidate_bundle"]
     return out
