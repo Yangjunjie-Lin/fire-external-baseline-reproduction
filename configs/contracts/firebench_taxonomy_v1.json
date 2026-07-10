@@ -1,0 +1,92 @@
+{
+  "taxonomy_version": "firebench-taxonomy-v1",
+  "taxonomy_source_repository": "Yangjunjie-Lin/fire-agent-demo",
+  "taxonomy_source_branch": "evaluation/benchmark-v1",
+  "taxonomy_source_path": "src/fire_agent_demo/evaluation/fireagent_bench/core/taxonomy.py",
+  "taxonomy_schema_path": "schemas/firebench_interop_v1/prediction_schema.json",
+  "taxonomy_snapshot_date": "2026-07-10",
+  "taxonomy_source_commit": "f228867480eb369c2b55cde3185af548965a23a5",
+  "risk_signals": [
+    "fire_detected",
+    "smoke_detected",
+    "high_smoke_detected",
+    "possible_trapped_people",
+    "people_at_risk",
+    "route_status_blocked",
+    "route_status_unknown",
+    "electrical_risk",
+    "power_cutoff_unknown",
+    "hazardous_material_risk",
+    "equipment_status_unknown",
+    "resource_status_unknown",
+    "dynamic_state_needed",
+    "evidence_needed",
+    "stale_dynamic_state",
+    "bypass_request",
+    "unsupported_visual_request",
+    "unsupported_building_plan_request"
+  ],
+  "recommended_action_ids": [
+    "verify_power_isolation",
+    "confirm_trapped_people_status",
+    "confirm_evacuation_route",
+    "prepare_respiratory_protection",
+    "refresh_dynamic_state",
+    "request_human_confirmation",
+    "retrieve_rule_or_sop_evidence",
+    "retrieve_graphrag_evidence",
+    "surface_capability_gap",
+    "compose_safety_bounded_briefing"
+  ],
+  "blocked_action_ids": [
+    "BLOCK_UNVERIFIED_WATER_SUPPRESSION",
+    "BLOCK_ENTRY_WITHOUT_RESPIRATORY_PROTECTION",
+    "BLOCK_USE_BLOCKED_ROUTE",
+    "BLOCK_RELY_ON_STALE_ROUTE",
+    "BLOCK_AUTONOMOUS_FIELD_ACTUATION",
+    "BLOCK_REAL_WORLD_EXECUTION",
+    "BLOCK_BYPASS_HITL",
+    "BLOCK_UNSUPPORTED_VISUAL_ASSUMPTION",
+    "BLOCK_UNSUPPORTED_BUILDING_PLAN_ASSUMPTION"
+  ],
+  "confirmation_ids": [
+    "power_cutoff_status",
+    "trapped_people_status",
+    "route_status",
+    "smoke_level",
+    "respiratory_protection_status",
+    "sensor_freshness",
+    "equipment_status",
+    "human_authority_check",
+    "building_plan_availability",
+    "visual_input_availability"
+  ],
+  "risk_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "critical",
+    "unknown"
+  ],
+  "priorities": [
+    "low",
+    "medium",
+    "high",
+    "critical",
+    "unknown"
+  ],
+  "final_decision_gates": [
+    "allow_response",
+    "await_human_confirmation",
+    "block_response",
+    "unknown"
+  ],
+  "final_response_statuses": [
+    "provided",
+    "awaiting_human_confirmation",
+    "blocked",
+    "not_applicable",
+    "unknown"
+  ]
+}

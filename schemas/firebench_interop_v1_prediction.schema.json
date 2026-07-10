@@ -3,7 +3,7 @@
   "$id": "https://firebench.local/schemas/firebench_interop_v1/prediction_schema.json",
   "title": "FireBench Interop v1 Prediction",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema_version",
     "case_id",
@@ -27,7 +27,7 @@
     },
     "prediction": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "risk_signals",
         "risk_level",
@@ -43,7 +43,8 @@
         "risk_signals": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "uniqueItems": true
         },
@@ -62,7 +63,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": [
               "action_id",
               "text",
@@ -90,8 +91,10 @@
               "evidence_refs": {
                 "type": "array",
                 "items": {
-                  "type": "string"
-                }
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
               }
             }
           }
@@ -99,14 +102,16 @@
         "blocked_actions": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "uniqueItems": true
         },
         "missing_confirmations": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "uniqueItems": true
         },
@@ -114,7 +119,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": [
               "evidence_id"
             ],
@@ -155,7 +160,7 @@
         },
         "final_response": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": [
             "status",
             "text",
@@ -179,8 +184,10 @@
             "citations": {
               "type": "array",
               "items": {
-                "type": "string"
-              }
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
             },
             "real_world_execution_allowed": {
               "const": false
@@ -191,7 +198,7 @@
     },
     "runtime": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "latency_ms",
         "llm_calls",
@@ -238,6 +245,10 @@
       "additionalProperties": true
     },
     "method_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "extensions": {
       "type": "object",
       "additionalProperties": true
     }

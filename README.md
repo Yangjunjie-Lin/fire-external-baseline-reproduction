@@ -16,11 +16,14 @@ Provide **external** baselines (Direct LLM, BM25-RAG, E-KELL-style, optional Gra
 
 ```text
 unified decision I/O ready for five-method comparison
+FireBench taxonomy contract ready
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
 formal experiment not yet executed
 ```
+
+Structured decision IDs use a frozen FireBench taxonomy snapshot. Natural-language text remains free-form in `action.text` / `final_response.text`. Character-level normalization and exact aliases only — no semantic inference.
 
 External baselines preserve native retrieval/reasoning and emit:
 

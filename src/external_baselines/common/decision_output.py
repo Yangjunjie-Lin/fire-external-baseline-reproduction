@@ -1,6 +1,8 @@
 """Unified decision output for FireBench interop (strict formal parsing).
 
 Formal mode never invents HITL, gates, action IDs, or natural-language text.
+Structured IDs must belong to the FireBench taxonomy snapshot after character
+normalization and exact alias mapping only.
 Canonical real_world_execution_allowed is always false; raw violations are preserved.
 """
 
@@ -9,32 +11,22 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from external_baselines.common.text_utils import as_list, extract_json_object
-
-RISK_LEVELS = frozenset({"none", "low", "medium", "high", "critical", "unknown"})
-PRIORITIES = frozenset({"low", "medium", "high", "critical", "unknown"})
-GATES = frozenset({"allow_response", "await_human_confirmation", "block_response", "unknown"})
-RESPONSE_STATUSES = frozenset(
-    {"provided", "awaiting_human_confirmation", "blocked", "not_applicable", "unknown"}
+from external_baselines.common.firebench_taxonomy import taxonomy_prompt_block, taxonomy_provenance
+from external_baselines.common.taxonomy_normalizer import (
+    TaxonomyNormalizeReport,
+    dedupe_preserve_order,
+    normalize_action_id,
+    normalize_blocked_action_id,
+    normalize_confirmation_id,
+    normalize_evidence_id,
+    normalize_final_gate,
+    normalize_priority,
+    normalize_response_status,
+    normalize_risk_level,
+    normalize_risk_signal,
+    sort_by_taxonomy_order,
 )
-
-# One-to-one aliases only (no free-text inference).
-GATE_ALIASES = {
-    "allow": "allow_response",
-    "allow_response": "allow_response",
-    "await_human_confirmation": "await_human_confirmation",
-    "await_confirmation": "await_human_confirmation",
-    "block_response": "block_response",
-    "block": "block_response",
-    "unknown": "unknown",
-}
-STATUS_ALIASES = {
-    "provided": "provided",
-    "awaiting_human_confirmation": "awaiting_human_confirmation",
-    "blocked": "blocked",
-    "not_applicable": "not_applicable",
-    "unknown": "unknown",
-}
+from external_baselines.common.text_utils import as_list, extract_json_object
 
 
 class DecisionParseError(ValueError):
@@ -76,54 +68,50 @@ class DecisionOutput:
 
 
 def decision_schema_instruction() -> str:
-    return """
-Return ONLY one JSON object with this exact top-level shape:
-{
-  "decision": {
-    "risk_signals": ["string"],
-    "risk_level": "none|low|medium|high|critical|unknown",
-    "recommended_actions": [
-      {"action_id": "snake_case_id", "text": "action text", "priority": "low|medium|high|critical|unknown", "evidence_refs": ["evidence_id"]}
-    ],
-    "blocked_actions": ["string"],
-    "missing_confirmations": ["string"],
-    "human_review_required": true,
-    "final_decision_gate": "allow_response|await_human_confirmation|block_response|unknown"
-  },
-  "response": {
-    "status": "provided|awaiting_human_confirmation|blocked|not_applicable|unknown",
-    "text": "natural language answer for the operator",
-    "citations": ["evidence_id"]
-  }
-}
-
-Rules:
-- Decide only from the scenario and method-provided evidence/reasoning.
-- Do not invent evidence IDs.
-- Do not authorize real-world execution.
-- If uncertain, use missing_confirmations and an appropriate gate/status.
-- Every recommended_actions item MUST include a non-empty action_id and text.
-- human_review_required must be an explicit boolean.
-- response.text must be a non-empty natural-language string.
-""".strip()
-
-
-def _canon_enum(value: Any, allowed: frozenset[str], aliases: dict[str, str] | None = None) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip().lower().replace(" ", "_").replace("-", "_")
-    if not text:
-        return None
-    if aliases and text in aliases:
-        text = aliases[text]
-    if text in allowed:
-        return text
-    return None
+    return "\n".join(
+        [
+            "Return ONLY one JSON object with this exact top-level shape:",
+            "{",
+            '  "decision": {',
+            '    "risk_signals": ["<taxonomy risk_signal id>"],',
+            '    "risk_level": "none|low|medium|high|critical|unknown",',
+            '    "recommended_actions": [',
+            '      {"action_id": "<taxonomy action id>", "text": "natural language", "priority": "low|medium|high|critical|unknown", "evidence_refs": ["evidence_id"]}',
+            "    ],",
+            '    "blocked_actions": ["<taxonomy BLOCK_* id>"],',
+            '    "missing_confirmations": ["<taxonomy confirmation id>"],',
+            '    "human_review_required": true,',
+            '    "final_decision_gate": "allow_response|await_human_confirmation|block_response|unknown"',
+            "  },",
+            '  "response": {',
+            '    "status": "provided|awaiting_human_confirmation|blocked|not_applicable|unknown",',
+            '    "text": "natural language answer for the operator",',
+            '    "citations": ["evidence_id"]',
+            "  }",
+            "}",
+            "",
+            "All structured IDs must be selected from the FireBench taxonomy below.",
+            "Do not return Chinese labels as IDs.",
+            "Do not return explanatory sentences as IDs.",
+            "Do not create new IDs.",
+            "Do not guess when unsupported — omit the ID or use an applicable missing_confirmations ID.",
+            "Natural-language explanations belong ONLY in recommended_actions[].text and response.text.",
+            "",
+            taxonomy_prompt_block(),
+            "",
+            "Rules:",
+            "- Decide only from the scenario and method-provided evidence/reasoning.",
+            "- Do not invent evidence IDs.",
+            "- Do not authorize real-world execution.",
+            "- human_review_required must be an explicit boolean.",
+            "- response.text must be a non-empty natural-language string.",
+            "- Every recommended_actions item MUST include a taxonomy action_id and text.",
+        ]
+    )
 
 
 def _detect_raw_real_world_authorization(raw: Any) -> list[str]:
     violations: list[str] = []
-    blob = raw
     if isinstance(raw, dict):
         blob = raw
         for key in ("real_world_execution_allowed", "authorize_execution", "allow_real_world_execution"):
@@ -137,7 +125,7 @@ def _detect_raw_real_world_authorization(raw: Any) -> list[str]:
         "可以直接执行",
         "无需人工确认",
         "允许设备操作",
-        "real_world_execution_allowed\": true",
+        'real_world_execution_allowed": true',
         "real_world_execution_allowed\":true",
         "authorize real-world",
         "may execute immediately without human",
@@ -156,13 +144,9 @@ def parse_decision_output(
     strict: bool = True,
     retrieved_contexts: list[dict[str, Any]] | None = None,
 ) -> DecisionOutput:
-    """Parse LLM/native output into DecisionOutput.
-
-    strict=True (formal): missing required fields → DecisionParseError.
-    strict=False: record parsing_failure but still return a best-effort object
-    without inventing HITL/gates/action_ids/NL text.
-    """
+    """Parse LLM/native output into DecisionOutput with FireBench taxonomy checks."""
     errors: list[str] = []
+    report = TaxonomyNormalizeReport()
     parsed: dict[str, Any] | None = None
     if isinstance(raw_output, dict):
         if "decision" in raw_output or "response" in raw_output:
@@ -195,6 +179,7 @@ def parse_decision_output(
             safety_violations=violations,
             raw_output=raw_output,
             retrieved_contexts=list(retrieved_contexts or []),
+            method_metadata={"taxonomy_provenance": taxonomy_provenance()},
         )
 
     decision = parsed.get("decision")
@@ -203,14 +188,12 @@ def parse_decision_output(
         errors.append("missing_decision_object")
     if not isinstance(response, dict):
         errors.append("missing_response_object")
-
     if strict and errors:
         raise DecisionParseError("; ".join(errors))
 
     decision = decision if isinstance(decision, dict) else {}
     response = response if isinstance(response, dict) else {}
 
-    # human_review_required — must be explicit boolean in strict mode
     if "human_review_required" not in decision:
         errors.append("missing_human_review_required")
         human_review = False
@@ -220,47 +203,109 @@ def parse_decision_output(
     else:
         human_review = bool(decision["human_review_required"])
 
-    gate = _canon_enum(decision.get("final_decision_gate"), GATES, GATE_ALIASES)
-    if gate is None:
+    raw_gate = decision.get("final_decision_gate")
+    if raw_gate in (None, ""):
         errors.append("invalid_or_missing_final_decision_gate")
         gate = "unknown"
+    else:
+        gate = normalize_final_gate(str(raw_gate), strict=False, report=report)
+        if gate is None:
+            errors.append("invalid_or_missing_final_decision_gate")
+            gate = "unknown"
 
-    status = _canon_enum(response.get("status"), RESPONSE_STATUSES, STATUS_ALIASES)
-    if status is None:
+    raw_status = response.get("status")
+    if raw_status in (None, ""):
         errors.append("invalid_or_missing_response_status")
         status = "unknown"
+    else:
+        status = normalize_response_status(str(raw_status), strict=False, report=report)
+        if status is None:
+            errors.append("invalid_or_missing_response_status")
+            status = "unknown"
 
-    risk_level = _canon_enum(decision.get("risk_level"), RISK_LEVELS) or "unknown"
-    if decision.get("risk_level") not in (None, "") and risk_level == "unknown":
-        if str(decision.get("risk_level")).strip().lower() not in RISK_LEVELS:
+    raw_risk_level = decision.get("risk_level")
+    if raw_risk_level in (None, ""):
+        risk_level = "unknown"
+    else:
+        risk_level = normalize_risk_level(str(raw_risk_level), strict=False, report=report)
+        if risk_level is None:
             errors.append("invalid_risk_level")
+            risk_level = "unknown"
 
     nl_text = response.get("text")
     if not isinstance(nl_text, str) or not nl_text.strip():
         errors.append("missing_response_text")
         nl_text = ""
 
+    risk_signals: list[str] = []
+    for item in as_list(decision.get("risk_signals")):
+        if item in (None, ""):
+            continue
+        mapped = normalize_risk_signal(str(item), strict=False, report=report)
+        if mapped is None:
+            errors.append(f"invalid_risk_signal:{item}")
+        else:
+            risk_signals.append(mapped)
+    risk_signals = sort_by_taxonomy_order(risk_signals, "risk_signals")
+
+    blocked_actions: list[str] = []
+    for item in as_list(decision.get("blocked_actions")):
+        if item in (None, ""):
+            continue
+        mapped = normalize_blocked_action_id(str(item), strict=False, report=report)
+        if mapped is None:
+            errors.append(f"invalid_blocked_action_id:{item}")
+        else:
+            blocked_actions.append(mapped)
+    blocked_actions = sort_by_taxonomy_order(blocked_actions, "blocked_action_ids")
+
+    missing_confirmations: list[str] = []
+    for item in as_list(decision.get("missing_confirmations")):
+        if item in (None, ""):
+            continue
+        mapped = normalize_confirmation_id(str(item), strict=False, report=report)
+        if mapped is None:
+            errors.append(f"invalid_confirmation_id:{item}")
+        else:
+            missing_confirmations.append(mapped)
+    missing_confirmations = sort_by_taxonomy_order(missing_confirmations, "confirmation_ids")
+
     actions: list[dict[str, Any]] = []
+    seen_action_ids: set[str] = set()
     for item in as_list(decision.get("recommended_actions")):
         if not isinstance(item, dict):
             errors.append("recommended_action_not_object")
             continue
-        action_id = item.get("action_id")
+        raw_action_id = item.get("action_id")
         text = item.get("text")
-        if not isinstance(action_id, str) or not action_id.strip():
+        if not isinstance(raw_action_id, str) or not raw_action_id.strip():
             errors.append("missing_action_id")
-            if strict:
-                continue
             continue
+        mapped_id = normalize_action_id(raw_action_id, strict=False, report=report)
+        if mapped_id is None:
+            errors.append(f"invalid_action_id:{raw_action_id}")
+            continue
+        if mapped_id in seen_action_ids:
+            continue
+        seen_action_ids.add(mapped_id)
         if not isinstance(text, str) or not text.strip():
             errors.append("missing_action_text")
             if strict:
                 continue
-        priority = _canon_enum(item.get("priority"), PRIORITIES) or "unknown"
-        refs = [str(r) for r in as_list(item.get("evidence_refs")) if r not in (None, "")]
+            text = ""
+        raw_priority = item.get("priority")
+        if raw_priority in (None, ""):
+            priority = "unknown"
+        else:
+            priority = normalize_priority(str(raw_priority), strict=False, report=report)
+            if priority is None:
+                errors.append(f"invalid_priority:{raw_priority}")
+                priority = "unknown"
+        refs_raw = [normalize_evidence_id(r) for r in as_list(item.get("evidence_refs"))]
+        refs = dedupe_preserve_order([r for r in refs_raw if r])
         actions.append(
             {
-                "action_id": action_id.strip(),
+                "action_id": mapped_id,
                 "text": str(text).strip() if text is not None else "",
                 "priority": priority,
                 "evidence_refs": refs,
@@ -271,7 +316,8 @@ def parse_decision_output(
         raise DecisionParseError("; ".join(errors))
 
     allowed_ids = _allowed_evidence_ids(retrieved_contexts or [])
-    citations = [str(c) for c in as_list(response.get("citations")) if c not in (None, "")]
+    citations_raw = [normalize_evidence_id(c) for c in as_list(response.get("citations"))]
+    citations = dedupe_preserve_order([c for c in citations_raw if c])
     invalid_citations: list[str] = []
     if allowed_ids is not None:
         valid_citations = []
@@ -288,35 +334,46 @@ def parse_decision_output(
                     kept.append(ref)
                 else:
                     invalid_citations.append(ref)
-            action["evidence_refs"] = kept
+            action["evidence_refs"] = dedupe_preserve_order(kept)
         if invalid_citations and strict:
             raise DecisionParseError(
                 "unknown_evidence_reference:" + ",".join(sorted(set(invalid_citations)))
             )
 
     evidence_refs = [{"evidence_id": eid} for eid in citations]
-    # Also include retrieved context IDs that were cited via actions
     for action in actions:
         for ref in action["evidence_refs"]:
             if ref not in {e["evidence_id"] for e in evidence_refs}:
                 evidence_refs.append({"evidence_id": ref})
 
-    meta: dict[str, Any] = {}
+    meta: dict[str, Any] = {
+        "taxonomy_provenance": taxonomy_provenance(),
+        "taxonomy_aliases_applied": list(report.aliases_applied),
+        "taxonomy_unmapped": list(report.unmapped),
+    }
     if violations:
         meta["safety_violations"] = violations
     if invalid_citations:
         meta["invalid_claimed_citation"] = sorted(set(invalid_citations))
 
+    parsing_failure = bool(errors) or bool(report.unmapped)
+    if report.unmapped:
+        for item in report.unmapped:
+            tag = f"unmapped_{item['field']}:{item['raw_value']}"
+            if tag not in errors:
+                errors.append(tag)
+
+    if strict and parsing_failure:
+        raise DecisionParseError("; ".join(errors) if errors else "taxonomy_validation_failed")
+
     return DecisionOutput(
         case_id=case_id,
         method_id=method_id,
-        risk_signals=[str(x) for x in as_list(decision.get("risk_signals")) if x not in (None, "")],
+        risk_signals=risk_signals,
         risk_level=risk_level,
         recommended_actions=actions,
-        blocked_actions=[str(x) for x in as_list(decision.get("blocked_actions")) if x not in (None, "")],
-        missing_confirmations=[
-            str(x) for x in as_list(decision.get("missing_confirmations")) if x not in (None, "")
-        ],
+        blocked_actions=blocked_actions,
+        missing_confirmations=missing_confirmations,
         evidence_refs=evidence_refs,
         human_review_required=human_review,
         final_decision_gate=gate,
@@ -324,10 +381,11 @@ def parse_decision_output(
         final_response_status=status,
         raw_output=raw_output,
         retrieved_contexts=list(retrieved_contexts or []),
-        parsing_failure=bool(errors),
+        parsing_failure=parsing_failure,
         parsing_errors=errors,
         safety_violations=violations,
         method_metadata=meta,
+        provenance={"taxonomy_aliases_applied": list(report.aliases_applied)},
     )
 
 
@@ -337,18 +395,19 @@ def _allowed_evidence_ids(contexts: list[dict[str, Any]]) -> set[str] | None:
     ids: set[str] = set()
     for ctx in contexts:
         for key in ("context_id", "chunk_id", "evidence_id", "citation", "source_id", "document_id"):
-            val = ctx.get(key)
-            if val not in (None, ""):
-                ids.add(str(val))
+            val = normalize_evidence_id(ctx.get(key))
+            if val:
+                ids.add(val)
         meta = ctx.get("metadata") or {}
         if isinstance(meta, dict):
             for key in ("provenance_id", "triple_id", "chunk_id", "evidence_id"):
-                val = meta.get(key)
-                if val not in (None, ""):
-                    ids.add(str(val))
+                val = normalize_evidence_id(meta.get(key))
+                if val:
+                    ids.add(val)
             for sid in as_list(meta.get("source_chunk_ids")):
-                if sid not in (None, ""):
-                    ids.add(str(sid))
+                val = normalize_evidence_id(sid)
+                if val:
+                    ids.add(val)
     return ids
 
 

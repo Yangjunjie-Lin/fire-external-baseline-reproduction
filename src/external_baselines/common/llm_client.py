@@ -242,22 +242,75 @@ class HeuristicLLMClient:
             or '"decision"' in user.lower()
             or "decision schema" in user.lower()
             or "return only one json object with this exact top-level shape" in user.lower()
+            or "allowed risk_signals:" in user.lower()
         ):
-            gate = "await_human_confirmation" if missing or blocked else "allow_response"
-            human_review = bool(missing or blocked)
-            status = "awaiting_human_confirmation" if human_review else "provided"
-            action_objs = []
-            for i, action in enumerate(list(dict.fromkeys(actions)), start=1):
-                slug = re.sub(r"[^a-z0-9]+", "_", action.lower()).strip("_")[:48] or f"action_{i}"
-                refs = citations[:3] if citations else []
-                action_objs.append(
+            tax_risks: list[str] = []
+            tax_actions: list[dict[str, Any]] = []
+            tax_blocked: list[str] = []
+            tax_missing: list[str] = []
+            if "electrical" in text or "power" in text or "电" in text:
+                tax_risks.extend(["electrical_risk", "power_cutoff_unknown", "fire_detected"])
+                tax_actions.append(
                     {
-                        "action_id": slug,
-                        "text": action,
-                        "priority": "high" if human_review else "medium",
-                        "evidence_refs": refs,
+                        "action_id": "verify_power_isolation",
+                        "text": "Confirm power isolation status before selecting suppression actions.",
+                        "priority": "high",
+                        "evidence_refs": citations[:3],
                     }
                 )
+                tax_missing.append("power_cutoff_status")
+                tax_blocked.append("BLOCK_UNVERIFIED_WATER_SUPPRESSION")
+            if "smoke" in text or "烟" in text:
+                tax_risks.extend(["smoke_detected", "high_smoke_detected"])
+                tax_actions.append(
+                    {
+                        "action_id": "prepare_respiratory_protection",
+                        "text": "Prepare respiratory protection before any interior entry.",
+                        "priority": "high",
+                        "evidence_refs": citations[:3],
+                    }
+                )
+                tax_missing.append("respiratory_protection_status")
+                tax_blocked.append("BLOCK_ENTRY_WITHOUT_RESPIRATORY_PROTECTION")
+            if "crowd" in text or "evac" in text or "mall" in text or "商场" in text:
+                tax_risks.append("people_at_risk")
+                tax_actions.append(
+                    {
+                        "action_id": "confirm_evacuation_route",
+                        "text": "Confirm evacuation route status before directing occupants.",
+                        "priority": "high",
+                        "evidence_refs": citations[:3],
+                    }
+                )
+                tax_missing.append("route_status")
+            if "chemical" in text or "hazmat" in text or "化学" in text:
+                tax_risks.append("hazardous_material_risk")
+                tax_missing.append("equipment_status")
+            if not tax_risks:
+                tax_risks.append("evidence_needed")
+                tax_missing.append("sensor_freshness")
+                tax_actions.append(
+                    {
+                        "action_id": "request_human_confirmation",
+                        "text": "Collect missing incident details and request human confirmation.",
+                        "priority": "high",
+                        "evidence_refs": [],
+                    }
+                )
+            # Deduplicate while preserving order.
+            tax_risks = list(dict.fromkeys(tax_risks))
+            tax_blocked = list(dict.fromkeys(tax_blocked))
+            tax_missing = list(dict.fromkeys(tax_missing))
+            seen_aids: set[str] = set()
+            deduped_actions = []
+            for a in tax_actions:
+                if a["action_id"] in seen_aids:
+                    continue
+                seen_aids.add(a["action_id"])
+                deduped_actions.append(a)
+            human_review = bool(tax_missing or tax_blocked)
+            gate = "await_human_confirmation" if human_review else "allow_response"
+            status = "awaiting_human_confirmation" if human_review else "provided"
             nl = (
                 "External baseline response generated from the scenario text and retrieved context "
                 "supplied to the method. Confirm missing status before irreversible actions."
@@ -265,11 +318,11 @@ class HeuristicLLMClient:
             out = json.dumps(
                 {
                     "decision": {
-                        "risk_signals": list(dict.fromkeys(risks)),
+                        "risk_signals": tax_risks,
                         "risk_level": "high" if human_review else "medium",
-                        "recommended_actions": action_objs,
-                        "blocked_actions": list(dict.fromkeys(blocked)),
-                        "missing_confirmations": list(dict.fromkeys(missing)),
+                        "recommended_actions": deduped_actions,
+                        "blocked_actions": tax_blocked,
+                        "missing_confirmations": tax_missing,
                         "human_review_required": human_review,
                         "final_decision_gate": gate,
                     },

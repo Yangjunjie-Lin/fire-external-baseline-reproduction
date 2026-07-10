@@ -267,9 +267,16 @@ def test_strict_parser_does_not_generate_action_id():
 def test_strict_parser_preserves_raw_output():
     raw = {
         "decision": {
-            "risk_signals": ["r1"],
+            "risk_signals": ["electrical_risk"],
             "risk_level": "medium",
-            "recommended_actions": [{"action_id": "a1", "text": "t", "priority": "low", "evidence_refs": []}],
+            "recommended_actions": [
+                {
+                    "action_id": "verify_power_isolation",
+                    "text": "t",
+                    "priority": "low",
+                    "evidence_refs": [],
+                }
+            ],
             "blocked_actions": [],
             "missing_confirmations": [],
             "human_review_required": False,
@@ -526,7 +533,7 @@ def test_unknown_evidence_reference_is_rejected_in_formal_mode():
                     "risk_level": "low",
                     "recommended_actions": [
                         {
-                            "action_id": "a1",
+                            "action_id": "verify_power_isolation",
                             "text": "t",
                             "priority": "high",
                             "evidence_refs": ["not_retrieved"],

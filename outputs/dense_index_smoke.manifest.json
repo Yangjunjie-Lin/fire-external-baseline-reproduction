@@ -1,12 +1,12 @@
 {
-  "evidence_path": "C:\\Users\\Yangjunjie Lin\\AppData\\Local\\Temp\\pytest-of-Yangjunjie Lin\\pytest-111\\test_all_five_methods_return_d0\\corpus\\evidence_chunks.jsonl",
-  "evidence_sha256": "73338b5123020f39ae06305d2470f4e7bd8a827095d41e5b20c65b0fbae73f2f",
+  "evidence_path": "C:\\Users\\Yangjunjie Lin\\AppData\\Local\\Temp\\pytest-of-Yangjunjie Lin\\pytest-133\\test_dense_outputs_standard_ta0\\corpus\\evidence_chunks.jsonl",
+  "evidence_sha256": "12576ed6cb2f52c6e162fe3df06499056218d5a33c4e5e9e9f8058433b544cad",
   "model_name": "smoke-hash-embedding",
   "model_version": "v0-smoke",
   "backend": "smoke",
   "dim": 64,
-  "doc_count": 2,
-  "index_checksum": "da26e0c3946581aa49cb360094e89ad3d7257e3d78fac7c214d551fc14d25a8f",
+  "doc_count": 1,
+  "index_checksum": "57be0ff6a329e6a6958eac19829ec62f98f6091722c8b7eef4ef2befe4c4216b",
   "real_embedding_model_used": false,
   "actual_embedding_used": false,
   "smoke_fallback_used": true

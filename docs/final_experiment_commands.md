@@ -89,6 +89,13 @@ python scripts/run_decision_comparison_suite.py \
   --decision-dir outputs/decision_runs/test_public \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
 
+# 8) Taxonomy contract check before handing predictions to the main-project evaluator
+python scripts/check_output_taxonomy.py \
+  --prediction-dir outputs/interop/test_public/predictions
+
+python scripts/check_firebench_contract_snapshot.py \
+  --main-repo ../fire-agent-demo
+
 # Optional: legacy combined JSONL
 python scripts/run_interop_baselines.py \
   --execution-stage formal \

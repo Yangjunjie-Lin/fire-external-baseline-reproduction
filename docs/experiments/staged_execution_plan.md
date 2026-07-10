@@ -16,6 +16,7 @@ waiting for main project v1
 
 ```text
 unified decision I/O ready for five-method comparison
+FireBench taxonomy contract ready
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
@@ -44,11 +45,16 @@ python scripts/build_comparison_indexes.py \
   --method-set comparison_suite \
   --validate-only
 
-# Offline decision-suite wiring (heuristic LLM; temporary Runner Bundle fixtures in tests)
-python -m pytest tests/test_decision_comparison_suite.py -q
+python scripts/check_firebench_contract_snapshot.py \
+  --main-repo ../fire-agent-demo
+
+# Offline decision-suite + taxonomy wiring (heuristic LLM; temporary fixtures)
+python -m pytest tests/test_decision_comparison_suite.py tests/test_firebench_taxonomy.py -q
 ```
 
 **Not allowed:** real LLM calls, embedding download, full index build, cross-repo dry run, formal experiment.
+
+Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Normalization is character-level + exact aliases only. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
 
 ---
 

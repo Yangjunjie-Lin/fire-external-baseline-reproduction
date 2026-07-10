@@ -185,6 +185,9 @@ class StepwisePromptChain:
             .replace("{kg_context}", context_json)
             .replace("{fol_execution}", fol_json)
         )
+        from external_baselines.common.decision_output import decision_schema_instruction
+
+        final_rendered = f"{final_rendered.rstrip()}\n\n{decision_schema_instruction()}"
         raw, parsed, status, retries = self._call(final_rendered)
         final_output, removed = _filter_citations(parsed, allowed_ids)
         final_trace = {

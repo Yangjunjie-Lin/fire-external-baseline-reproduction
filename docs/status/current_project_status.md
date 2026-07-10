@@ -4,13 +4,16 @@
 
 ```text
 unified decision I/O ready for five-method comparison
+FireBench taxonomy contract ready
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
 formal experiment not yet executed
 ```
 
-Five methods share one Runner Bundle input protocol and independently emit structured decision JSON, natural-language response, and per-method `firebench-interop-v1` prediction JSONL. Native retrieval/reasoning designs are preserved. Formal evaluation remains owned by `fire-agent-demo`.
+Five methods share one Runner Bundle input protocol and independently emit taxonomy-compliant structured decision JSON, natural-language response, and per-method `firebench-interop-v1` prediction JSONL. Native retrieval/reasoning designs are preserved. Formal evaluation remains owned by `fire-agent-demo`.
+
+Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench_taxonomy_v1.json`). Character-level normalization and exact aliases only; free-form natural language stays in human-readable text fields. Unknown/unmapped IDs fail formal validation.
 
 ## Valid claim
 
@@ -25,6 +28,10 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 | Shared real LLM config | prepared (env vars only; gitignored) |
 | `main_table` + `comparison_suite` method sets | implemented |
 | Unified `DecisionOutput` + strict formal parser | implemented |
+| FireBench taxonomy snapshot + exact aliases | `configs/contracts/firebench_taxonomy_v1.json` |
+| Taxonomy normalizer (character-level only) | `src/external_baselines/common/taxonomy_normalizer.py` |
+| Output taxonomy checker | `scripts/check_output_taxonomy.py` |
+| Schema snapshot checker | `scripts/check_firebench_contract_snapshot.py` |
 | Per-method decision suite runner | `scripts/run_decision_comparison_suite.py` |
 | Dense real text2vec index build/load/query | implemented (fake-model tests only) |
 | Hybrid BM25 + Dense + RRF | implemented; reuses Dense index |

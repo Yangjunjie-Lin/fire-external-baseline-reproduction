@@ -172,20 +172,41 @@ def _write_decision_artifacts(
     input_cases_sha256: str | None,
     prediction_schema_sha256: str | None,
     prediction_file: Path,
+    formal: bool = False,
 ) -> dict[str, Any]:
+    from external_baselines.common.firebench_taxonomy import alias_sha256, taxonomy_provenance, taxonomy_sha256
+
     method_dir = ensure_dir(decision_dir / method_id)
     decisions = []
     responses = []
+    unmapped_rows: list[dict[str, Any]] = []
     parsing_failures = 0
     schema_failures = 0
+    alias_applied_count = 0
+    affected_cases: set[str] = set()
     latencies: list[float] = []
     llm_calls = 0
     for row in interop_rows:
         pred = row.get("prediction") or {}
         fr = pred.get("final_response") or {}
         meta = row.get("method_metadata") or {}
+        case_id = str(row.get("case_id") or "")
         if meta.get("parsing_failure"):
             parsing_failures += 1
+        aliases = list(meta.get("taxonomy_aliases_applied") or [])
+        alias_applied_count += len(aliases)
+        for item in meta.get("taxonomy_unmapped") or []:
+            affected_cases.add(case_id)
+            unmapped_rows.append(
+                {
+                    "case_id": case_id,
+                    "method_id": method_id,
+                    "field": item.get("field"),
+                    "raw_value": item.get("raw_value"),
+                    "normalized_value": item.get("normalized_value"),
+                    "reason": item.get("reason") or "not_in_firebench_taxonomy",
+                }
+            )
         decisions.append(
             {
                 "case_id": row.get("case_id"),
@@ -216,6 +237,13 @@ def _write_decision_artifacts(
             llm_calls += int(rt["llm_calls"] or 0)
     write_jsonl(method_dir / "decisions.jsonl", decisions)
     write_jsonl(method_dir / "responses.jsonl", responses)
+    write_jsonl(method_dir / "unmapped_taxonomy.jsonl", unmapped_rows)
+    taxonomy_valid = len(unmapped_rows) == 0 and parsing_failures == 0
+    if formal and not taxonomy_valid:
+        raise SystemExit(
+            f"Formal taxonomy validation failed for {method_id}: "
+            f"unmapped={len(unmapped_rows)} parsing_failures={parsing_failures}"
+        )
     summary = {
         "method_id": method_id,
         "case_count": len(interop_rows),
@@ -227,6 +255,16 @@ def _write_decision_artifacts(
         "input_cases_sha256": input_cases_sha256 or "",
         "prediction_schema_sha256": prediction_schema_sha256 or "",
         "prediction_file_sha256": sha256_file(prediction_file) if prediction_file.is_file() else "",
+        "formal_result": bool(formal and taxonomy_valid),
+        "taxonomy_validation": {
+            "valid": taxonomy_valid,
+            "invalid_id_count": len(unmapped_rows),
+            "alias_applied_count": alias_applied_count,
+            "affected_case_count": len(affected_cases),
+            "taxonomy_sha256": taxonomy_sha256(),
+            "alias_sha256": alias_sha256(),
+            "provenance": taxonomy_provenance(),
+        },
     }
     write_json(method_dir / "run_summary.json", summary)
     return summary
@@ -260,6 +298,8 @@ def run_decision_suite(
 
     ensure_dir(prediction_dir)
     ensure_dir(decision_dir)
+    from external_baselines.common.firebench_taxonomy import alias_sha256, taxonomy_sha256
+
     suite_summary: dict[str, Any] = {
         "execution_stage": execution_stage,
         "formal": formal,
@@ -268,6 +308,12 @@ def run_decision_suite(
         "methods": method_ids,
         "method_summaries": {},
         "coverage": {},
+        "taxonomy_contract": {
+            "taxonomy_version": "firebench-taxonomy-v1",
+            "taxonomy_sha256": taxonomy_sha256(),
+            "alias_sha256": alias_sha256(),
+            "all_methods_valid": True,
+        },
     }
 
     for method_id in method_ids:
@@ -369,6 +415,7 @@ def run_decision_suite(
             input_cases_sha256=input_cases_sha,
             prediction_schema_sha256=schema_sha,
             prediction_file=pred_path,
+            formal=formal,
         )
         summary["parsing_failure_count"] = parsing_failures
         summary["schema_failure_count"] = schema_failures
@@ -376,6 +423,8 @@ def run_decision_suite(
         write_json(decision_dir / method_id / "run_summary.json", summary)
         suite_summary["method_summaries"][method_id] = summary
         suite_summary["coverage"][method_id] = coverage
+        if not (summary.get("taxonomy_validation") or {}).get("valid", False):
+            suite_summary["taxonomy_contract"]["all_methods_valid"] = False
         if formal and (parsing_failures or schema_failures):
             raise SystemExit(
                 f"Formal run failed for {method_id}: "

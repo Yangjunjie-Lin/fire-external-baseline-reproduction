@@ -11,25 +11,10 @@ Do not invent evidence IDs. Cite only IDs present in PROVIDED KG EVIDENCE or STE
 Do not assume unstated field conditions. Do not claim you can execute real operations.
 Do not authorize real-world execution. If uncertain, use missing_confirmations and an appropriate gate.
 
-Return ONLY one JSON object with this exact top-level shape:
-{
-  "decision": {
-    "risk_signals": ["string"],
-    "risk_level": "none|low|medium|high|critical|unknown",
-    "recommended_actions": [
-      {"action_id": "snake_case_id", "text": "action text", "priority": "low|medium|high|critical|unknown", "evidence_refs": ["evidence_id"]}
-    ],
-    "blocked_actions": ["string"],
-    "missing_confirmations": ["string"],
-    "human_review_required": true,
-    "final_decision_gate": "allow_response|await_human_confirmation|block_response|unknown"
-  },
-  "response": {
-    "status": "provided|awaiting_human_confirmation|blocked|not_applicable|unknown",
-    "text": "natural language answer for the operator",
-    "citations": ["evidence_id"]
-  }
-}
+All structured decision IDs must come from the FireBench taxonomy instruction appended after this block.
+Do not put Chinese phrases or free-text sentences into ID fields.
+Natural language belongs only in recommended_actions[].text and response.text.
+Do not skip FOL/KG reasoning to guess taxonomy IDs; only emit IDs supported by the materials above.
 
 ORIGINAL REQUEST:
 {query}
