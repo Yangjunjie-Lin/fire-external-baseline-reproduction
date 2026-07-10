@@ -6,14 +6,19 @@ Does SAFE Fire Agent improve over external KG/RAG/GraphRAG/LLM baseline systems 
 
 ## B. Systems to compare
 
-| Label | System | Status |
+| Label | method_id | Status |
 |---|---|---|
-| B0 | Direct LLM | Implemented baseline |
-| B1 | Vanilla RAG | Implemented lexical RAG baseline |
-| B2 | E-KELL-style KG + LLM Prompt Chain | Implemented pipeline-level reimplementation, not official reproduction |
-| B3 | LightRAG actual indexing/query | Only claim when actual external package indexing and query integration are implemented |
-| B4 | Microsoft GraphRAG actual indexing/query | Only claim when actual external package workspace/index/query integration is implemented |
-| Ours | SAFE Fire Agent | Must be exported separately from `fire-agent-demo` as normalized JSONL |
+| B0 | `direct_llm` | Strong no-retrieval baseline |
+| B1 | `bm25_rag` | True BM25 lexical RAG |
+| B2 | `dense_rag` | Formal only with real embeddings |
+| B3 | `hybrid_rag` | Formal only with real dense + frozen RRF |
+| B4 | `ekell_style_faithful` | Level-3 paper-faithful; **not** official E-KELL |
+| B5 | `ekell_style_enhanced` | Separate enhanced row |
+| B6 | `lightrag` | Actual only if index+query; else fallback_only |
+| B7 | `microsoft_graphrag` | Actual only if index+query; else fallback_only |
+| Ours | SAFE Fire Agent | Exported via main project / shared evaluator |
+
+Tuning: DEV only; freeze under `configs/frozen/`. See `docs/baseline_tuning_protocol.md`.
 
 ## C. Fairness constraints
 

@@ -11,7 +11,8 @@ from external_baselines.ekell_style.entity_matcher import match_entities
 from external_baselines.ekell_style.kg_loader import load_kg
 from external_baselines.ekell_style.scenario_parser import deterministic_parse
 from external_baselines.ekell_style.subgraph_retriever import retrieve_subgraph
-from external_baselines.evaluation.normalizer import infer_structured_safety_fields
+from external_baselines.common.llm_client import llm_runtime_snapshot
+from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 
 
 METHOD = "fallback_graph_retrieval"
@@ -40,14 +41,17 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     output.method_specific = {
         "backend": "fallback_graph_retrieval",
         "reason": "Optional external GraphRAG dependency was unavailable or not configured.",
-        "structured_safety_fields": "inferred_from_text",
+        "reproduction_class": "fallback",
+        "method_status": "fallback_only",
+        "structured_safety_fields": "baseline_generated_only",
         "llm_config_summary": llm_config_summary(config, llm),
         "actual_external_package_used": False,
         "fallback_retrieval_used": True,
         "indexing_performed": False,
+        "query_performed": False,
         "external_repository": "not_applicable_fallback",
+        "runtime": llm_runtime_snapshot(llm),
+        "leaderboard_note": "Must never enter actual GraphRAG leaderboard rows.",
     }
     result = output.to_dict()
-    if config.get("normalization", {}).get("infer_structured_safety_fields", True):
-        result = infer_structured_safety_fields(result)
-    return result
+    return maybe_infer_structured_safety_fields(result, config)

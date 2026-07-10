@@ -3,13 +3,102 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
 class LLMClient(Protocol):
-    def complete(self, *, system: str, user: str, temperature: float = 0.0, max_tokens: int = 1200) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        top_p: float | None = None,
+        seed: int | None = None,
+    ) -> str:
         ...
+
+
+@dataclass
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+
+    def add(self, prompt: int = 0, completion: int = 0) -> None:
+        self.prompt_tokens += int(prompt)
+        self.completion_tokens += int(completion)
+        self.total_tokens = self.prompt_tokens + self.completion_tokens
+        self.llm_calls += 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "llm_calls": self.llm_calls,
+        }
+
+
+@dataclass
+class UsageTrackingLLMClient:
+    """Wrapper that records call counts and token usage when available."""
+
+    inner: Any
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    last_latency_ms: float = 0.0
+
+    @property
+    def provider(self) -> str:
+        return str(getattr(self.inner, "provider", "unknown"))
+
+    @property
+    def model(self) -> str:
+        return str(getattr(self.inner, "model", "unknown"))
+
+    @property
+    def heuristic_fallback(self) -> bool:
+        return bool(getattr(self.inner, "heuristic_fallback", False))
+
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        top_p: float | None = None,
+        seed: int | None = None,
+    ) -> str:
+        start = time.perf_counter()
+        kwargs: dict[str, Any] = {
+            "system": system,
+            "user": user,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        # Prefer richer signature when available.
+        try:
+            text = self.inner.complete(**kwargs, top_p=top_p, seed=seed)
+        except TypeError:
+            text = self.inner.complete(**kwargs)
+        self.last_latency_ms = round((time.perf_counter() - start) * 1000.0, 3)
+        usage = getattr(self.inner, "last_usage", None)
+        if isinstance(usage, dict):
+            self.usage.add(
+                prompt=int(usage.get("prompt_tokens") or 0),
+                completion=int(usage.get("completion_tokens") or 0),
+            )
+        else:
+            # Approximate token counts for heuristic/smoke only (not for paper cost claims).
+            approx_prompt = max(1, (len(system) + len(user)) // 4)
+            approx_completion = max(1, len(text or "") // 4)
+            self.usage.add(prompt=approx_prompt, completion=approx_completion)
+        return text
 
 
 @dataclass
@@ -25,8 +114,18 @@ class HeuristicLLMClient:
     model: str = "local-deterministic-heuristic-smoke-test"
     provider: str = "heuristic"
     heuristic_fallback: bool = True
+    last_usage: dict[str, int] = field(default_factory=dict)
 
-    def complete(self, *, system: str, user: str, temperature: float = 0.0, max_tokens: int = 1200) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        top_p: float | None = None,
+        seed: int | None = None,
+    ) -> str:
         text = f"{system}\n{user}".lower()
         risks: list[str] = []
         actions: list[str] = []
@@ -65,7 +164,6 @@ class HeuristicLLMClient:
             found = sorted(set(re.findall(r"(?:citation|source_id|chunk_id|context_id)[:=]\s*([A-Za-z0-9_:\-./]+)", user)))
             citations.extend(found[:8])
 
-        # Scenario parser schema.
         if "scenario parsing task" in user.lower() or "parser output schema" in user.lower():
             payload = {
                 "incident_type": "electrical_fire" if ("electrical" in text or "power" in text or "电" in text) else ("hazmat_fire" if "chemical" in text or "hazmat" in text or "化学" in text else "fire_emergency"),
@@ -77,11 +175,12 @@ class HeuristicLLMClient:
                 "emergency_stage": "initial_response",
                 "information_gaps": list(dict.fromkeys(missing)),
             }
-            return json.dumps(payload, ensure_ascii=False)
+            out = json.dumps(payload, ensure_ascii=False)
+            self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+            return out
 
-        # E-KELL prompt-chain stage schemas.
         if "stage 1" in user.lower() and "situation understanding" in user.lower():
-            return json.dumps({
+            out = json.dumps({
                 "emergency_type": "electrical_fire" if ("electrical" in text or "power" in text) else "fire_emergency",
                 "involved_entities": [x for x in ["electrical_fire" if "electrical" in text else "", "high_smoke" if "smoke" in text else "", "shopping_mall" if "mall" in text else ""] if x],
                 "hazards": risks,
@@ -89,18 +188,22 @@ class HeuristicLLMClient:
                 "missing_information": list(dict.fromkeys(missing)),
                 "evidence_used": citations,
             }, ensure_ascii=False)
+            self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+            return out
 
         if "stage 2" in user.lower() and "kg-grounded decision reasoning" in user.lower():
-            return json.dumps({
+            out = json.dumps({
                 "reasoning_summary": "Candidate actions are derived only from the scenario and retrieved KG/evidence supplied to this external baseline.",
                 "candidate_actions": actions,
                 "deferred_or_unsupported_actions": blocked,
                 "missing_information": list(dict.fromkeys(missing)),
                 "evidence_links": citations,
             }, ensure_ascii=False)
+            self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+            return out
 
         gate = "critical_information_missing_or_requires_human_confirmation" if missing or blocked else "baseline_response_without_explicit_gate"
-        return json.dumps({
+        out = json.dumps({
             "situation_summary": "External baseline response generated from the scenario text and retrieved context supplied to the method.",
             "key_risks": list(dict.fromkeys(risks)),
             "recommended_actions": list(dict.fromkeys(actions)),
@@ -110,6 +213,8 @@ class HeuristicLLMClient:
             "citations": citations,
             "final_decision_gate": gate,
         }, ensure_ascii=False)
+        self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+        return out
 
 
 @dataclass
@@ -119,8 +224,21 @@ class OpenAIChatClient:
     base_url_env: str = "OPENAI_BASE_URL"
     provider: str = "openai"
     heuristic_fallback: bool = False
+    timeout_sec: float = 60.0
+    max_retries: int = 2
+    model_version: str | None = None
+    last_usage: dict[str, int] = field(default_factory=dict)
 
-    def complete(self, *, system: str, user: str, temperature: float = 0.0, max_tokens: int = 1200) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        top_p: float | None = None,
+        seed: int | None = None,
+    ) -> str:
         try:
             from openai import OpenAI
         except Exception as exc:  # pragma: no cover - optional dependency
@@ -128,17 +246,30 @@ class OpenAIChatClient:
         api_key = os.getenv(self.api_key_env)
         if not api_key:
             raise RuntimeError(f"{self.api_key_env} is not set.")
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": self.timeout_sec, "max_retries": self.max_retries}
         base_url = os.getenv(self.base_url_env)
         if base_url:
             kwargs["base_url"] = base_url
         client = OpenAI(**kwargs)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        create_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if top_p is not None:
+            create_kwargs["top_p"] = top_p
+        if seed is not None:
+            create_kwargs["seed"] = seed
+        response = client.chat.completions.create(**create_kwargs)
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            }
+        else:
+            self.last_usage = {}
         return response.choices[0].message.content or ""
 
 
@@ -147,18 +278,36 @@ def _llm_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
     return dict(config.get("llm", config) if isinstance(config, dict) else {})
 
 
-def build_llm_client(config: dict[str, Any] | None = None) -> LLMClient:
+def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool = True) -> LLMClient:
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
     if provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
-        return OpenAIChatClient(
+        inner: Any = OpenAIChatClient(
             model=model,
             api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")),
             base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")),
             provider=provider,
+            timeout_sec=float(llm_cfg.get("timeout_sec", 60.0)),
+            max_retries=int(llm_cfg.get("max_retries", 2)),
+            model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or "") or None,
         )
-    return HeuristicLLMClient(model=model, provider=provider or "heuristic")
+    else:
+        inner = HeuristicLLMClient(model=model, provider=provider or "heuristic")
+    if track_usage:
+        return UsageTrackingLLMClient(inner=inner)
+    return inner
+
+
+def llm_runtime_snapshot(llm: Any | None = None) -> dict[str, Any]:
+    if isinstance(llm, UsageTrackingLLMClient):
+        return {
+            "llm_calls": llm.usage.llm_calls,
+            "token_usage": llm.usage.to_dict(),
+            "last_latency_ms": llm.last_latency_ms,
+            "cost": None,
+        }
+    return {"llm_calls": 0, "token_usage": {}, "last_latency_ms": 0.0, "cost": None}
 
 
 def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = None) -> dict[str, Any]:
@@ -168,7 +317,12 @@ def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = N
     return {
         "provider": provider,
         "model": model,
+        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version"),
         "temperature": float(llm_cfg.get("temperature", 0.0)),
+        "top_p": llm_cfg.get("top_p"),
         "max_tokens": int(llm_cfg.get("max_tokens", 1200)),
+        "seed": llm_cfg.get("seed"),
+        "timeout_sec": llm_cfg.get("timeout_sec"),
+        "max_retries": llm_cfg.get("max_retries"),
         "heuristic_fallback": bool(provider.lower() == "heuristic" or getattr(llm, "heuristic_fallback", False)),
     }

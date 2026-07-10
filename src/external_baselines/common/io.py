@@ -91,35 +91,124 @@ def load_config(*paths: str | Path) -> dict:
     return config
 
 
-def flatten_scenario(record: dict[str, Any]) -> dict[str, Any]:
-    """Convert flexible scenario-matrix records into baseline input records."""
-    sid = (
+GOLD_KEYS = {
+    "expected",
+    "ground_truth",
+    "labels",
+    "gold",
+    "annotation",
+    "annotations",
+    "annotation_notes",
+    "target_outputs",
+    "target_output",
+    "evaluator_hints",
+    "expert_scores",
+    "reference_answer",
+}
+
+
+def _scenario_id(record: dict[str, Any]) -> str:
+    return str(
         record.get("scenario_id")
+        or record.get("case_id")
         or record.get("id")
         or record.get("name")
-        or record.get("case_id")
         or "unknown_scenario"
     )
+
+
+def _scenario_text(record: dict[str, Any]) -> str:
     if record.get("scenario_text"):
-        text = str(record["scenario_text"])
-    elif record.get("input") and isinstance(record["input"], str):
-        text = record["input"]
-    elif record.get("description"):
-        text = str(record["description"])
-    else:
-        parts = []
-        for key in ["incident_type", "location", "hazards", "dynamic_state", "prompt", "task"]:
-            value = record.get(key)
-            if value is not None:
-                parts.append(f"{key}: {value}")
-        text = ". ".join(parts) or json.dumps(record, ensure_ascii=False)
+        return str(record["scenario_text"])
+    if record.get("input") and isinstance(record["input"], str):
+        return record["input"]
+    if record.get("description"):
+        return str(record["description"])
+    parts = []
+    for key in ["incident_type", "location", "hazards", "dynamic_state", "prompt", "task"]:
+        value = record.get(key)
+        if value is not None:
+            parts.append(f"{key}: {value}")
+    return ". ".join(parts) or json.dumps(
+        {k: v for k, v in record.items() if str(k).lower() not in GOLD_KEYS},
+        ensure_ascii=False,
+    )
+
+
+def flatten_scenario(record: dict[str, Any]) -> dict[str, Any]:
+    """Convert flexible scenario-matrix records into dataset records.
+
+    Gold/expected is retained only for offline evaluation loaders. Prediction
+    generation must call ``to_prediction_input`` so pipelines never see gold.
+    """
     expected = record.get("expected") or record.get("ground_truth") or record.get("labels") or {}
     return {
-        "scenario_id": str(sid),
-        "scenario_text": text,
+        "scenario_id": _scenario_id(record),
+        "case_id": _scenario_id(record),
+        "scenario_text": _scenario_text(record),
+        "language": record.get("language") or record.get("lang"),
+        "input_mode": record.get("input_mode") or record.get("mode"),
         "expected": expected if isinstance(expected, dict) else {"expected": expected},
         "source_record": record,
     }
+
+
+def to_prediction_input(scenario: dict[str, Any], *, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Strip gold/labels/annotations/target outputs before pipeline execution.
+
+    Allowed fields for prediction generation:
+    - case_id / scenario_id
+    - scenario text
+    - language
+    - input mode
+    - allowed dynamic snapshots (input-only)
+    - allowed corpus/config pointers (no gold)
+    """
+    config = config or {}
+    source = scenario.get("source_record") if isinstance(scenario.get("source_record"), dict) else scenario
+    case_id = str(scenario.get("case_id") or scenario.get("scenario_id") or _scenario_id(source))
+    text = str(scenario.get("scenario_text") or _scenario_text(source))
+
+    allowed_snapshots = None
+    for key in ("allowed_dynamic_snapshots", "dynamic_snapshots", "dynamic_state", "input_dynamic_state"):
+        if key in source and str(key).lower() not in GOLD_KEYS:
+            # Only pass dynamic state when it is an input observation, not a label.
+            if key == "dynamic_state" and isinstance(source.get(key), dict):
+                # Drop nested gold-like keys if present.
+                allowed_snapshots = {
+                    k: v for k, v in source[key].items() if str(k).lower() not in GOLD_KEYS
+                }
+            else:
+                allowed_snapshots = source.get(key)
+            break
+
+    paths = config.get("paths", {}) if isinstance(config.get("paths"), dict) else {}
+    return {
+        "case_id": case_id,
+        "scenario_id": case_id,
+        "scenario_text": text,
+        "language": scenario.get("language") or source.get("language") or source.get("lang"),
+        "input_mode": scenario.get("input_mode") or source.get("input_mode") or source.get("mode"),
+        "allowed_dynamic_snapshots": allowed_snapshots,
+        "allowed_corpus_dir": paths.get("corpus_dir"),
+        "allowed_config_keys": sorted(
+            k for k in ("retrieval", "llm", "paths", "ekell_style", "scenario_parser", "normalization", "dense_rag", "hybrid_rag")
+            if k in config
+        ),
+    }
+
+
+def assert_no_gold_in_prediction_input(prediction_input: dict[str, Any]) -> None:
+    """Raise if forbidden gold/target keys appear in a prediction input."""
+    blob = json.dumps(prediction_input, ensure_ascii=False, default=str).lower()
+    for key in GOLD_KEYS:
+        if f'"{key.lower()}"' in blob or f"'{key.lower()}'" in blob:
+            # Allow the word only inside scenario_text narrative, not as structured keys.
+            if key.lower() in {str(k).lower() for k in prediction_input.keys()}:
+                raise AssertionError(f"Gold/target key leaked into prediction input: {key}")
+            nested = prediction_input.get("allowed_dynamic_snapshots")
+            if isinstance(nested, dict) and key.lower() in {str(k).lower() for k in nested.keys()}:
+                raise AssertionError(f"Gold/target key leaked into allowed_dynamic_snapshots: {key}")
 
 
 def load_scenarios(path: str | Path, limit: int | None = None) -> list[dict[str, Any]]:
@@ -137,3 +226,9 @@ def load_scenarios(path: str | Path, limit: int | None = None) -> list[dict[str,
     if limit is not None and limit >= 0:
         scenarios = scenarios[:limit]
     return scenarios
+
+
+def load_expected_by_id(path: str | Path, limit: int | None = None) -> dict[str, Any]:
+    """Load gold/expected keyed by case id for evaluation only (never for generation)."""
+    scenarios = load_scenarios(path, limit=limit)
+    return {str(s["scenario_id"]): s.get("expected", {}) for s in scenarios}

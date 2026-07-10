@@ -1,0 +1,11 @@
+{
+  "evidence_path": "data\\corpus\\evidence_chunks.jsonl",
+  "evidence_sha256": "5881144faadec5a4e0b7220a4b11e3b6fc8b7ed9f3da17022731fb896c0a0f50",
+  "model_name": "smoke-hash-embedding",
+  "model_version": "v0-smoke",
+  "backend": "smoke_hash_embedding",
+  "dim": 64,
+  "doc_count": 2,
+  "index_checksum": "160087db9285d2f2ae4bb8fb3bac714ec9bc9e53e288c9429386b65dcfd1553b",
+  "real_embedding_model_used": false
+}

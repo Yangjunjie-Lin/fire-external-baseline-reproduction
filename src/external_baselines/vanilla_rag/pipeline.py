@@ -4,32 +4,37 @@ import time
 from pathlib import Path
 from typing import Any
 
-from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary
+from external_baselines.common.checksums import prompt_hash
+from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary, llm_runtime_snapshot
 from external_baselines.common.schema import normalize_response_payload, retrieved_context_to_dict
 from external_baselines.common.text_utils import extract_json_object
-from external_baselines.evaluation.normalizer import infer_structured_safety_fields
+from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 from external_baselines.vanilla_rag.retriever import LexicalRetriever
 
 
-METHOD = "vanilla_rag"
+METHOD = "bm25_rag"
+# Backward-compatible alias retained in runner as vanilla_rag → bm25_rag.
 
 
 def build_prompt(scenario_text: str, contexts: list[dict[str, Any]]) -> tuple[str, str]:
     system = (
-        "You are reproducing a vanilla text-RAG emergency decision-support baseline. "
+        "You are reproducing a vanilla BM25/lexical RAG emergency decision-support baseline. "
         "Use only the retrieved text contexts and the scenario. Do not use KG triples, SAFE modules, "
-        "safety checkers, or HITL gates. Return valid JSON."
+        "safety checkers, or HITL gates. Preserve evidence IDs in citations when used. Return valid JSON."
     )
-    ctx_text = "\n\n".join(
-        f"[context_id={c.get('context_id')} source_id={c.get('source_id')} citation={c.get('citation')} score={c.get('score')}]\n{c.get('text')}"
-        for c in contexts
-    )
+    if contexts:
+        ctx_text = "\n\n".join(
+            f"[context_id={c.get('context_id')} source_id={c.get('source_id')} citation={c.get('citation')} score={c.get('score')}]\n{c.get('text')}"
+            for c in contexts
+        )
+    else:
+        ctx_text = "(none — no lexical matches above threshold; state evidence insufficiency explicitly)"
     user = f"""
 Scenario:
 {scenario_text}
 
 Retrieved contexts:
-{ctx_text or '(none)'}
+{ctx_text}
 
 Return JSON with:
 - situation_summary
@@ -37,8 +42,8 @@ Return JSON with:
 - recommended_actions
 - blocked_or_unsafe_actions
 - missing_confirmations
-- supporting_evidence
-- citations
+- supporting_evidence (prefer context_id values)
+- citations (prefer context_id / source_id / citation values from retrieved contexts)
 - final_decision_gate
 """.strip()
     return system, user
@@ -49,9 +54,10 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     llm = llm or build_llm_client(config)
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     top_k = int(config.get("retrieval", {}).get("top_k", 5))
+    max_chunk_chars = int(config.get("retrieval", {}).get("max_chunk_chars", 1000))
     start = time.perf_counter()
 
-    retriever = LexicalRetriever.from_jsonl(str(corpus_dir / "evidence_chunks.jsonl"))
+    retriever = LexicalRetriever.from_jsonl(str(corpus_dir / "evidence_chunks.jsonl"), max_chunk_chars=max_chunk_chars)
     contexts = [retrieved_context_to_dict(c) for c in retriever.retrieve(scenario["scenario_text"], top_k=top_k)]
     system, user = build_prompt(scenario["scenario_text"], contexts)
     raw_text = llm.complete(
@@ -59,21 +65,35 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         user=user,
         temperature=float(config.get("llm", {}).get("temperature", 0.0)),
         max_tokens=int(config.get("llm", {}).get("max_tokens", 1200)),
+        top_p=config.get("llm", {}).get("top_p"),
+        seed=config.get("llm", {}).get("seed"),
     )
-    payload = extract_json_object(raw_text) or {"situation_summary": raw_text}
+    parsed = extract_json_object(raw_text)
+    payload = parsed or {"situation_summary": raw_text}
     output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
     output.retrieved_contexts = contexts
     output.latency_sec = round(time.perf_counter() - start, 4)
     output.raw_output = {"text": raw_text, "parsed": payload}
-    output.method_specific = {
-        "baseline_name": "Vanilla lexical RAG baseline",
+    result = output.to_dict()
+    result["method_specific"] = {
+        "baseline_name": "Vanilla lexical BM25 RAG baseline",
+        "reproduction_class": "baseline",
         "llm_config_summary": llm_config_summary(config, llm),
         "retrieval_used": True,
         "retrieval_backend": "deterministic_lexical_bm25",
         "kg_used": False,
-        "structured_safety_fields": "inferred_from_text",
+        "top_k": top_k,
+        "duplicate_suppression": True,
+        "multilingual_tokenization": True,
+        "no_result": len(contexts) == 0,
+        "prompt_hash": prompt_hash(system, user),
+        "runtime": llm_runtime_snapshot(llm),
+        "parsing_failure": not bool(parsed),
+        "parsing_status": "failed" if not parsed else "ok",
+        "structured_safety_fields": "baseline_generated_only",
+        "normalizer_policy_injection": False,
     }
-    result = output.to_dict()
-    if config.get("normalization", {}).get("infer_structured_safety_fields", True):
-        result = infer_structured_safety_fields(result)
-    return result
+    return maybe_infer_structured_safety_fields(result, config)
+
+
+# Keep module path vanilla_rag.pipeline.run_scenario for backward compatibility.

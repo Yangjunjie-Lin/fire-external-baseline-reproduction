@@ -52,29 +52,47 @@ Not allowed:
 
 ## What is reproduced
 
-- B0 Direct LLM baseline
-- B1 Vanilla lexical RAG baseline
-- B2 E-KELL-style KG + LLM prompt-chain baseline
-- B3 LightRAG / Microsoft GraphRAG adapter stubs with explicit fallback status
-- unified output schema
-- run manifest
-- corpus/data validation
-- lightweight proxy metrics
-- manual evaluation rubric template
-- side-by-side comparison script
+Minimum formal method set (strong, independent baselines):
+
+| ID | method_id | Class |
+|---|---|---|
+| B0 | `direct_llm` | baseline |
+| B1 | `bm25_rag` (`vanilla_rag` alias) | baseline |
+| B2 | `dense_rag` | enhanced / smoke until real embeddings |
+| B3 | `hybrid_rag` | enhanced / smoke until real dense |
+| B4 | `ekell_style_faithful` | faithful (not official E-KELL) |
+| B5 | `ekell_style_enhanced` | enhanced (separate paper row) |
+| B6 | `lightrag` | actual only if indexing+query; else fallback_only |
+| B7 | `microsoft_graphrag` | actual only if indexing+query; else fallback_only |
+
+Also: explicit `fallback_graph_retrieval` (never enters actual GraphRAG leaderboard).
+
+Additional package features:
+
+- `firebench-interop-v1` Runner Bundle integration
+- gold-isolated prediction generation
+- frozen DEV-selected configs under `configs/frozen/`
+- unified legacy schema + canonical interop predictions
+- run manifest / checksums
+- proxy diagnostics (not a substitute for the shared paper evaluator)
+- manual evaluation rubric templates
 
 E-KELL-style pipeline:
 
 ```text
 Scenario Input
-→ Scenario Understanding / Parsing
-→ KG Entity Matching
-→ KG Subgraph / Fact Retrieval
+→ Situation Understanding / Parsing
+→ Entity Matching
+→ KG Subgraph Retrieval
 → Evidence Context Construction
 → Prompt Chain Reasoning
-→ Final Emergency Decision Support Output
-→ Unified Output Normalization
+→ Final Response
+→ Output Normalization
 ```
+
+Label:
+
+> **E-KELL-style paper-faithful pipeline-level reimplementation, not official E-KELL reproduction.**
 
 ## What is not reproduced
 
@@ -129,6 +147,26 @@ python scripts/validate_data.py
 python scripts/audit_corpus.py --corpus data/corpus
 ```
 
+## firebench-interop-v1
+
+```bash
+python scripts/run_interop_baselines.py \
+  --bundle path/to/runner_bundle \
+  --methods direct_llm,bm25_rag,dense_rag,hybrid_rag,ekell_style_faithful \
+  --config configs/shared_real_model.yaml \
+  --output outputs/firebench_interop_v1_predictions.jsonl
+```
+
+See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md).
+
+Gold-isolated split workflow:
+
+```bash
+python scripts/generate_predictions.py --methods direct_llm,bm25_rag,ekell_style_faithful --config configs/deterministic_heuristic_smoke.yaml
+python scripts/evaluate_predictions.py --predictions outputs/predictions.jsonl   # proxy only
+python scripts/build_report.py --predictions outputs/predictions.jsonl
+```
+
 ## Heuristic smoke test warning
 
 The default config uses:
@@ -139,67 +177,30 @@ llm:
 ```
 
 This is only for smoke tests and reproducibility checks. It is **not** final experimental output.
+`paper_final: true` rejects heuristic providers.
 
-For final comparison, use a real LLM provider and record:
-
-- provider
-- model
-- temperature
-- max tokens
-- run date
-- dataset version / checksum
-
-Every output includes:
-
-```json
-"method_specific": {
-  "llm_config_summary": {
-    "provider": "...",
-    "model": "...",
-    "temperature": 0.0,
-    "heuristic_fallback": true
-  }
-}
-```
+For final comparison, use a real shared LLM config (`configs/shared_real_model.yaml.example`) and record provider, model, model_version, temperature, top_p, max tokens, seed, dataset/bundle checksums.
 
 ## Real LLM config examples
 
-OpenAI-compatible:
-
 ```bash
-cp configs/llm_openai_compatible.yaml.example configs/llm_local.yaml
-export OPENAI_API_KEY=...
-export OPENAI_BASE_URL=...   # optional for compatible endpoints
-python scripts/run_all_baselines.py \
-  --config configs/llm_local.yaml \
-  --methods direct_llm,vanilla_rag,ekell_style \
-  --dataset data/scenarios/scenario_matrix_v2.json \
-  --limit 3
+cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
+# set OPENAI_API_KEY / OPENAI_BASE_URL
+# DO NOT auto-run paid APIs from CI/agents
 ```
 
-DeepSeek / Qwen example configs are provided as:
-
-- `configs/llm_deepseek.yaml.example`
-- `configs/llm_qwen.yaml.example`
-
-They use OpenAI-compatible client wiring through environment variables.
+Also: `configs/paper_main_run.yaml.example`, `configs/paper_robustness_run.yaml.example`, `configs/frozen/*.yaml`.
 
 ## Run baselines
 
-Run one baseline:
-
 ```bash
 python scripts/run_baseline.py \
-  --method ekell_style \
+  --method ekell_style_faithful \
   --dataset data/scenarios/scenario_matrix_v2.json \
   --limit 10
-```
 
-Run all first-milestone baselines:
-
-```bash
 python scripts/run_all_baselines.py \
-  --methods direct_llm,vanilla_rag,ekell_style \
+  --methods direct_llm,bm25_rag,ekell_style_faithful \
   --dataset data/scenarios/scenario_matrix_v2.json \
   --limit 10
 ```
@@ -208,18 +209,22 @@ Expected outputs:
 
 ```text
 outputs/baseline_outputs.jsonl
+outputs/firebench_interop_v1_predictions.jsonl
 outputs/baseline_metrics.csv
 outputs/baseline_report.md
 outputs/run_manifest.json
 ```
 
-Export report from existing outputs:
+## Key docs
 
-```bash
-python scripts/export_report.py \
-  --input outputs/baseline_outputs.jsonl \
-  --output outputs/baseline_report.md
-```
+- [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md)
+- [`docs/baseline_tuning_protocol.md`](docs/baseline_tuning_protocol.md)
+- [`docs/baseline_method_cards.md`](docs/baseline_method_cards.md)
+- [`docs/resource_access_matrix.md`](docs/resource_access_matrix.md)
+- [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md)
+- [`docs/data_license_audit.md`](docs/data_license_audit.md)
+- [`docs/no_overclaim_policy.md`](docs/no_overclaim_policy.md)
+- [`docs/comparison_protocol.md`](docs/comparison_protocol.md)
 
 ## Evaluation
 

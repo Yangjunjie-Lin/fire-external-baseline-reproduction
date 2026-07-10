@@ -1,0 +1,31 @@
+{
+  "freeze_protocol_version": 1,
+  "created_at": "2026-07-10T00:00:00Z",
+  "policy": "All hyperparameter selection must use DEV/validation only. Test/private test must remain frozen.",
+  "selection_criteria": [
+    "Safety-Gated score",
+    "Critical Failure Rate",
+    "Risk F1",
+    "Action F1",
+    "blocked recall",
+    "evidence support",
+    "latency/cost"
+  ],
+  "forbidden": [
+    "tuning on test or private test",
+    "reading gold during prediction generation",
+    "injecting target-system Safety Checker / SAFE-Router / HITL logic",
+    "reporting enhanced as faithful",
+    "reporting fallback as actual GraphRAG"
+  ],
+  "frozen_configs": [
+    "configs/frozen/direct_llm_v1.yaml",
+    "configs/frozen/bm25_rag_v1.yaml",
+    "configs/frozen/dense_rag_v1.yaml",
+    "configs/frozen/hybrid_rag_v1.yaml",
+    "configs/frozen/ekell_style_faithful_v1.yaml",
+    "configs/frozen/ekell_style_enhanced_v1.yaml"
+  ],
+  "dev_results_dir": "outputs/tuning",
+  "note": "Populate outputs/tuning/* with actual dev search logs before paper_final runs."
+}

@@ -1,0 +1,72 @@
+{
+  "schema": "external_baselines.data_manifest.v1",
+  "review_status": "user_review_required",
+  "redistribution_policy": "Do not publish uncleared corpus/KG snapshots to the public baseline repo.",
+  "sources": [
+    {
+      "path": "data/corpus/evidence_chunks.jsonl",
+      "source_url": "unknown_pending_user_review",
+      "organization": "unknown_pending_user_review",
+      "license_or_terms": "unknown",
+      "redistribution_allowed": null,
+      "collected_at": null,
+      "language": ["en", "zh"],
+      "source_type": "evidence_chunk",
+      "review_status": "user_review_required",
+      "checksum": null
+    },
+    {
+      "path": "data/corpus/entities.jsonl",
+      "source_url": "unknown_pending_user_review",
+      "organization": "unknown_pending_user_review",
+      "license_or_terms": "unknown",
+      "redistribution_allowed": null,
+      "collected_at": null,
+      "language": ["en", "zh"],
+      "source_type": "kg_entity",
+      "review_status": "user_review_required",
+      "checksum": null
+    },
+    {
+      "path": "data/corpus/relations.jsonl",
+      "source_url": "unknown_pending_user_review",
+      "organization": "unknown_pending_user_review",
+      "license_or_terms": "unknown",
+      "redistribution_allowed": null,
+      "collected_at": null,
+      "language": ["en", "zh"],
+      "source_type": "kg_relation",
+      "review_status": "user_review_required",
+      "checksum": null
+    },
+    {
+      "path": "data/corpus/triples.jsonl",
+      "source_url": "unknown_pending_user_review",
+      "organization": "unknown_pending_user_review",
+      "license_or_terms": "unknown",
+      "redistribution_allowed": null,
+      "collected_at": null,
+      "language": ["en", "zh"],
+      "source_type": "kg_triple",
+      "review_status": "user_review_required",
+      "checksum": null
+    },
+    {
+      "path": "data/scenarios/scenario_matrix_v2.json",
+      "source_url": "unknown_pending_user_review",
+      "organization": "unknown_pending_user_review",
+      "license_or_terms": "unknown",
+      "redistribution_allowed": null,
+      "collected_at": null,
+      "language": ["en"],
+      "source_type": "scenario",
+      "review_status": "user_review_required",
+      "checksum": null
+    }
+  ],
+  "migration_recommendation": [
+    "Run scripts/prepare_data.py locally; keep full corpus out of public git until license cleared.",
+    "Fill license/terms per source; set redistribution_allowed true/false explicitly.",
+    "Record checksums after user review; do not delete existing sample data until audit approved."
+  ]
+}

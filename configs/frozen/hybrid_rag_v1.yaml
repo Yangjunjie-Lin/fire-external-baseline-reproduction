@@ -1,0 +1,34 @@
+# Frozen Hybrid RAG config (RRF). Weights selected on DEV only.
+method_id: hybrid_rag
+freeze_id: hybrid_rag_v1
+split_policy: tuned_on_dev_only_test_frozen
+retrieval:
+  top_k: 5
+hybrid_rag:
+  top_k: 5
+  rrf_k: 60
+  lexical_weight: 1.0
+  dense_weight: 1.0
+  candidate_pool: 20
+dense_rag:
+  backend: smoke_hash_embedding
+  model_name: smoke-hash-embedding
+  model_version: v0-smoke
+  dim: 64
+  reuse_index: true
+  index_path: outputs/dense_index_smoke.json
+llm:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1200
+  seed: 7
+normalization:
+  infer_structured_safety_fields: false
+tuning_search_space:
+  lexical_weight: [0.5, 1.0, 1.5]
+  dense_weight: [0.5, 1.0, 1.5]
+  rrf_k: [30, 60]
+  top_k: [3, 5, 8]
+selection_criterion: "dev: Safety-Gated + Critical Failure Rate + Risk/Action F1 + blocked recall; freeze after selection"
+formal_leaderboard_ready: false
+blocker: "Requires real dense embeddings for formal hybrid paper runs."

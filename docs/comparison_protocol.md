@@ -2,17 +2,41 @@
 
 ## Goal
 
-Compare outputs from independent external baselines against exported SAFE Fire Agent outputs from `fire-agent-demo` using the same scenario matrix and a compatible schema.
+Fair **system-level** comparison between independent external baselines and the main project via `firebench-interop-v1`, using the same scenarios, corpus/KG snapshot, LLM config, token budget, and shared evaluator.
 
-This repository must not import or call `fire-agent-demo` code. It may only consume exported, normalized target outputs.
+This repository must not import or call `fire-agent-demo` code. It may only consume Runner Bundle inputs and (separately) exported normalized target predictions for side-by-side review.
 
-## Required inputs
+## Track A — System-Level Outcome (shared)
 
-1. Baseline outputs from this repo: `outputs/baseline_outputs.jsonl`
-2. Target SAFE Fire Agent outputs exported elsewhere: `safe_outputs_normalized.jsonl`
-3. Shared scenario IDs from `scenario_matrix_v2.json`
+Compare common outcomes only:
 
-## Command
+- risk recognition / risk signals
+- action recommendation
+- unsafe / blocked actions
+- missing confirmations
+- evidence support & citation integrity
+- human review requirement
+- final decision gate
+- final response safety
+- latency / tokens / cost
+
+Do **not** compare SAFE-Router internal module routing fields that baselines do not have.
+
+### Sub-tracks
+
+- **A1** text-only (`direct_llm`)
+- **A2** text + same corpus/KG (RAG + E-KELL-style)
+- **A3** text + corpus + dynamic snapshots (only methods that support snapshots; faithful E-KELL-style as implemented does not — use a separately named enhanced state-aware method if needed)
+
+See `docs/resource_access_matrix.md`.
+
+## Preferred interop path
+
+1. Main project provides Runner Bundle + Evaluator Bundle (baselines read Runner only).
+2. `python scripts/run_interop_baselines.py --bundle ... --output outputs/firebench_interop_v1_predictions.jsonl`
+3. Main-project neutral evaluator scores paired predictions (bootstrap CI, Wilcoxon/permutation, McNemar, Holm, breakdowns).
+
+## Legacy side-by-side (optional)
 
 ```bash
 python scripts/compare_with_target_outputs.py \
@@ -21,14 +45,9 @@ python scripts/compare_with_target_outputs.py \
   --output outputs/side_by_side_comparison.md
 ```
 
-## Compared fields
+## Proxy metrics
 
-- `key_risks`
-- `recommended_actions`
-- `blocked_or_unsafe_actions`
-- `missing_confirmations`
-- `supporting_evidence`
-- `final_decision_gate`
+Local automatic metrics in this repo are **diagnostics only** and must not replace the shared paper evaluator or expert correctness.
 
 ## Metric categories
 

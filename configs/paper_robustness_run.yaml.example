@@ -1,0 +1,15 @@
+# Paper robustness-run example (temperature / seed sweeps on DEV protocols only).
+paper_final: true
+require_bundle_checksum: true
+llm:
+  provider: openai
+  model: REPLACE_WITH_SHARED_MODEL_NAME
+  model_version: REPLACE_WITH_MODEL_VERSION_OR_SNAPSHOT_ID
+  api_key_env: OPENAI_API_KEY
+  base_url_env: OPENAI_BASE_URL
+  temperature: 0.2
+  top_p: 0.95
+  max_tokens: 1200
+  seed: 42
+normalization:
+  infer_structured_safety_fields: false

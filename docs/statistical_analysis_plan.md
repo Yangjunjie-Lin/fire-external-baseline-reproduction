@@ -10,11 +10,24 @@ The preferred unit is scenario-level paired comparison: each scenario receives o
 
 ## Primary comparisons
 
-- SAFE Fire Agent vs Direct LLM
-- SAFE Fire Agent vs Vanilla RAG
-- SAFE Fire Agent vs E-KELL-style KG + LLM Prompt Chain
-- SAFE Fire Agent vs LightRAG only if actual indexing/query integration is implemented
-- SAFE Fire Agent vs Microsoft GraphRAG only if actual indexing/query integration is implemented
+Paired case-level predictions enable:
+
+- paired bootstrap CI
+- Wilcoxon / permutation tests
+- McNemar for safety binary outcomes
+- effect sizes
+- Holm correction
+- category / occupancy / language breakdowns
+
+Do not report only mean total scores.
+
+Primary pairs (when eligible):
+
+- Target system vs `direct_llm`
+- Target system vs `bm25_rag`
+- Target system vs `ekell_style_faithful` (and separately vs `ekell_style_enhanced`)
+- Target system vs `dense_rag` / `hybrid_rag` only with real embeddings
+- Target system vs actual LightRAG / Microsoft GraphRAG only when actual flags are true
 
 ## Metrics
 

@@ -48,9 +48,13 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         "fallback_retrieval_used": True,
         "indexing_performed": False,
         "query_performed": False,
+        "method_status": "fallback_only",
+        "reproduction_class": "fallback",
         "adapter_status": "actual_package_available_but_not_configured_used_fallback" if package_available else "lightrag_not_installed_used_fallback",
         "reproduction_status": "adapter_stub_not_official_reproduction",
         "requirements_for_real_reproduction": REQUIREMENTS_FOR_REAL_REPRODUCTION,
         "deviation_from_official_system": "No official LightRAG indexing/query pipeline is executed by this adapter yet.",
+        "package_version": None,
+        "index_checksum": None,
     })
     return result

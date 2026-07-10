@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "firebench-interop-v1-prediction.schema.json",
+  "title": "firebench-interop-v1 prediction record",
+  "type": "object",
+  "required": ["case_id", "method_id", "prediction", "runtime", "provenance", "method_metadata"],
+  "additionalProperties": true,
+  "properties": {
+    "case_id": { "type": "string", "minLength": 1 },
+    "method_id": { "type": "string", "minLength": 1 },
+    "prediction": {
+      "type": "object",
+      "required": [
+        "risk_signals",
+        "risk_level",
+        "recommended_actions",
+        "blocked_actions",
+        "missing_confirmations",
+        "evidence_refs",
+        "human_review_required",
+        "final_decision_gate",
+        "final_response"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "risk_signals": { "type": "array" },
+        "risk_level": { "type": ["string", "null"] },
+        "recommended_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action_id", "text"],
+            "properties": {
+              "action_id": { "type": "string" },
+              "text": { "type": "string" },
+              "priority": { "type": ["string", "null"] },
+              "evidence_refs": { "type": "array" }
+            }
+          }
+        },
+        "blocked_actions": { "type": "array" },
+        "missing_confirmations": { "type": "array" },
+        "evidence_refs": { "type": "array" },
+        "human_review_required": { "type": "boolean" },
+        "final_decision_gate": { "type": ["string", "null"] },
+        "final_response": {
+          "type": "object",
+          "required": ["status", "text", "citations", "real_world_execution_allowed"],
+          "properties": {
+            "status": { "type": "string" },
+            "text": { "type": "string" },
+            "citations": { "type": "array" },
+            "real_world_execution_allowed": { "type": "boolean" }
+          }
+        },
+        "parsing_status": { "type": "string" },
+        "raw_output": {}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["latency_ms", "llm_calls", "token_usage", "cost"],
+      "properties": {
+        "latency_ms": { "type": "number" },
+        "llm_calls": { "type": "integer" },
+        "token_usage": { "type": "object" },
+        "cost": { "type": ["number", "null"] }
+      }
+    },
+    "provenance": { "type": "object" },
+    "method_metadata": { "type": "object" }
+  }
+}

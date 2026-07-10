@@ -1,31 +1,36 @@
-# Top-tier Paper Readiness Audit
+# Top-tier Paper Readiness Audit (updated)
 
 Current label:
 
 > E-KELL-style paper-faithful pipeline-level reimplementation, not official reproduction.
 
-This audit evaluates whether the repository is structurally ready to support a top-conference / top-journal baseline comparison package. It does **not** claim final experimental readiness, final results, safety certification, or official E-KELL reproduction.
+This audit evaluates structural readiness for a fair, strong, independent baseline comparison. It does **not** claim completed paper results.
 
-Final paper-level validity still depends on real LLM runs, actual external GraphRAG integrations if claimed, expert/manual evaluation, larger scenario coverage, and statistical analysis.
+## Readiness gates
 
-## Readiness summary
+| Gate | Ready? | Evidence | Blocker |
+|---|---|---|---|
+| baseline_independence_ready | **true** | No `fire_agent_demo` imports; `tests/test_no_fire_agent_demo_import.py`; gold isolation | Keep CI green |
+| interop_ready | **true** | `scripts/run_interop_baselines.py`, `schemas/firebench_interop_v1_prediction.schema.json`, adapter | Need real Runner Bundle from main project for final run |
+| faithful_reproduction_ready | **partial → true for Level 3** | `ekell_style_faithful` traces + frozen config | Official E-KELL assets unavailable (do not claim Level 5) |
+| strong_baseline_ready | **true (architecture-allowed)** | BM25 strengthened; dense/hybrid interfaces; faithful/enhanced split; no safety injection | Real embeddings still required for formal dense/hybrid rows |
+| actual_graphrag_ready | **false** | Adapters set `fallback_only` | Real LightRAG/GraphRAG index+query not implemented |
+| real_llm_ready | **partial** | Client supports usage/tokens/guards; example configs | User must supply credentials + shared model version; agents must not auto-call paid APIs |
+| final_comparison_ready | **false** | Protocol + frozen configs + interop path exist | Need Runner Bundle, real LLM, shared evaluator, license clearance, expert scores |
+| paper_ready | **false** | Scaffold + fairness protocol ready | Experiments + stats + expert eval incomplete |
 
-| Category | Current status | Evidence in repo | Missing for top-tier paper | Recommended action |
-|---|---|---|---|---|
-| Baseline independence | ready | Independent package, no `fire_agent_demo` import required; docs define strict boundary | Periodic automated import scan would strengthen assurance | Run `grep -R "fire_agent_demo" src scripts tests` before release; document any exported-file-only use |
-| Reproduction fidelity | mostly ready | E-KELL-style KG + LLM prompt-chain pipeline; `docs/reproduction_fidelity_audit.md` | Official E-KELL code/data/prompts/results unavailable | Keep Level 3 label; do not claim Level 4/5 without official assets and expert protocol |
-| Data/version control | mostly ready | `prepare_data.py`, `validate_data.py`, corpus audit, data manifest checksums | Final data card, scenario card, corpus version hashes must be filled from real dataset | Complete `docs/data_card_template.md` and `docs/scenario_matrix_card_template.md` after data freeze |
-| Model/config reproducibility | mostly ready | LLM config examples, run manifest, heuristic warning, prompt templates | Real provider/model/version/date and output checksums must be recorded | Use model/run card for every real experiment |
-| Metric transparency | mostly ready | Proxy metrics and report generation; manual rubric | Proxy metrics need final validation and clear appendix caveats | Report automatic metrics as proxies; combine with manual/expert evaluation |
-| Manual evaluation readiness | mostly ready | Rubric and evaluation forms added | Qualified evaluators and completed score sheets not present | Conduct blind method-anonymized evaluation and record evaluator metadata |
-| Statistical analysis readiness | partially ready | Lightweight statistical scaffold added | Real manual scores and paired scenario-level outputs not present | Run `scripts/analyze_manual_scores.py` after score collection; add scipy/R analysis if needed |
-| External baseline strength | partially ready | Direct LLM, Vanilla RAG, E-KELL-style; GraphRAG adapters transparent | Actual LightRAG/Microsoft GraphRAG indexing/query not implemented | Only claim B3/B4 if actual package/index/query pipeline is implemented and documented |
-| Artifact packaging | mostly ready | Release checklist and packaging instructions added | Final release artifacts, checksums, frozen outputs not present | Tag release only after real experiments and artifact QA |
-| Paper-appendix readiness | mostly ready | Appendix checklist, cards, run manifests, prompt docs | Filled tables and final metrics absent | Fill appendix templates after final runs |
+## Method strength upgrades (non-strawman)
 
-## Overall assessment
+- Direct LLM: structured JSON prompt, parsing status, raw preserved, no target policy injection
+- BM25: true BM25, multilingual tokenize, dedupe, no-result handling, evidence IDs
+- Dense/Hybrid: real interfaces + RRF; smoke fixture explicitly non-formal
+- E-KELL faithful vs enhanced: separate method_ids; enhanced features not smuggled into faithful
+- GraphRAG: fallback explicitly excluded from actual leaderboard
 
-After these upgrades, the repository is **structurally ready / near-ready** as a rigorous external baseline package scaffold for top-tier paper use.
+## Still required from user
 
-It is **not** a completed top-tier experimental result package. The user must still run real LLM experiments, actual GraphRAG integrations if claimed, SAFE Fire Agent export, expert/manual evaluation, statistical analysis, and a larger/frozen scenario matrix.
-
+1. Data license review / redistribution decisions
+2. Real shared LLM API runs (not heuristic)
+3. Main-project Runner Bundle + shared evaluator
+4. Expert / manual scoring
+5. Optional: real embedding model; actual LightRAG/GraphRAG if claimed

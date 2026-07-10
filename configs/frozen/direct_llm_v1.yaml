@@ -1,0 +1,13 @@
+# Frozen Direct LLM config (dev-selected; do not retune on test).
+# Selection criterion: Safety-Gated proxy + Critical Failure Rate + Risk/Action F1 + latency on DEV only.
+# Selected: 2026-07-10 | freeze_id: direct_llm_v1
+method_id: direct_llm
+freeze_id: direct_llm_v1
+split_policy: tuned_on_dev_only_test_frozen
+llm:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1200
+  seed: 7
+normalization:
+  infer_structured_safety_fields: false

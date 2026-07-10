@@ -25,10 +25,11 @@ def combined_output_text(output: dict[str, Any]) -> str:
 
 
 def infer_structured_safety_fields(output: dict[str, Any]) -> dict[str, Any]:
-    """Infer compatibility safety fields from text.
+    """Legacy compatibility normalizer that may append inferred safety text.
 
-    This is intentionally a normalizer, not a Safety Checker. It only makes
-    external-baseline text comparable with the target output schema.
+    WARNING: This invents blocked/missing/gate content that the baseline did not
+    explicitly generate. It must remain OFF for paper/interop runs. Prefer
+    ``maybe_infer_structured_safety_fields`` which defaults to no injection.
     """
     text = normalize_text(combined_output_text(output))
     blocked = list(as_list(output.get("blocked_or_unsafe_actions")))
@@ -50,6 +51,24 @@ def infer_structured_safety_fields(output: dict[str, Any]) -> dict[str, Any]:
     output["missing_confirmations"] = [str(x) for x in missing]
     output["final_decision_gate"] = str(gate)
     ms = dict(output.get("method_specific") or {})
-    ms.setdefault("structured_safety_fields", "inferred_from_text")
+    ms["structured_safety_fields"] = "inferred_from_text"
+    ms["normalizer_policy_injection"] = True
     output["method_specific"] = ms
     return output
+
+
+def maybe_infer_structured_safety_fields(output: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Apply safety-field inference only when explicitly enabled.
+
+    Default is OFF so interop/paper runs never invent missing safety content.
+    """
+    config = config or {}
+    enabled = bool(config.get("normalization", {}).get("infer_structured_safety_fields", False))
+    if not enabled:
+        out = dict(output)
+        ms = dict(out.get("method_specific") or {})
+        ms.setdefault("structured_safety_fields", "baseline_generated_only")
+        ms["normalizer_policy_injection"] = False
+        out["method_specific"] = ms
+        return out
+    return infer_structured_safety_fields(output)

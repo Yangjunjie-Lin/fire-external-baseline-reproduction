@@ -1,0 +1,19 @@
+# Example shared real-model config for fair comparison with the main project.
+# Copy to shared_real_model.yaml (gitignored) and fill secrets via env vars.
+# Do NOT commit API keys.
+paper_final: false
+require_bundle_checksum: true
+llm:
+  provider: openai  # or deepseek / qwen / openai-compatible
+  model: REPLACE_WITH_SHARED_MODEL_NAME
+  model_version: REPLACE_WITH_MODEL_VERSION_OR_SNAPSHOT_ID
+  api_key_env: OPENAI_API_KEY
+  base_url_env: OPENAI_BASE_URL
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1200
+  seed: 7
+  timeout_sec: 60
+  max_retries: 2
+normalization:
+  infer_structured_safety_fields: false
