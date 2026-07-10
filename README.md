@@ -42,20 +42,44 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 
 ## 4. Formal interop workflow
 
-**Only formal entrypoint:**
+**Only formal entrypoint.** `.example` files are templates only — copy before running.
 
 ```bash
 pip install -e .
 pip install -r requirements.txt
 
+# Controlled main table
 cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
-# set shared model config; do not auto-call paid APIs from CI/agents
+cp configs/models/shared_real_model.yaml.example configs/models/shared_real_model.yaml
+# Fill all placeholders (model, ekell_vector, bundle path, etc.)
+
+python scripts/validate_formal_config.py \
+  --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/runner_bundle \
   --output outputs/interop/predictions.jsonl \
   --manifest outputs/interop/run_manifest.json
+```
+
+Paper-fidelity track (separate experiment):
+
+```bash
+cp configs/experiments/ekell_paper_fidelity_v1.yaml.example configs/experiments/ekell_paper_fidelity_v1.yaml
+cp configs/models/chatglm6b_local.yaml.example configs/models/chatglm6b_local.yaml
+cp configs/ekell_paper_fidelity_chatglm6b.yaml.example configs/ekell_paper_fidelity_chatglm6b.yaml
+
+python scripts/validate_formal_config.py \
+  --config configs/experiments/ekell_paper_fidelity_v1.yaml
+```
+
+Template structure check (not a formal run):
+
+```bash
+python scripts/validate_formal_config.py \
+  --config configs/experiments/controlled_main_table_v1.yaml.example \
+  --allow-placeholders
 ```
 
 | Contract | Value |

@@ -1,76 +1,69 @@
 # Final Experiment Commands
 
 > **Do not auto-run paid APIs.** Commands are for the user after license review + credentials.
+>
+> `.example` files are templates only. Copy to non-`.example` paths before formal runs.
+> `python scripts/validate_formal_config.py --allow-placeholders` checks template structure only.
 
 ## A. Controlled comparison (main table; shared SiliconFlow)
 
 ```bash
 cp .env.example .env
 # edit .env → set SILICONFLOW_API_KEY=...
-cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
-cp configs/experiments/paper_main_table_v1.yaml.example configs/experiments/paper_main_table_v1.yaml
-# edit paper_main_table_v1.yaml → set bundle: <formal Runner Bundle path>
-# set expected_bundle_checksum when paper_final=true
+
+cp configs/models/shared_real_model.yaml.example configs/models/shared_real_model.yaml
+cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
+# edit controlled_main_table_v1.yaml → set bundle: <formal Runner Bundle path>
+# replace all ekell_vector / model placeholders
+
+python scripts/validate_formal_config.py \
+  --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
-  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/formal_runner_bundle \
-  --expected-bundle-checksum <bundle_checksum> \
-  --output outputs/firebench_interop_v1_predictions.jsonl
+  --output outputs/interop/controlled_main_table_v1/predictions.jsonl
 ```
 
 Main-table methods: `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`.
 
-Merge order per method: `base_config` → `shared_model_config` → method `config`.
-
 ## B. Paper fidelity (ChatGLM-6B; separate experiment)
 
 ```bash
-cp configs/experiments/ekell_paper_fidelity.yaml.example configs/experiments/ekell_paper_fidelity.yaml
+cp configs/experiments/ekell_paper_fidelity_v1.yaml.example configs/experiments/ekell_paper_fidelity_v1.yaml
 cp configs/models/chatglm6b_local.yaml.example configs/models/chatglm6b_local.yaml
-# Configure local ChatGLM-6B paths/hardware on the user server.
-# paper_fidelity_model_run remains false until a real run completes.
+cp configs/ekell_paper_fidelity_chatglm6b.yaml.example configs/ekell_paper_fidelity_chatglm6b.yaml
+# Configure local ChatGLM-6B + text2vec; paper_fidelity_model_run remains false until evidenced.
 
-python scripts/generate_predictions.py \
-  --methods ekell_style_paper_fidelity \
-  --config configs/ekell_paper_fidelity_chatglm6b.yaml \
-  --limit <N> \
-  --output outputs/ekell_paper_fidelity_predictions.jsonl
+python scripts/validate_formal_config.py \
+  --config configs/experiments/ekell_paper_fidelity_v1.yaml
 ```
 
 Do not merge paper-fidelity outputs with controlled FireBench rows as one result.
+
+## Template validation (structure only)
+
+```bash
+python scripts/validate_formal_config.py \
+  --config configs/experiments/controlled_main_table_v1.yaml.example \
+  --allow-placeholders
+```
 
 ## Supplemental (optional; never replaces controlled/fidelity)
 
 ```bash
 python scripts/run_interop_baselines.py \
-  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --experiment-manifest configs/experiments/supplemental_v1.yaml \
   --bundle path/to/formal_runner_bundle \
   --include-supplemental \
-  --output outputs/firebench_interop_v1_predictions_supplemental.jsonl
+  --output outputs/interop/supplemental_v1/predictions.jsonl
 ```
 
-## Post-bundle verification checklist (await formal bundle)
-
-1. schema hash verification  
-2. scenario hash verification  
-3. corpus hash verification  
-4. input-only / gold isolation  
-5. baseline predictions JSONL  
-6. neutral evaluator compatibility  
-
-Until then: `cross_repository_interop_verified=false`.
-
-## Smoke only (free / heuristic)
+## Local validation evidence
 
 ```bash
-python scripts/generate_predictions.py \
-  --methods direct_llm,bm25_rag,ekell_style_controlled_shared_llm \
-  --config configs/deterministic_heuristic_smoke.yaml \
-  --limit 1 \
-  --output outputs/smoke_predictions.jsonl
+python scripts/collect_validation_evidence.py
+# writes outputs/diagnostics/validation_evidence.json
 ```
 
-## Deprecated
-
-Multiple `--config` overlays on `run_interop_baselines.py` are **rejected**. Use the experiment manifest.
+Contract tool ready ≠ contract verified. See `docs/status/readiness_summary.md`.

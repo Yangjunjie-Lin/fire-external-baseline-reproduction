@@ -10,7 +10,7 @@ paper_fidelity_model_run: false
 bundle: path/to/runner_bundle
 
 base_config: configs/default.yaml
-shared_model_config: configs/models/chatglm6b_local.yaml.example
+shared_model_config: configs/models/chatglm6b_local.yaml
 
 require_bundle_checksum: true
 require_external_schema: true
@@ -27,7 +27,7 @@ paper_fidelity_methods:
 methods:
   - method_id: ekell_style_paper_fidelity
     paper_table_role: paper_fidelity
-    config: configs/ekell_paper_fidelity_chatglm6b.yaml.example
+    config: configs/ekell_paper_fidelity_chatglm6b.yaml
     enabled: true
 
 output: outputs/interop/ekell_paper_fidelity_v1/predictions.jsonl

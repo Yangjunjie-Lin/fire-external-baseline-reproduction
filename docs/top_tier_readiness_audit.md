@@ -41,4 +41,4 @@ Legacy aliases still used in older docs:
 
 ## Formal command (do not auto-run paid API)
 
-See `docs/final_experiment_commands.md` and `configs/experiments/paper_main_table_v1.yaml.example`.
+See `docs/final_experiment_commands.md` and `configs/experiments/controlled_main_table_v1.yaml.example`.

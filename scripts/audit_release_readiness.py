@@ -57,6 +57,7 @@ def build_gates() -> dict[str, Any]:
         "checksum_policy_enabled": True,
         "interop_contract_tests_present": _exists("tests/interop/test_main_project_contract.py"),
         "cross_repo_contract_verified": cross_verified,
+        "cross_repository_contract_tool_ready": _exists("scripts/verify_cross_repo_contract.py"),
         "environment_lock_present": _exists("constraints.txt") or _exists("requirements.lock"),
         "artifact_packager_present": _exists("scripts/package_reproducibility_artifact.py"),
         "data_card_templates_present": _exists("docs/cards/data_card_template.md"),

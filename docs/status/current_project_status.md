@@ -24,9 +24,11 @@ It is **not** an official E-KELL reproduction and is **not** empirically validat
 | Supplemental dense/hybrid/enhanced | implemented; smoke dense ≠ formal |
 | Runner Bundle input (`input_cases.jsonl`) | implemented |
 | Canonical firebench-interop-v1 JSONL output | implemented |
+| Formal config validator (template + formal modes) | implemented |
+| Paper-fidelity formal validation (same LLM/vector guards as controlled) | implemented |
 | Gold isolation / schema / checksum validation | implemented |
 
-## Not empirically completed
+Formal runs must use copied configs (not `.example`). Template validation (`--allow-placeholders`) does not authorize a paper run.
 
 - Shared real SiliconFlow LLM runs
 - ChatGLM-6B paper-fidelity run

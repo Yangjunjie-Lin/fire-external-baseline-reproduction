@@ -1,6 +1,10 @@
 """Validate formal experiment and method configs before paper-facing runs.
 
 LOCAL GUARD — rejects heuristic LLM, smoke embeddings, placeholders, and legacy IDs.
+
+Two modes:
+- Template validation: allow_placeholders=True (permits .example paths and placeholder values)
+- Formal validation: default (rejects .example paths, placeholders, missing config files)
 """
 
 from __future__ import annotations
@@ -19,16 +23,42 @@ from external_baselines.method_registry import (
     paper_fidelity_methods,
 )
 
-PLACEHOLDER_TOKENS = frozenset(
+PLACEHOLDER_EXACT = frozenset(
     {
         "REQUIRED_BEFORE_FORMAL_RUN",
         "TBD",
         "TODO",
-        "path/to/",
-        "<required>",
         "CHANGEME",
+        "REPLACE",
+        "EXAMPLE",
+        "<REQUIRED>",
     }
 )
+
+PLACEHOLDER_PREFIXES = (
+    "REPLACE",
+    "REPLACE_WITH_",
+    "REQUIRED_",
+    "TODO",
+    "TBD",
+    "CHANGEME",
+)
+
+PLACEHOLDER_SUBSTRINGS = (
+    "path/to/",
+    "<required>",
+    "<model-hash>",
+    "<corpus-hash>",
+)
+
+FORMAL_EKELL_METHODS = frozenset(
+    {
+        "ekell_style_controlled_shared_llm",
+        "ekell_style_paper_fidelity",
+    }
+)
+
+FORMAL_METHOD_IDS = frozenset(main_table_methods()) | frozenset(paper_fidelity_methods())
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", ""})
 SMOKE_EMBEDDING_BACKENDS = frozenset(
@@ -47,9 +77,23 @@ SECRET_PATTERNS = (
     re.compile(r"api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9]{16,}", re.I),
 )
 
+ROOT_REL = Path(__file__).resolve().parents[3]
+
 
 class FormalConfigError(ValueError):
     """Raised when a formal config violates paper-facing safety rules."""
+
+
+def _is_example_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    return name.endswith(".example") or path.lower().endswith(".example")
+
+
+def _resolve_repo_path(rel: str) -> Path:
+    candidate = Path(rel)
+    if candidate.is_file():
+        return candidate
+    return ROOT_REL / rel
 
 
 def _is_placeholder(value: Any) -> bool:
@@ -59,9 +103,30 @@ def _is_placeholder(value: Any) -> bool:
     if not text:
         return True
     upper = text.upper()
-    if upper in PLACEHOLDER_TOKENS:
+    if upper in PLACEHOLDER_EXACT:
         return True
-    return any(token in text for token in PLACEHOLDER_TOKENS)
+    if any(upper.startswith(prefix) for prefix in PLACEHOLDER_PREFIXES):
+        return True
+    lower = text.lower()
+    if any(token in lower for token in PLACEHOLDER_SUBSTRINGS):
+        return True
+    return False
+
+
+def _validate_positive_dimension(value: Any, *, allow_placeholders: bool = False) -> int:
+    if allow_placeholders and _is_placeholder(value):
+        return 0
+    if _is_placeholder(value):
+        raise FormalConfigError(f"ekell_vector.dimension must be a positive integer (got placeholder {value!r}).")
+    try:
+        dim = int(value)
+    except (TypeError, ValueError) as exc:
+        raise FormalConfigError(
+            f"ekell_vector.dimension must be a positive integer (got {value!r})."
+        ) from exc
+    if dim <= 0:
+        raise FormalConfigError(f"ekell_vector.dimension must be > 0 (got {dim}).")
+    return dim
 
 
 def _walk_strings(obj: Any, path: str = "") -> list[tuple[str, str]]:
@@ -114,10 +179,53 @@ def validate_ekell_vector_for_formal(
         raise FormalConfigError(f"Formal E-KELL rejects smoke/hash backend: {backend!r}")
     if not bool(vector.get("reject_smoke", False)):
         raise FormalConfigError("Formal E-KELL requires ekell_vector.reject_smoke=true.")
-    for field in ("model_name", "model_version", "dimension"):
+    for field in ("model_name", "model_version"):
         value = vector.get(field)
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal E-KELL requires ekell_vector.{field} (non-placeholder).")
+    _validate_positive_dimension(vector.get("dimension"), allow_placeholders=allow_placeholders)
+    index_path = vector.get("index_path")
+    if index_path and not allow_placeholders and _is_placeholder(index_path):
+        raise FormalConfigError("Formal E-KELL rejects placeholder ekell_vector.index_path.")
+
+
+def validate_paper_fidelity_method_config(
+    config: dict[str, Any], *, allow_placeholders: bool = False
+) -> None:
+    track = str(config.get("track") or "").lower()
+    if track and track not in {"paper_fidelity", "b_paper_fidelity"}:
+        raise FormalConfigError(f"paper-fidelity method requires track=paper_fidelity (got {track!r}).")
+    if config.get("paper_original_output_format") is not True:
+        raise FormalConfigError("paper-fidelity requires paper_original_output_format=true.")
+    if config.get("controlled_output_format") is not False:
+        raise FormalConfigError("paper-fidelity requires controlled_output_format=false.")
+    if config.get("official_reproduction") is not False:
+        raise FormalConfigError("paper-fidelity requires official_reproduction=false.")
+    if bool(config.get("paper_fidelity_model_run")):
+        validate_llm_for_formal(config, allow_placeholders=False)
+        validate_ekell_vector_for_formal(config, allow_placeholders=False)
+        evidence = str(config.get("paper_fidelity_run_evidence") or "").strip()
+        if not evidence or _is_placeholder(evidence):
+            raise FormalConfigError(
+                "paper_fidelity_model_run=true requires non-placeholder paper_fidelity_run_evidence path."
+            )
+
+
+def _assert_config_path(
+    path_str: str,
+    *,
+    label: str,
+    allow_placeholders: bool,
+    errors: list[str],
+) -> None:
+    if not path_str:
+        errors.append(f"{label} is required.")
+        return
+    if _is_example_path(path_str) and not allow_placeholders:
+        errors.append(f"{label} must not use .example path for formal runs: {path_str}")
+        return
+    if not allow_placeholders and not _resolve_repo_path(path_str).is_file():
+        errors.append(f"{label} file not found: {path_str}")
 
 
 def validate_method_config(
@@ -133,17 +241,23 @@ def validate_method_config(
     if mid in legacy_methods():
         raise FormalConfigError(f"Legacy method {mid!r} cannot be used in formal configs.")
     if mid in fallback_methods():
-        raise FormalConfigError(f"Fallback method {mid!r} cannot enter formal main table.")
+        raise FormalConfigError(f"Fallback method {mid!r} cannot enter formal tables.")
 
     if str(config.get("method_id") or "") != mid and config.get("method_id"):
-        if str(config.get("method_id")) != mid:
-            warnings.append(f"method_id canonicalized {config.get('method_id')!r} → {mid!r}")
+        warnings.append(f"method_id canonicalized {config.get('method_id')!r} → {mid!r}")
 
     paper_final = bool(config.get("paper_final", False))
     if require_formal or paper_final:
-        validate_llm_for_formal(config, allow_placeholders=allow_placeholders)
-        if mid == "ekell_style_controlled_shared_llm":
+        if "llm" in config and _llm_block(config):
+            validate_llm_for_formal(config, allow_placeholders=allow_placeholders)
+        elif mid in FORMAL_METHOD_IDS and not allow_placeholders:
+            raise FormalConfigError(
+                f"Formal method {mid!r} requires llm block in merged config (from shared_model_config)."
+            )
+        if mid in FORMAL_EKELL_METHODS:
             validate_ekell_vector_for_formal(config, allow_placeholders=allow_placeholders)
+        if mid == "ekell_style_paper_fidelity":
+            validate_paper_fidelity_method_config(config, allow_placeholders=allow_placeholders)
         enhanced = config.get("ekell_style") or {}
         if mid == "ekell_style_controlled_shared_llm":
             for flag in (
@@ -162,6 +276,19 @@ def validate_method_config(
     return warnings
 
 
+def _apply_template_fallback_path(path_str: str, *, allow_placeholders: bool) -> str:
+    if not allow_placeholders or not path_str:
+        return path_str
+    if _resolve_repo_path(path_str).is_file():
+        return path_str
+    if _is_example_path(path_str):
+        return path_str
+    alt = f"{path_str}.example"
+    if _resolve_repo_path(alt).is_file():
+        return alt
+    return path_str
+
+
 def validate_experiment_manifest(
     path: str | Path,
     *,
@@ -173,7 +300,20 @@ def validate_experiment_manifest(
     if not isinstance(raw, dict):
         raise FormalConfigError(f"Experiment manifest must be a mapping: {path}")
 
+    manifest_for_merge = dict(manifest)
+    if allow_placeholders:
+        manifest_for_merge["shared_model_config"] = _apply_template_fallback_path(
+            str(manifest.get("shared_model_config") or ""),
+            allow_placeholders=True,
+        )
+
     errors: list[str] = []
+    if not allow_placeholders and _is_example_path(str(path)):
+        errors.append(
+            "Formal validation rejects .example manifest paths; "
+            "copy to a non-.example file before formal runs."
+        )
+
     run_mode = str(raw.get("run_mode", "formal")).lower()
     if run_mode != "formal":
         errors.append(f"run_mode must be 'formal' for paper-facing manifest (got {run_mode!r})")
@@ -202,10 +342,30 @@ def validate_experiment_manifest(
         errors.append("shared_model_config is required.")
     elif "smoke" in shared.lower() or "heuristic" in shared.lower():
         errors.append("shared_model_config must not reference smoke/heuristic configs.")
+    else:
+        _assert_config_path(
+            shared,
+            label="shared_model_config",
+            allow_placeholders=allow_placeholders,
+            errors=errors,
+        )
 
     methods = raw.get("methods") or []
     if not isinstance(methods, list) or not methods:
         errors.append("methods list is required and non-empty.")
+
+    expected_main = list(main_table_methods())
+    pf_expected = list(paper_fidelity_methods())
+
+    declared_main = [canonicalize_method_id(str(m)) for m in (raw.get("main_table_methods") or [])]
+    declared_pf = [canonicalize_method_id(str(m)) for m in (raw.get("paper_fidelity_methods") or [])]
+    declared_supp = [canonicalize_method_id(str(m)) for m in (raw.get("supplemental_methods") or [])]
+
+    for mid in declared_pf:
+        if mid in declared_main:
+            errors.append(f"paper-fidelity method {mid!r} must not appear in main_table_methods.")
+        if mid in declared_supp:
+            errors.append(f"paper-fidelity method {mid!r} must not appear in supplemental_methods.")
 
     seen_ids: set[str] = set()
     for entry in methods:
@@ -220,35 +380,52 @@ def validate_experiment_manifest(
         seen_ids.add(mid)
         if str(entry.get("method_id") or "") == "ekell_style_faithful":
             errors.append("Manifest must use canonical ekell_style_controlled_shared_llm, not faithful.")
-        if bool(entry.get("enabled", True)) and mid in main_table_methods():
-            if not (entry.get("config") or entry.get("method_config")):
-                errors.append(f"Main-table method {mid} missing config path.")
-            else:
-                merged = build_method_config(manifest, entry)
-                merged["paper_final"] = True
-                try:
-                    validate_method_config(
-                        merged,
-                        method_id=mid,
-                        allow_placeholders=allow_placeholders,
-                        require_formal=True,
-                    )
-                except FormalConfigError as exc:
-                    errors.append(f"{mid} merged config: {exc}")
+        if mid in pf_expected and mid in declared_main:
+            errors.append(f"paper-fidelity method {mid!r} listed in main_table_methods.")
+        if mid in pf_expected and mid in declared_supp:
+            errors.append(f"paper-fidelity method {mid!r} listed in supplemental_methods.")
 
-    declared_main = [canonicalize_method_id(str(m)) for m in (raw.get("main_table_methods") or [])]
-    expected_main = list(main_table_methods())
+        if bool(entry.get("enabled", True)) and mid in FORMAL_METHOD_IDS:
+            cfg_path = str(entry.get("config") or entry.get("method_config") or "")
+            if not cfg_path:
+                errors.append(f"Formal method {mid} missing config path.")
+            else:
+                _assert_config_path(
+                    cfg_path,
+                    label=f"{mid} config",
+                    allow_placeholders=allow_placeholders,
+                    errors=errors,
+                )
+            try:
+                entry_for_merge = dict(entry)
+                entry_for_merge["config"] = _apply_template_fallback_path(
+                    cfg_path, allow_placeholders=allow_placeholders
+                )
+                merged = build_method_config(manifest_for_merge, entry_for_merge)
+                merged["paper_final"] = True
+                validate_method_config(
+                    merged,
+                    method_id=mid,
+                    allow_placeholders=allow_placeholders,
+                    require_formal=True,
+                )
+            except FormalConfigError as exc:
+                errors.append(f"{mid} merged config: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{mid} config merge failed: {exc}")
+
     enabled_main = [
         canonicalize_method_id(str(e.get("method_id")))
         for e in methods
         if isinstance(e, dict) and e.get("enabled", True)
         and canonicalize_method_id(str(e.get("method_id") or "")) in expected_main
     ]
-    if enabled_main and declared_main != expected_main:
-        errors.append(f"main_table_methods must be exactly {expected_main} (got {declared_main})")
+    if enabled_main and sorted(declared_main) != sorted(enabled_main):
+        errors.append(
+            f"main_table_methods must list enabled main-table methods {sorted(enabled_main)} "
+            f"(got {declared_main})"
+        )
 
-    pf_expected = list(paper_fidelity_methods())
-    declared_pf = [canonicalize_method_id(str(m)) for m in (raw.get("paper_fidelity_methods") or [])]
     enabled_pf = [
         canonicalize_method_id(str(e.get("method_id")))
         for e in methods
@@ -266,8 +443,5 @@ def validate_experiment_manifest(
         "experiment_id": raw.get("experiment_id"),
         "valid": True,
         "allow_placeholders": allow_placeholders,
+        "mode": "template" if allow_placeholders else "formal",
     }
-
-
-# Repo root helper for relative config paths (unused after manifest merge; kept for imports)
-ROOT_REL = Path(__file__).resolve().parents[3]

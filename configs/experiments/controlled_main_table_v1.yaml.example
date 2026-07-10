@@ -12,7 +12,7 @@ paper_final: true
 bundle: path/to/runner_bundle
 
 base_config: configs/default.yaml
-shared_model_config: configs/models/shared_real_model.yaml.example
+shared_model_config: configs/models/shared_real_model.yaml
 
 require_bundle_checksum: true
 require_external_schema: true
