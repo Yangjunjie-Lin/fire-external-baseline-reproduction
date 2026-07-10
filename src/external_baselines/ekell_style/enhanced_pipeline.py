@@ -2,7 +2,8 @@ from __future__ import annotations
 
 """E-KELL-style ENHANCED pipeline (supplemental / extended baseline only).
 
-Must never replace ekell_style_faithful in the main paper table.
+Must never replace ekell_style_controlled_shared_llm or ekell_style_paper_fidelity
+in formal tables.
 """
 
 import time

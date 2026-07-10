@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""Proxy report builders for local diagnostics.
+
+LOCAL PROXY DIAGNOSTIC — NOT SHARED PAPER EVALUATOR.
+"""
+
 import csv
 from pathlib import Path
 from typing import Any

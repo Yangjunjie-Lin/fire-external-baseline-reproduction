@@ -8,12 +8,19 @@ __pycache__/
 .DS_Store
 
 # Generated outputs should not be committed by default.
+outputs/**
+!outputs/.gitkeep
+!outputs/README.md
 outputs/*.jsonl
 outputs/*.csv
 outputs/*.md
 outputs/run_manifest.json
 outputs/interop/
+outputs/smoke/
+outputs/diagnostics/
+outputs/legacy/
 !outputs/.gitkeep
+!outputs/README.md
 
 # Copied target-project input data can be large/private. Keep samples in git only when intentionally curated.
 data/corpus/*.jsonl

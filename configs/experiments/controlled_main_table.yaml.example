@@ -1,0 +1,59 @@
+# Alias / preferred name for the formal controlled main-table experiment.
+# Source of truth content: paper_main_table_v1.yaml.example
+#
+# Copy either file to a non-.example path before running:
+#   configs/experiments/paper_main_table_v1.yaml
+#
+# Methods: direct_llm, bm25_rag, ekell_style_controlled_shared_llm
+
+schema_version: firebench-interop-v1
+experiment_id: controlled_main_table_v1
+track: A_shared_outcome
+freeze_status: provisional
+paper_final: false
+require_bundle_checksum: true
+
+bundle: path/to/runner_bundle
+
+base_config: configs/default.yaml
+shared_model_config: configs/shared_real_model.yaml
+
+main_table_methods:
+  - direct_llm
+  - bm25_rag
+  - ekell_style_controlled_shared_llm
+
+supplemental_methods:
+  - dense_rag
+  - hybrid_rag
+  - ekell_style_enhanced
+
+methods:
+  - method_id: direct_llm
+    paper_table_role: main_table
+    config: configs/frozen/direct_llm_v1.yaml
+    enabled: true
+  - method_id: bm25_rag
+    paper_table_role: main_table
+    config: configs/frozen/bm25_rag_v1.yaml
+    enabled: true
+  - method_id: ekell_style_controlled_shared_llm
+    paper_table_role: main_table
+    config: configs/frozen/ekell_style_faithful_v1.yaml
+    enabled: true
+  - method_id: dense_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/dense_rag_v1.yaml
+    enabled: false
+  - method_id: hybrid_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/hybrid_rag_v1.yaml
+    enabled: false
+  - method_id: ekell_style_enhanced
+    paper_table_role: supplemental_extended
+    config: configs/frozen/ekell_style_enhanced_v1.yaml
+    enabled: false
+
+output: outputs/interop/controlled_main_table_predictions.jsonl
+legacy_output: outputs/legacy/baseline_outputs_legacy.jsonl
+run_manifest: outputs/interop/controlled_main_table_run_manifest.json

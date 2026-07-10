@@ -177,7 +177,10 @@ def run_methods(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run external baseline pipelines.")
-    parser.add_argument("--methods", default="direct_llm,bm25_rag,ekell_style_faithful")
+    parser.add_argument(
+        "--methods",
+        default="direct_llm,bm25_rag,ekell_style_controlled_shared_llm",
+    )
     parser.add_argument("--method", default=None, help="Single method alias; overrides --methods when provided.")
     parser.add_argument("--dataset", default="data/scenarios/scenario_matrix_v2.json")
     parser.add_argument("--limit", type=int, default=None)

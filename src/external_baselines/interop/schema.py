@@ -15,7 +15,10 @@ from typing import Any
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.guards import method_leaderboard_eligibility
 from external_baselines.common.text_utils import as_list
-from external_baselines.method_registry import canonicalize_method_id as registry_canonicalize
+from external_baselines.method_registry import (
+    canonicalize_method_id as registry_canonicalize,
+    method_id_aliases,
+)
 from external_baselines.interop.normalizer import normalize_prediction_fields
 
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / "firebench_interop_v1_prediction.schema.json"
@@ -23,56 +26,12 @@ SCHEMA_DRAFT_PATH = (
     Path(__file__).resolve().parents[3] / "schemas" / "firebench_interop_v1_1_draft_prediction.schema.json"
 )
 
-# Backward-compatible alias map; canonicalization is owned by method_registry.
-METHOD_ID_ALIASES = {
-    "vanilla_rag": "bm25_rag",
-    "ekell": "ekell_style_controlled_shared_llm",
-    "ekell_style": "ekell_style_controlled_shared_llm",
-    "e-kell-style": "ekell_style_controlled_shared_llm",
-    "ekell_style_faithful": "ekell_style_controlled_shared_llm",
-    "graphrag": "microsoft_graphrag",
-}
+# Compatibility export; canonicalization is owned by method_registry.
+METHOD_ID_ALIASES = method_id_aliases()
 
 
 def canonicalize_method_id(method: str) -> str:
     return registry_canonicalize(method)
-
-
-def _action_objects(actions: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for i, item in enumerate(as_list(actions)):
-        if isinstance(item, dict):
-            text = str(item.get("text") or item.get("action") or item.get("description") or "")
-            action_id = str(item.get("action_id") or item.get("id") or f"action_{i+1}")
-            priority = item.get("priority")
-            refs = as_list(item.get("evidence_refs") or [])
-            out.append({
-                "action_id": action_id,
-                "text": text,
-                "priority": str(priority) if priority is not None else None,
-                "evidence_refs": [str(r) for r in refs],
-            })
-        else:
-            out.append({
-                "action_id": f"action_{i+1}",
-                "text": str(item),
-                "priority": None,
-                "evidence_refs": [],
-            })
-    return out
-
-
-def _blocked_objects(items: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for i, item in enumerate(as_list(items)):
-        if isinstance(item, dict):
-            out.append({
-                "action_id": str(item.get("action_id") or item.get("id") or f"blocked_{i+1}"),
-                "text": str(item.get("text") or item.get("action") or item),
-            })
-        else:
-            out.append({"action_id": f"blocked_{i+1}", "text": str(item)})
-    return out
 
 
 def _ordered_unique(values: list[str]) -> list[str]:

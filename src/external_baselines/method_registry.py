@@ -19,6 +19,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_main_table",
         "main_table": True,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": False,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -34,6 +36,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_main_table",
         "main_table": True,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -49,6 +53,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_supplemental",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": True,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": True,
         "paper_fidelity": False,
@@ -64,6 +70,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_supplemental",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": True,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": True,
         "paper_fidelity": False,
@@ -79,6 +87,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_main_table",
         "main_table": True,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": True,
         "paper_fidelity": False,
@@ -97,6 +107,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "B_paper_fidelity",
         "main_table": False,
         "paper_fidelity_track": True,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": True,
         "paper_fidelity": True,
@@ -115,6 +127,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "A_supplemental",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": True,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -126,10 +140,12 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "aliases": [],
         "method_class": "legacy_diagnostic",
         "pipeline_import": "external_baselines.ekell_style.pipeline",
-        "pipeline_attr": "run_scenario_faithful",
+        "pipeline_attr": "run_legacy_bm25",
         "formal_track": "legacy_diagnostic",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": True,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -145,6 +161,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "adapter_fallback",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -160,6 +178,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "adapter_fallback",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -175,6 +195,8 @@ METHOD_REGISTRY: dict[str, dict[str, Any]] = {
         "formal_track": "adapter_fallback",
         "main_table": False,
         "paper_fidelity_track": False,
+        "supplemental": False,
+        "legacy": False,
         "requires_corpus": True,
         "requires_real_embedding": False,
         "paper_fidelity": False,
@@ -194,6 +216,15 @@ def _alias_index() -> dict[str, str]:
 
 
 _ALIAS_TO_CANONICAL = _alias_index()
+
+
+def method_id_aliases() -> dict[str, str]:
+    """Alias → canonical map derived from METHOD_REGISTRY (compatibility export)."""
+    return {
+        alias: canonical
+        for alias, canonical in _ALIAS_TO_CANONICAL.items()
+        if alias != canonical
+    }
 
 
 def canonicalize_method_id(method: str) -> str:
@@ -219,7 +250,7 @@ def supplemental_methods() -> tuple[str, ...]:
     return tuple(
         mid
         for mid, entry in METHOD_REGISTRY.items()
-        if entry.get("method_class") == "supplemental_extension"
+        if entry.get("supplemental") or entry.get("method_class") == "supplemental_extension"
     )
 
 
@@ -227,6 +258,14 @@ def paper_fidelity_methods() -> tuple[str, ...]:
     return tuple(
         mid for mid, entry in METHOD_REGISTRY.items() if entry.get("paper_fidelity_track")
     )
+
+
+def legacy_methods() -> tuple[str, ...]:
+    return tuple(mid for mid, entry in METHOD_REGISTRY.items() if entry.get("legacy"))
+
+
+def fallback_methods() -> tuple[str, ...]:
+    return tuple(mid for mid, entry in METHOD_REGISTRY.items() if entry.get("fallback_only"))
 
 
 def resolve_pipeline(method_id: str) -> Callable[..., Any]:

@@ -97,9 +97,9 @@
     "empirical_status": "diagnostics_only",
     "fidelity_level": "legacy_bm25_three_stage_scaffold",
     "claim_label": "Legacy BM25+3-stage E-KELL scaffold (diagnostics only; not aliased to controlled)",
-    "pipeline": "external_baselines.ekell_style.pipeline.run_scenario_faithful",
+    "pipeline": "external_baselines.ekell_style.pipeline.run_legacy_bm25",
     "aliases": [],
-    "notes": "IMPORTANT: not an alias of ekell_style_controlled_shared_llm; retained for regression/diagnostics only."
+    "notes": "IMPORTANT: not an alias of ekell_style_controlled_shared_llm; retained for regression/diagnostics only. Deprecated alias: run_scenario_faithful."
   },
   {
     "method_id": "lightrag",

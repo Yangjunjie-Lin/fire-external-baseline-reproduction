@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-"""E-KELL-style FAITHFUL pipeline only.
+"""E-KELL-style LEGACY BM25 + 3-stage prompt scaffold (diagnostic only).
 
-This module must not import dense/hybrid RAG packages, enhanced hooks, or any
+This is NOT the paper-faithful / controlled full pipeline.
+Use instead:
+  - ekell_style.full_pipeline.run_controlled_shared_llm
+  - ekell_style.full_pipeline.run_paper_fidelity
+
+Must not import dense/hybrid RAG packages, enhanced hooks, or any
 fire-agent-demo / SAFE-Router / Safety Checker / HITL / risk-scoring code.
 """
 
@@ -66,7 +71,7 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     for flag in ("dense_entity_retrieval", "hybrid_subgraph_ranking", "reranker", "self_consistency", "structured_verification"):
         if ekell_cfg.get(flag):
             raise ValueError(
-                f"ekell_style_faithful forbids enhanced flag ekell_style.{flag}=true. "
+                f"ekell_style_legacy_bm25 forbids enhanced flag ekell_style.{flag}=true. "
                 "Use method_id=ekell_style_enhanced (supplemental) instead."
             )
 
@@ -197,5 +202,8 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     return maybe_infer_structured_safety_fields(result, config)
 
 
-# Backward-compatible alias used by runner / older tests.
-run_scenario_faithful = run_scenario
+# Canonical entry for method_registry (legacy diagnostic).
+run_legacy_bm25 = run_scenario
+
+# Deprecated alias — do not use in new code; "faithful" here is historical only.
+run_scenario_faithful = run_legacy_bm25

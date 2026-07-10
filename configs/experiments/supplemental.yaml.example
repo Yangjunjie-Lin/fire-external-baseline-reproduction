@@ -1,0 +1,37 @@
+# Supplemental methods experiment (optional; never replaces main table).
+# Methods: dense_rag, hybrid_rag, ekell_style_enhanced
+
+schema_version: firebench-interop-v1
+experiment_id: supplemental_baselines_v1
+track: A_shared_outcome
+freeze_status: provisional
+paper_final: false
+require_bundle_checksum: true
+
+bundle: path/to/runner_bundle
+
+base_config: configs/default.yaml
+shared_model_config: configs/shared_real_model.yaml
+
+main_table_methods: []
+supplemental_methods:
+  - dense_rag
+  - hybrid_rag
+  - ekell_style_enhanced
+
+methods:
+  - method_id: dense_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/dense_rag_v1.yaml
+    enabled: true
+  - method_id: hybrid_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/hybrid_rag_v1.yaml
+    enabled: true
+  - method_id: ekell_style_enhanced
+    paper_table_role: supplemental_extended
+    config: configs/frozen/ekell_style_enhanced_v1.yaml
+    enabled: true
+
+output: outputs/interop/supplemental_predictions.jsonl
+run_manifest: outputs/interop/supplemental_run_manifest.json

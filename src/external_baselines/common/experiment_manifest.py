@@ -49,9 +49,14 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         if not isinstance(entry, dict) or not entry.get("method_id"):
             raise ValueError(f"Invalid method entry in experiment manifest: {entry}")
         method_id = canonicalize_method_id(str(entry["method_id"]))
-        role = str(entry.get("paper_table_role") or (
-            "main_table" if method_id in MAIN_TABLE_METHODS else "supplemental_extended"
-        ))
+        if entry.get("paper_table_role"):
+            role = str(entry["paper_table_role"])
+        elif method_id in MAIN_TABLE_METHODS:
+            role = "main_table"
+        elif method_id in PAPER_FIDELITY_METHODS:
+            role = "paper_fidelity"
+        else:
+            role = "supplemental_extended"
         method_config_path = entry.get("config") or entry.get("method_config")
         resolved.append({
             "method_id": method_id,

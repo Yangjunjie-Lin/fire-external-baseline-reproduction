@@ -1,359 +1,130 @@
 # fire-external-baseline-reproduction
 
-Independent external baseline reproduction project for system-level comparison with [`fire-agent-demo`](https://github.com/Yangjunjie-Lin/fire-agent-demo).
+Independent external baseline package for system-level comparison with [`fire-agent-demo`](https://github.com/Yangjunjie-Lin/fire-agent-demo).
 
-This repository is for **research comparison only**. It does **not** provide real-world emergency advice.
+Research comparison only — **not** real-world emergency advice.
 
-## Current reproduction status
+## 1. Project purpose
 
-Primary reproduction target:
+Provide **external** baselines (Direct LLM, BM25-RAG, E-KELL-style, optional GraphRAG adapters) that:
 
-- **E-KELL: Enhancing Emergency Decision-making with Knowledge Graphs and Large Language Models**
-- Paper: https://arxiv.org/abs/2311.08732
+- consume a main-project **Runner Bundle** (`input_cases.jsonl`)
+- emit **firebench-interop-v1** canonical predictions
+- never import `fire_agent_demo` or call SAFE-Router / Safety Checker / Dynamic REG / HITL
 
-Current label:
-
-> **E-KELL-style paper-faithful pipeline-level reimplementation, not official reproduction.**
-
-Supported claim:
-
-> This project implements an independent, pipeline-level, paper-faithful E-KELL-style KG + LLM prompt-chain baseline for fire emergency decision-support comparison. It is not an official E-KELL reproduction, but it maximizes reproduction fidelity using available public paper-level details, copied fire emergency KG/evidence inputs, transparent deviations, and reproducible execution protocols.
-
-Unsupported claim:
-
-> This project fully reproduces the official E-KELL results.
-
-## Fidelity level
-
-Current achieved level: **Level 3 — data-compatible pipeline-level reproduction**, when copied KG/evidence/scenario inputs are present.
-
-See [`docs/reproduction_fidelity_audit.md`](docs/reproduction_fidelity_audit.md).
-
-## Independence boundary
-
-This repository must remain completely independent from `fire-agent-demo`.
-
-Allowed:
-
-1. Copy input fire scenario files.
-2. Copy fire corpus / evidence files.
-3. Output results in a compatible schema.
-
-Not allowed:
-
-- importing `fire_agent_demo`
-- calling SAFE-Router
-- calling Safety Checker
-- calling Dynamic REG
-- calling HITL Gate
-- using target-project risk scoring
-- using target-project final gate logic
-- silently adding target-project policy routing or safety modules
-
-## What is reproduced
-
-Minimum formal method set (strong, independent baselines):
-
-| ID | method_id | Class |
-|---|---|---|
-| B0 | `direct_llm` | baseline (main table) |
-| B1 | `bm25_rag` (`vanilla_rag` alias) | baseline (main table) |
-| B2 | `ekell_style_controlled_shared_llm` | complete E-KELL architecture; shared LLM/schema (main table) |
-| B3 | `ekell_style_paper_fidelity` | paper-fidelity track (ChatGLM-6B interface; separate experiment) |
-| B4 | `dense_rag` | supplemental / smoke until real embeddings |
-| B5 | `hybrid_rag` | supplemental / smoke until real dense |
-| B6 | `ekell_style_enhanced` | supplemental only (must not replace B2/B3) |
-| B7 | `lightrag` | actual only if indexing+query; else fallback_only |
-| B8 | `microsoft_graphrag` | actual only if indexing+query; else fallback_only |
-
-Legacy alias: `ekell_style_faithful` → `ekell_style_controlled_shared_llm`.  
-Also: explicit `fallback_graph_retrieval` (never enters actual GraphRAG leaderboard).
-
-Additional package features:
-
-- FOL query decomposition + p/i/u/n executor
-- E-KELL-native vector KG retrieval + neighborhood expansion
-- stepwise logical prompt chain (`configs/prompts/paper_fidelity/`)
-- `firebench-interop-v1` / v1.1-draft Runner Bundle integration
-- gold-isolated prediction generation; recomputed bundle checksums
-- frozen DEV-selected configs under `configs/frozen/` (provisional)
-- unified legacy schema + canonical interop predictions
-- run manifest / checksums / per-case token accounting
-- proxy diagnostics (not a substitute for the shared paper evaluator)
-- original E-KELL evaluation protocol templates (empty scores)
-
-Complete E-KELL pipeline:
+## 2. Current status
 
 ```text
-Scenario
-→ Query Understanding
-→ Logical Query Decomposition
-→ AST Validation
-→ Vector KG Retrieval
-→ Neighborhood Expansion
-→ FOL Execution (p / ∧ / ∨ / ¬)
-→ Stepwise Prompt Chain
-→ Evidence-grounded Final Response
-→ Trace/Provenance Export
+Engineering-complete external baseline scaffold
++ code-level E-KELL-style reproduction
++ firebench-interop-v1 interop
+≠ formal experiments completed
+≠ official E-KELL reproduction
+≠ empirically validated paper results
 ```
 
-Label:
+Details: [`docs/status/current_project_status.md`](docs/status/current_project_status.md)
 
-> **E-KELL-style paper-faithful pipeline-level reimplementation, not official E-KELL reproduction.**
+## 3. Method table
 
-Track docs: [`docs/paper_fidelity_vs_controlled_comparison.md`](docs/paper_fidelity_vs_controlled_comparison.md), [`docs/ekell_reproduction_spec.md`](docs/ekell_reproduction_spec.md).
+| method_id | Layer | Implementation | Empirical |
+|---|---|---|---|
+| `direct_llm` | formal main table | implemented | heuristic smoke only |
+| `bm25_rag` | formal main table | implemented (package: `vanilla_rag/`) | deterministic sparse OK; shared-LLM pending |
+| `ekell_style_controlled_shared_llm` | formal main table | Level 3 pipeline-level reimplementation | shared-LLM pending |
+| `ekell_style_paper_fidelity` | paper-fidelity track | interface ready | ChatGLM-6B pending |
+| `dense_rag` / `hybrid_rag` / `ekell_style_enhanced` | supplemental | implemented | formal only with real dense / as extension |
+| `lightrag` / `microsoft_graphrag` / `fallback_graph_retrieval` | fallback_only | adapters + local fallback | actual indexing pending |
+| `ekell_style_legacy_bm25` | legacy diagnostic | BM25+3-stage scaffold | not main table |
 
-## What is not reproduced
+**Single registry:** `src/external_baselines/method_registry.py`  
+Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlled) are derived from that registry only.
 
-- official E-KELL KG
-- official E-KELL code
-- official E-KELL data preprocessing pipeline
-- official exact prompt templates if not public
-- official expert evaluation with emergency commanders / firefighters
-- official exact results
+## 4. Formal interop workflow
 
-See [`docs/official_code_data_search.md`](docs/official_code_data_search.md).
-
-## Install
+**Only formal entrypoint:**
 
 ```bash
 pip install -e .
 pip install -r requirements.txt
-```
 
-For tests:
-
-```bash
-python -m pytest -q
-```
-
-## Data preparation
-
-Copy data from a local `fire-agent-demo` checkout:
-
-```bash
-python scripts/prepare_data.py --source ../fire-agent-demo --target data/
-```
-
-This copies data only. It does not copy or import code.
-
-Expected input files:
-
-```text
-data/corpus/evidence_chunks.jsonl
-data/corpus/entities.jsonl
-data/corpus/relations.jsonl
-data/corpus/triples.jsonl
-data/scenarios/scenario_matrix_v2.json
-```
-
-A `data/data_manifest.json` file is generated with source paths, sizes, checksums, and copy timestamp.
-
-## Validate data
-
-```bash
-python scripts/validate_data.py
-python scripts/audit_corpus.py --corpus data/corpus
-```
-
-## firebench-interop-v1
-
-Formal runs use a **single experiment manifest** (shared SiliconFlow model + per-method configs). Multiple `--config` overlays are rejected.
-
-```bash
-cp .env.example .env   # set SILICONFLOW_API_KEY (same names as fire-agent-demo)
-cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
 cp configs/experiments/paper_main_table_v1.yaml.example configs/experiments/paper_main_table_v1.yaml
+# set shared model config; do not auto-call paid APIs from CI/agents
 
 python scripts/run_interop_baselines.py \
   --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
-  --bundle path/to/formal_runner_bundle \
-  --output outputs/firebench_interop_v1_predictions.jsonl
+  --bundle path/to/runner_bundle \
+  --output outputs/interop/predictions.jsonl \
+  --manifest outputs/interop/run_manifest.json
 ```
 
-**Paper main table (controlled):** `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`.  
-**Paper fidelity (separate):** `configs/experiments/ekell_paper_fidelity.yaml.example` + ChatGLM-6B.  
-**Supplemental:** `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` (optional `--include-supplemental`; must not replace controlled/fidelity).
+| Contract | Value |
+|---|---|
+| Formal input | Runner Bundle → `manifest.files.input_cases` → `input_cases.jsonl` |
+| Formal output | firebench-interop-v1 JSONL |
+| Schema authority | Bundle `prediction_schema.json` (+ checksum) |
+| Scoring authority | `fire-agent-demo` shared evaluator |
 
-See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md), [`docs/interop_integrity_audit.md`](docs/interop_integrity_audit.md), and [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md).
-
-Gold-isolated split workflow:
+Heuristic smoke (no paid API):
 
 ```bash
-python scripts/generate_predictions.py --methods direct_llm,bm25_rag,ekell_style_faithful --config configs/deterministic_heuristic_smoke.yaml
-python scripts/evaluate_predictions.py --predictions outputs/predictions.jsonl   # proxy only
-python scripts/build_report.py --predictions outputs/predictions.jsonl
+python scripts/smoke_interop.py
+# or: python scripts/smoke_main_runner_bundle.py
 ```
 
-## Heuristic smoke test warning
-
-The default config uses:
-
-```yaml
-llm:
-  provider: heuristic
-```
-
-This is only for smoke tests and reproducibility checks. It is **not** final experimental output.
-`paper_final: true` rejects heuristic providers.
-
-For final comparison, use a real shared LLM config (`configs/shared_real_model.yaml.example`) and record provider, model, model_version, temperature, top_p, max tokens, seed, dataset/bundle checksums.
-
-## Real LLM config examples
-
-```bash
-cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
-# set OPENAI_API_KEY / OPENAI_BASE_URL
-# DO NOT auto-run paid APIs from CI/agents
-```
-
-Also: `configs/paper_main_run.yaml.example`, `configs/paper_robustness_run.yaml.example`, `configs/frozen/*.yaml`.
-
-## Run baselines
-
-```bash
-python scripts/run_baseline.py \
-  --method ekell_style_faithful \
-  --dataset data/scenarios/scenario_matrix_v2.json \
-  --limit 10
-
-python scripts/run_all_baselines.py \
-  --methods direct_llm,bm25_rag,ekell_style_faithful \
-  --dataset data/scenarios/scenario_matrix_v2.json \
-  --limit 10
-```
-
-Expected outputs:
+## 5. Repository structure
 
 ```text
-outputs/baseline_outputs.jsonl
-outputs/firebench_interop_v1_predictions.jsonl
-outputs/baseline_metrics.csv
-outputs/baseline_report.md
-outputs/run_manifest.json
+src/external_baselines/   # methods, interop, evaluation, method_registry
+scripts/                  # formal: run_interop_baselines.py; see scripts/legacy/
+configs/                  # experiments/, frozen/, models/, prompts/, smoke
+schemas/                  # local schema copies (dev/tests only)
+docs/status|methods|fidelity|...
+data/                     # local copies only (not formal primary input)
+outputs/                  # runtime artifacts (gitignored)
 ```
 
-## Key docs
-
-- [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md)
-- [`docs/baseline_tuning_protocol.md`](docs/baseline_tuning_protocol.md)
-- [`docs/baseline_method_cards.md`](docs/baseline_method_cards.md)
-- [`docs/resource_access_matrix.md`](docs/resource_access_matrix.md)
-- [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md)
-- [`docs/data_license_audit.md`](docs/data_license_audit.md)
-- [`docs/no_overclaim_policy.md`](docs/no_overclaim_policy.md)
-- [`docs/comparison_protocol.md`](docs/comparison_protocol.md)
-
-## Evaluation
-
-Metric categories:
-
-### A. Automatic proxy metrics
-
-- `risk_signal_detection_rate`
-- `evidence_support_rate`
-- `citation_coverage`
-- `unsafe_suggestion_rate`
-- `unsupported_recommendation_rate`
-- `actionability_score`
-- `hallucination_flag`
-- `decision_correctness_proxy`
-
-### B. Text-inferred safety metrics
-
-- `blocked_action_recall`
-- `missing_confirmation_detection_rate`
-- `decision_gate_accuracy`
-- `operator_boundary_violation_rate`
-
-### C. Manual / expert rubric template
-
-See [`docs/manual_evaluation_rubric.md`](docs/manual_evaluation_rubric.md).
-
-The automatic metrics are prototype proxies. They do not reproduce the original E-KELL expert evaluation unless qualified human evaluators are used.
-
-## Compare with fire-agent-demo outputs
-
-First export normalized SAFE Fire Agent outputs from `fire-agent-demo` externally. Then run:
+## 6. Development checks
 
 ```bash
-python scripts/compare_with_target_outputs.py \
-  --baseline outputs/baseline_outputs.jsonl \
-  --target path/to/safe_outputs_normalized.jsonl \
-  --output outputs/side_by_side_comparison.md
-```
-
-This script matches by `scenario_id` and compares:
-
-- `key_risks`
-- `recommended_actions`
-- `blocked_or_unsafe_actions`
-- `missing_confirmations`
-- `supporting_evidence`
-- `final_decision_gate`
-
-It does not import target-project code.
-
-## GraphRAG / LightRAG transparency
-
-The `lightrag` and `microsoft_graphrag` methods are currently transparent adapters. Unless their actual external packages, indexing, and query pipelines are configured, they fall back to local graph/text retrieval and mark:
-
-- `actual_external_package_used: false`
-- `fallback_retrieval_used: true`
-- `indexing_performed: false`
-- external repository URL
-- deviation from official system
-
-Do not claim complete LightRAG or Microsoft GraphRAG reproduction unless actual indexing and query integration is implemented.
-
-## Development checks
-
-```bash
-python scripts/validate_data.py
-python scripts/run_all_baselines.py --methods direct_llm,vanilla_rag,ekell_style --dataset data/scenarios/scenario_matrix_v2.json --limit 3
-python scripts/export_report.py --input outputs/baseline_outputs.jsonl --output outputs/baseline_report.md
 python -m compileall src scripts tests
 python -m pytest -q
 ```
 
-
-## Top-tier paper readiness
-
-This repository is structurally prepared as a top-tier-paper external baseline package scaffold, but it is **not** a completed top-tier experimental result package. Final paper-level validity requires:
-
-- real LLM runs with recorded provider/model/version/temperature/date
-- actual LightRAG / Microsoft GraphRAG indexing and query integration if those baselines are claimed
-- a larger and frozen scenario matrix
-- exported SAFE Fire Agent normalized outputs from `fire-agent-demo`
-- blind expert/manual evaluation
-- inter-annotator agreement reporting
-- statistical analysis over paired scenario-level results
-- final artifact packaging with checksums and filled data/model/run cards
-
-Use these documents before final experiments and paper submission:
-
-- `docs/top_tier_readiness_audit.md`
-- `docs/paper_experiment_protocol.md`
-- `docs/data_card_template.md`
-- `docs/scenario_matrix_card_template.md`
-- `docs/model_run_card_template.md`
-- `docs/statistical_analysis_plan.md`
-- `docs/paper_appendix_artifact_checklist.md`
-- `docs/no_overclaim_policy.md`
-
-Diagnostic commands:
+Local data copy (legacy/dev; not formal primary path):
 
 ```bash
-python scripts/doctor.py
-python scripts/validate_outputs.py --input outputs/baseline_outputs.jsonl
-python scripts/analyze_manual_scores.py --input evaluation_forms/manual_evaluation_results.csv
+python scripts/prepare_data.py --source ../fire-agent-demo --target data/
+python scripts/validate_data.py
 ```
 
-## Limitations
+## 7. Limitations
 
-- Not official E-KELL reproduction.
-- Not certified emergency-response advice.
-- Default heuristic mode is smoke-test only.
-- Original E-KELL expert evaluation is not reproduced.
-- Copied input data may not match official E-KELL data.
-- GraphRAG / LightRAG adapters are not complete official reproductions unless explicitly configured.
+- Not official E-KELL reproduction; not certified emergency advice.
+- Default heuristic LLM is smoke-only; `paper_final: true` rejects it.
+- LightRAG / Microsoft GraphRAG remain `fallback_only` until actual index+query.
+- Local `evaluate_predictions.py` is **proxy diagnostics only** — not the paper evaluator.
+- Formal experiments (shared LLM, ChatGLM-6B, expert eval, statistics) are **pending**.
+
+## 8. Documentation index
+
+| Topic | Doc |
+|---|---|
+| Status | [`docs/status/current_project_status.md`](docs/status/current_project_status.md) |
+| Registry | [`docs/methods/method_registry.md`](docs/methods/method_registry.md) |
+| Fidelity | [`docs/fidelity/method_fidelity_matrix.md`](docs/fidelity/method_fidelity_matrix.md) |
+| Interop | [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md) |
+| Tracks | [`docs/paper_fidelity_vs_controlled_comparison.md`](docs/paper_fidelity_vs_controlled_comparison.md) |
+| No overclaim | [`docs/no_overclaim_policy.md`](docs/no_overclaim_policy.md) |
+| Legacy scripts | [`scripts/legacy/README.md`](scripts/legacy/README.md) |
+| Doc archive note | [`docs/archive/README.md`](docs/archive/README.md) |
+
+### Development and legacy commands
+
+See [`scripts/legacy/README.md`](scripts/legacy/README.md). Examples (not paper-final):
+
+```bash
+python scripts/generate_predictions.py --methods direct_llm,bm25_rag,ekell_style_controlled_shared_llm --config configs/deterministic_heuristic_smoke.yaml
+python scripts/evaluate_predictions.py --predictions outputs/predictions.jsonl   # LOCAL PROXY — NOT SHARED PAPER EVALUATOR
+python scripts/run_baseline.py --method bm25_rag --dataset data/scenarios/scenario_matrix_v2.json --limit 10
+```

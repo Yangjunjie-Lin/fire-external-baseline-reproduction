@@ -1,21 +1,16 @@
-# Data directory
+# Local data directory
 
-This directory is for copied input data only. Do not import or copy code from `fire-agent-demo`.
+This directory holds **copied** fire corpus / scenario inputs for local development.
 
-Expected files:
+## Rules
 
-```text
-corpus/evidence_chunks.jsonl
-corpus/entities.jsonl
-corpus/relations.jsonl
-corpus/triples.jsonl
-scenarios/scenario_matrix_v2.json
-```
+- Copy data only (e.g. `python scripts/prepare_data.py --source ../fire-agent-demo --target data/`).
+- Do **not** import or vendor `fire_agent_demo` code.
+- Do **not** commit private corpora, gold labels, or API keys.
+- Prefer checksums / manifests when sharing data.
 
-Run:
+## Formal experiments
 
-```bash
-python scripts/prepare_data.py --source ../fire-agent-demo --target data/
-```
+Formal interop runs use the main-project **Runner Bundle** (`input_cases.jsonl`), not `data/scenarios/` as the primary input.
 
-A tiny example scenario is committed so the command-line scripts can be smoke-tested without the target repository. Replace it with the copied scenario matrix for real comparison.
+`data/scenarios/` and `data/corpus/` remain for local/legacy development only.

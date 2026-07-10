@@ -15,7 +15,10 @@ from external_baselines.runner import generate_predictions
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Generate external baseline predictions (gold-isolated).")
-    parser.add_argument("--methods", default="direct_llm,bm25_rag,ekell_style_faithful")
+    parser.add_argument(
+        "--methods",
+        default="direct_llm,bm25_rag,ekell_style_controlled_shared_llm",
+    )
     parser.add_argument("--method", default=None)
     parser.add_argument("--dataset", default="data/scenarios/scenario_matrix_v2.json")
     parser.add_argument("--limit", type=int, default=None)

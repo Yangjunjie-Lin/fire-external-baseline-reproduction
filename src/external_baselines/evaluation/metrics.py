@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Automatic proxy metrics for local diagnostics.
+
+LOCAL PROXY DIAGNOSTIC — NOT SHARED PAPER EVALUATOR.
+Paper-facing scores must use fire-agent-demo's shared evaluator.
+"""
+
 from typing import Any
 
 from external_baselines.common.text_utils import normalize_text
