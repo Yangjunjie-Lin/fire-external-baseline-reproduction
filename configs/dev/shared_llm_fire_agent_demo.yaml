@@ -1,0 +1,27 @@
+# Local dev: shared SiliconFlow LLM aligned with fire-agent-demo.
+# Credentials: loaded from ../fire-agent-demo/.env (or this repo's .env) via llm_client._maybe_load_dotenv.
+# Do not commit API keys into this file.
+
+paper_final: false
+
+llm:
+  provider: siliconflow
+  model: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+  model_version: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+  api_key_env: SILICONFLOW_API_KEY
+  base_url_env: SILICONFLOW_BASE_URL
+  temperature: 0.2
+  top_p: 1.0
+  max_tokens: 1200
+  seed: 7
+  connect_timeout_sec: 10
+  read_timeout_sec: 120
+  write_timeout_sec: 20
+  max_retries: 0
+  enable_thinking: false
+
+scenario_parser:
+  use_llm: true
+
+normalization:
+  infer_structured_safety_fields: false

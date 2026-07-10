@@ -32,5 +32,6 @@ data/scenarios/*.json
 !data/scenarios/scenario_matrix_v2.json
 data/data_manifest.json
 
-dist/
+configs/models/shared_real_model.yaml
+
 *.egg-info/

@@ -289,14 +289,20 @@ DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
 
 
 def _maybe_load_dotenv() -> None:
-    """Load local .env if python-dotenv is installed (same pattern as main project)."""
+    """Load .env from baseline repo, then fire-agent-demo sibling (read-only; no code import)."""
     try:
         from dotenv import load_dotenv
     except Exception:
         return
-    # Prefer baseline repo .env; do not override already-exported env vars.
     root = Path(__file__).resolve().parents[3]
     load_dotenv(root / ".env", override=False)
+    demo_env = os.getenv("FIRE_AGENT_DEMO_ENV_PATH")
+    if demo_env:
+        load_dotenv(Path(demo_env), override=False)
+        return
+    sibling = root.parent / "fire-agent-demo" / ".env"
+    if sibling.is_file():
+        load_dotenv(sibling, override=False)
 
 
 def resolve_api_key(llm_cfg: dict[str, Any]) -> tuple[str, str]:
