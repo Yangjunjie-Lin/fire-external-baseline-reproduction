@@ -24,17 +24,36 @@ FORBIDDEN_BUNDLE_KEYS = {
     "annotations",
     "annotation_notes",
     "target_outputs",
+    "target_output",
     "evaluator_hints",
     "expert_scores",
+    "reference_answer",
 }
 
-FORBIDDEN_FILENAME_MARKERS = (
+# Exact filename stems / prefixes — avoid rejecting benign metadata like label_coverage_version.
+FORBIDDEN_FILENAME_EXACT = {
     "gold",
     "expected",
     "labels",
     "annotations",
     "evaluator_hints",
     "target_outputs",
+    "target_output",
+    "reference_answer",
+}
+FORBIDDEN_FILENAME_PREFIXES = (
+    "gold_",
+    "expected_",
+    "labels_",
+    "annotations_",
+    "evaluator_hints_",
+    "target_outputs_",
+)
+FORBIDDEN_FILENAME_SUFFIXES = (
+    "_gold",
+    "_expected",
+    "_labels",
+    "_annotations",
 )
 CHECKSUM_FILE_SUFFIXES = {
     ".json", ".jsonl", ".yaml", ".yml", ".txt", ".csv", ".tsv",
@@ -89,12 +108,24 @@ def assert_path_inside_bundle(
     return resolved
 
 
+def _filename_is_forbidden(relative: str) -> bool:
+    name = Path(relative).name.lower()
+    stem = Path(name).stem.lower()
+    if stem in FORBIDDEN_FILENAME_EXACT or name in FORBIDDEN_FILENAME_EXACT:
+        return True
+    if any(stem.startswith(prefix) for prefix in FORBIDDEN_FILENAME_PREFIXES):
+        return True
+    if any(stem.endswith(suffix) for suffix in FORBIDDEN_FILENAME_SUFFIXES):
+        return True
+    return False
+
+
 def _assert_allowed_bundle_files(root: Path) -> None:
     for path in root.rglob("*"):
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix().lower()
-        if any(marker in relative for marker in FORBIDDEN_FILENAME_MARKERS):
+        if _filename_is_forbidden(relative):
             raise PermissionError(
                 f"Runner Bundle contains forbidden evaluator material: {relative}"
             )
@@ -131,7 +162,7 @@ def _assert_no_forbidden_structured_content(root: Path) -> None:
 
 
 def recompute_bundle_checksum(root: str | Path) -> str:
-    """Hash a canonical, sorted manifest of allowed Runner Bundle files."""
+    """Consumer-side diagnostic aggregate hash of allowed Runner Bundle files."""
     if root is None or not str(root).strip():
         raise BundleIntegrityError("Bundle root must be non-empty")
     try:
@@ -147,8 +178,6 @@ def recompute_bundle_checksum(root: str | Path) -> str:
             continue
         resolved = assert_path_inside_bundle(path, root_path)
         relative = resolved.relative_to(root_path).as_posix()
-        # The declaration manifest is detached metadata; including its own
-        # checksum value would make a stable aggregate impossible.
         if relative.lower() in DETACHED_METADATA_FILES:
             continue
         files.append({
@@ -163,17 +192,47 @@ def recompute_bundle_checksum(root: str | Path) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
-    """Load a runner bundle directory or manifest JSON.
+def _resolve_manifest_file(root: Path, relative: str | None, *, required: bool = False) -> Path | None:
+    if relative is None or not str(relative).strip():
+        if required:
+            raise BundleIntegrityError("manifest.files entry is missing or empty")
+        return None
+    resolved = assert_path_inside_bundle(relative, root, must_exist=True)
+    if not resolved.is_file():
+        raise BundleIntegrityError(f"manifest.files path is not a file: {relative}")
+    return resolved
 
-    Expected layout (flexible):
-      bundle/
-        manifest.json
-        experiment_config.json | experiment_config.yaml
-        prediction_schema.json          (optional reference)
-        resource_access_policy.json     (optional)
-        scenarios/  or scenarios.json
-        corpus/     (optional snapshot)
+
+def _verify_file_checksums(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    declared = manifest.get("checksums") if isinstance(manifest.get("checksums"), dict) else {}
+    files_map = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    results: dict[str, Any] = {"ok": True, "checked": {}, "mismatches": []}
+    for logical_name, rel in files_map.items():
+        if not rel:
+            continue
+        path = _resolve_manifest_file(root, str(rel), required=True)
+        assert path is not None
+        actual = sha256_file(path)
+        expected = declared.get(str(rel)) or declared.get(Path(str(rel)).name)
+        entry = {
+            "logical_name": logical_name,
+            "path": str(rel),
+            "actual_sha256": actual,
+            "declared_sha256": expected,
+            "match": expected is None or expected == actual,
+        }
+        results["checked"][logical_name] = entry
+        if expected is not None and expected != actual:
+            results["ok"] = False
+            results["mismatches"].append(entry)
+    return results
+
+
+def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
+    """Load a firebench-interop-v1 Runner Bundle.
+
+    Formal layout prefers ``manifest.files.input_cases`` (JSONL). Legacy
+    scenarios.json layouts remain supported for local smoke only.
     """
     if bundle_path is None or not str(bundle_path).strip():
         raise BundleIntegrityError("Runner Bundle path must be non-empty")
@@ -191,65 +250,101 @@ def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
         root = root.resolve(strict=True)
         manifest_path = root / "manifest.json"
         manifest = read_json(manifest_path, default={})
+    if str(manifest.get("bundle_type") or "").lower() == "evaluator":
+        raise PermissionError("Baselines must not load evaluator bundles; Runner Bundle only.")
     _assert_allowed_bundle_files(root)
     _assert_no_forbidden_structured_content(root)
     _assert_no_forbidden_keys(manifest, location="manifest")
 
-    experiment_config: dict[str, Any] = {}
-    for name in ("experiment_config.yaml", "experiment_config.yml", "experiment_config.json"):
-        p = root / name
-        if p.exists():
-            experiment_config = read_yaml(p) if p.suffix in {".yaml", ".yml"} else read_json(p)
-            _assert_no_forbidden_keys(experiment_config, location=name)
-            break
+    files_map = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    file_checksum_report = (
+        _verify_file_checksums(root, manifest) if files_map else {"ok": True, "checked": {}, "mismatches": []}
+    )
 
-    policy_path = root / "resource_access_policy.json"
-    policy = read_json(policy_path, default={}) if policy_path.exists() else {}
+    experiment_config: dict[str, Any] = {}
+    exp_rel = files_map.get("experiment_config")
+    if exp_rel:
+        exp_path = _resolve_manifest_file(root, str(exp_rel), required=True)
+        assert exp_path is not None
+        experiment_config = read_yaml(exp_path) if exp_path.suffix in {".yaml", ".yml"} else read_json(exp_path)
+        _assert_no_forbidden_keys(experiment_config, location=str(exp_rel))
+    else:
+        for name in ("experiment_config.yaml", "experiment_config.yml", "experiment_config.json"):
+            p = root / name
+            if p.exists():
+                experiment_config = read_yaml(p) if p.suffix in {".yaml", ".yml"} else read_json(p)
+                _assert_no_forbidden_keys(experiment_config, location=name)
+                break
+
+    policy: dict[str, Any] = {}
+    policy_rel = files_map.get("resource_access_policy")
+    if policy_rel:
+        policy_path = _resolve_manifest_file(root, str(policy_rel), required=True)
+        assert policy_path is not None
+        policy = read_json(policy_path)
+    else:
+        fallback_policy = root / "resource_access_policy.json"
+        policy = read_json(fallback_policy, default={}) if fallback_policy.exists() else {}
     _assert_no_forbidden_keys(policy, location="resource_access_policy")
 
     scenarios_path = None
-    for candidate in [
-        root / "scenarios" / "scenarios.json",
-        root / "scenarios.json",
-        root / "scenarios" / "scenario_matrix_v2.json",
-        experiment_config.get("paths", {}).get("scenario_file"),
-    ]:
-        if candidate:
+    input_cases_rel = files_map.get("input_cases")
+    if input_cases_rel:
+        scenarios_path = _resolve_manifest_file(root, str(input_cases_rel), required=True)
+    else:
+        for candidate in [
+            root / "input_cases.jsonl",
+            root / "scenarios" / "scenarios.json",
+            root / "scenarios.json",
+            root / "scenarios" / "scenario_matrix_v2.json",
+            experiment_config.get("paths", {}).get("scenario_file"),
+        ]:
+            if not candidate:
+                continue
             try:
                 resolved = assert_path_inside_bundle(candidate, root)
             except BundleIntegrityError:
-                if candidate in {
-                    root / "scenarios" / "scenarios.json",
-                    root / "scenarios.json",
-                    root / "scenarios" / "scenario_matrix_v2.json",
-                }:
-                    continue
-                raise
+                continue
             if resolved.exists():
                 scenarios_path = resolved
                 break
 
     corpus_dir = None
+    corpus_manifest_path = None
+    corpus_rel = files_map.get("corpus_manifest")
+    if corpus_rel:
+        corpus_manifest_path = _resolve_manifest_file(root, str(corpus_rel), required=True)
     for candidate in [
         root / "corpus",
         experiment_config.get("paths", {}).get("corpus_dir"),
     ]:
-        if candidate:
-            try:
-                resolved = assert_path_inside_bundle(candidate, root)
-            except BundleIntegrityError:
-                if candidate == root / "corpus":
-                    continue
-                raise
-            if resolved.exists():
-                corpus_dir = resolved
-                break
+        if not candidate:
+            continue
+        try:
+            resolved = assert_path_inside_bundle(candidate, root, must_exist=False)
+        except BundleIntegrityError:
+            continue
+        if resolved.exists():
+            corpus_dir = resolved
+            break
 
-    schema_path = root / "prediction_schema.json"
-    if not schema_path.exists():
-        schema_path = Path("schemas/firebench_interop_v1_prediction.schema.json")
+    schema_rel = files_map.get("prediction_schema")
+    if schema_rel:
+        schema_path = _resolve_manifest_file(root, str(schema_rel), required=True)
+    else:
+        schema_path = root / "prediction_schema.json"
+        if not schema_path.exists():
+            schema_path = Path("schemas/firebench_interop_v1_prediction.schema.json")
 
-    checksum = manifest.get("bundle_checksum") or manifest.get("checksum")
+    producer_checksum = manifest.get("bundle_checksum") or manifest.get("checksum")
+    consumer_hash = recompute_bundle_checksum(root)
+    schema_sha = sha256_file(schema_path) if schema_path and Path(schema_path).exists() else None
+
+    corpus_manifest_payload: Any = None
+    if corpus_dir:
+        corpus_manifest_payload = directory_manifest(corpus_dir)
+    elif corpus_manifest_path:
+        corpus_manifest_payload = read_json(corpus_manifest_path)
 
     return {
         "bundle_root": str(root),
@@ -257,33 +352,61 @@ def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
         "experiment_config": experiment_config,
         "resource_access_policy": policy,
         "scenarios_path": str(scenarios_path) if scenarios_path else None,
+        "input_cases_path": str(scenarios_path) if scenarios_path else None,
         "corpus_dir": str(corpus_dir) if corpus_dir else None,
+        "corpus_manifest_path": str(corpus_manifest_path) if corpus_manifest_path else None,
         "prediction_schema_path": str(schema_path),
-        "bundle_checksum": checksum,
-        "recomputed_bundle_checksum": recompute_bundle_checksum(root),
-        "corpus_manifest": directory_manifest(corpus_dir) if corpus_dir else None,
+        "prediction_schema_sha256": schema_sha,
+        "bundle_checksum": producer_checksum,
+        "producer_declared_checksum": producer_checksum,
+        "consumer_computed_bundle_hash": consumer_hash,
+        "recomputed_bundle_checksum": consumer_hash,
+        "file_checksum_report": file_checksum_report,
+        "corpus_manifest": corpus_manifest_payload,
         "forbidden_keys_stripped": False,
+        "formal_manifest_files_used": bool(files_map.get("input_cases")),
     }
 
 
 def validate_bundle_checksum(bundle: dict[str, Any], *, expected: str | None = None) -> dict[str, Any]:
-    """Validate declared checksum against recomputed or provided expected value."""
-    declared = str(bundle.get("bundle_checksum") or "")
-    root = bundle.get("bundle_root")
-    recomputed = recompute_bundle_checksum(root)
+    """Validate checksums without confusing producer vs consumer hashes."""
+    file_report = bundle.get("file_checksum_report") or {}
+    declared = str(bundle.get("producer_declared_checksum") or bundle.get("bundle_checksum") or "")
+    recomputed = str(
+        bundle.get("consumer_computed_bundle_hash")
+        or bundle.get("recomputed_bundle_checksum")
+        or ""
+    )
     expected_value = str(expected or "")
-    ok = bool(declared) and declared == recomputed
-    if expected is not None:
-        ok = ok and expected_value == recomputed
+    if file_report.get("checked"):
+        ok = bool(file_report.get("ok", False))
+        if expected is not None and declared:
+            ok = ok and (expected_value == declared)
+    elif declared:
+        ok = declared == recomputed
+        if expected is not None:
+            ok = ok and expected_value == recomputed
+    else:
+        ok = True if expected is None else (expected_value == recomputed)
+    corpus_manifest = bundle.get("corpus_manifest")
     return {
         "ok": ok,
-        "declared": declared,
+        "declared": declared or None,
         "recomputed": recomputed,
+        "consumer_computed_bundle_hash": recomputed,
+        "producer_declared_checksum": declared or None,
         "expected": expected_value or None,
+        "file_checksum_report": file_report,
         "bundle_root": bundle.get("bundle_root"),
         "scenarios_path": bundle.get("scenarios_path"),
         "corpus_dir": bundle.get("corpus_dir"),
-        "corpus_aggregate_sha256": (bundle.get("corpus_manifest") or {}).get("aggregate_sha256"),
+        "corpus_aggregate_sha256": (
+            corpus_manifest.get("aggregate_sha256") if isinstance(corpus_manifest, dict) else None
+        ),
+        "note": (
+            "When only per-file checksums exist, aggregate consumer hash is diagnostic "
+            "and must not be confused with a producer-declared bundle checksum."
+        ),
     }
 
 
@@ -293,7 +416,7 @@ def assert_no_evaluator_bundle_access(path: str | Path) -> None:
         raise BundleIntegrityError("Runner Bundle path must be non-empty")
     p = Path(path)
     name = p.name.lower()
-    markers = ("evaluator_bundle", "gold", "private_test", "target_outputs")
+    markers = ("evaluator_bundle", "evaluator_seed", "gold", "private_test", "target_outputs")
     if any(m in name for m in markers):
         raise PermissionError(
             f"Baselines must not read evaluator/gold bundles: {path}. "
@@ -301,3 +424,10 @@ def assert_no_evaluator_bundle_access(path: str | Path) -> None:
         )
     if p.is_dir():
         _assert_allowed_bundle_files(p)
+        manifest_path = p / "manifest.json"
+        if manifest_path.exists():
+            manifest = read_json(manifest_path, default={})
+            if str(manifest.get("bundle_type") or "").lower() == "evaluator":
+                raise PermissionError(
+                    f"Baselines must not read evaluator bundles: {path}"
+                )

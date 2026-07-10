@@ -53,10 +53,18 @@ def test_canonical_schema():
     record = baseline_row_to_interop(_sample_baseline_row(), bundle_checksum="abc")
     errors = validate_interop_record(record)
     assert errors == []
+    assert record["schema_version"] == "firebench-interop-v1"
     assert record["case_id"] == "case-1"
     assert record["method_id"] == "direct_llm"
-    assert record["prediction"]["raw_output"] is not None
+    assert record["method_metadata"]["raw_output"] is not None
     assert record["prediction"]["final_response"]["real_world_execution_allowed"] is False
+    assert record["prediction"]["final_decision_gate"] in {
+        "allow_response",
+        "await_human_confirmation",
+        "block_response",
+        "unknown",
+    }
+    assert all(isinstance(x, str) for x in record["prediction"]["blocked_actions"])
     assert record["runtime"]["latency_ms"] == 120.0
 
 

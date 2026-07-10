@@ -20,9 +20,9 @@ from external_baselines.ekell_style.scenario_parser import parse_scenario
 from external_baselines.ekell_style.subgraph_retriever import retrieve_subgraph
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 
-METHOD = "ekell_style_faithful"
-REPRODUCTION_LABEL = "E-KELL-style paper-faithful pipeline-level reimplementation, not official E-KELL reproduction."
-REPRODUCTION_CLASS = "faithful"
+METHOD = "ekell_style_legacy_bm25"
+REPRODUCTION_LABEL = "E-KELL-style legacy BM25+3-stage scaffold (diagnostic only); not paper-faithful / not official."
+REPRODUCTION_CLASS = "legacy_diagnostic"
 
 
 def _dedupe_contexts(contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -136,7 +136,7 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         "baseline_name": "E-KELL-style paper-faithful reimplementation",
         "reproduction_label": REPRODUCTION_LABEL,
         "reproduction_class": REPRODUCTION_CLASS,
-        "paper_table_role": "main_table",
+        "paper_table_role": "legacy_diagnostic",
         "official_reproduction": False,
         "fidelity_level": (
             "Level 3 data-compatible pipeline-level reproduction when copied KG/evidence inputs are present; "

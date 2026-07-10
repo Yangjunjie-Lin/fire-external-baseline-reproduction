@@ -12,11 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.io import deep_merge, load_config, read_json, read_yaml
-from external_baselines.interop.schema import canonicalize_method_id
+from external_baselines.method_registry import (
+    canonicalize_method_id,
+    main_table_methods,
+    paper_fidelity_methods,
+    supplemental_methods,
+)
 
-MAIN_TABLE_METHODS = ("direct_llm", "bm25_rag", "ekell_style_controlled_shared_llm")
-SUPPLEMENTAL_METHODS = ("dense_rag", "hybrid_rag", "ekell_style_enhanced")
-PAPER_FIDELITY_METHODS = ("ekell_style_paper_fidelity",)
+MAIN_TABLE_METHODS = main_table_methods()
+SUPPLEMENTAL_METHODS = supplemental_methods()
+PAPER_FIDELITY_METHODS = paper_fidelity_methods()
 
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)

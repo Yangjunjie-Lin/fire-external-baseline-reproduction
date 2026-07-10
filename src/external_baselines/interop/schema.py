@@ -15,26 +15,27 @@ from typing import Any
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.guards import method_leaderboard_eligibility
 from external_baselines.common.text_utils import as_list
+from external_baselines.method_registry import canonicalize_method_id as registry_canonicalize
+from external_baselines.interop.normalizer import normalize_prediction_fields
 
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / "firebench_interop_v1_prediction.schema.json"
 SCHEMA_DRAFT_PATH = (
     Path(__file__).resolve().parents[3] / "schemas" / "firebench_interop_v1_1_draft_prediction.schema.json"
 )
 
+# Backward-compatible alias map; canonicalization is owned by method_registry.
 METHOD_ID_ALIASES = {
     "vanilla_rag": "bm25_rag",
     "ekell": "ekell_style_controlled_shared_llm",
     "ekell_style": "ekell_style_controlled_shared_llm",
     "e-kell-style": "ekell_style_controlled_shared_llm",
-    # Legacy name retained as alias to the complete controlled E-KELL pipeline.
     "ekell_style_faithful": "ekell_style_controlled_shared_llm",
     "graphrag": "microsoft_graphrag",
 }
 
 
 def canonicalize_method_id(method: str) -> str:
-    mid = str(method or "").strip().lower()
-    return METHOD_ID_ALIASES.get(mid, mid)
+    return registry_canonicalize(method)
 
 
 def _action_objects(actions: Any) -> list[dict[str, Any]]:
@@ -276,36 +277,47 @@ def _parsing_status(row: dict[str, Any]) -> str:
 
 
 def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None = None) -> dict[str, Any]:
-    """Convert a legacy BaselineOutput dict into firebench-interop-v1."""
-    method_id = canonicalize_method_id(str(row.get("method") or row.get("method_id") or "unknown"))
+    """Convert a legacy BaselineOutput dict into firebench-interop-v1.
+
+    Track A prediction fields match the main-project schema exactly.
+    Extended diagnostics live under method_metadata / provenance only.
+    """
+    stamped = str(row.get("method") or row.get("method_id") or "unknown")
+    # Legacy diagnostic must not be remapped into the controlled main-table ID.
+    if stamped.strip().lower() == "ekell_style_legacy_bm25":
+        method_id = "ekell_style_legacy_bm25"
+    else:
+        method_id = canonicalize_method_id(stamped)
     case_id = str(row.get("scenario_id") or row.get("case_id") or "unknown")
     evidence = _evidence_mapping(row)
-    risk_signals = [str(x) for x in as_list(row.get("key_risks") or row.get("risk_signals"))]
-    risk_level = _risk_level_from_signals(risk_signals, row.get("risk_level"))
-    gate = row.get("final_decision_gate")
-    # Preserve empty/missing gate as-is; do not invent a safer gate.
-    if gate in (None, ""):
-        gate = "not_provided_by_baseline"
-    else:
-        gate = str(gate)
+    normalized = normalize_prediction_fields(row)
 
-    missing = [str(x) for x in as_list(row.get("missing_confirmations"))]
-    blocked = _blocked_objects(row.get("blocked_or_unsafe_actions") or row.get("blocked_actions"))
+    # evidence_refs must be objects with evidence_id (main schema).
+    evidence_ref_objects: list[dict[str, Any]] = []
+    for item in evidence["retrieved_evidence"]:
+        if isinstance(item, dict) and item.get("evidence_id"):
+                evidence_ref_objects.append({
+                    "evidence_id": str(item["evidence_id"]),
+                    **({
+                        "source_id": str(item["source_id"])
+                    } if item.get("source_id") not in (None, "") else {}),
+                    **({
+                        "chunk_id": str(item.get("chunk_id") or item["evidence_id"])
+                    }),
+                })
+    citation_ids = [str(e["evidence_id"]) for e in evidence_ref_objects]
+
     human_review = bool(row.get("human_review_required"))
-    if not human_review and gate not in {
-        "not_provided_by_baseline",
-        "not_applicable_or_not_provided",
-        "baseline_response_without_explicit_gate",
-    }:
-        # Reflect baseline-stated gate only; do not force True from gold.
-        human_review = "human" in gate.lower() or "confirm" in gate.lower() or "missing" in gate.lower()
+    gate = normalized["final_decision_gate"]
+    if not human_review and gate == "await_human_confirmation":
+        human_review = True
 
     final_text, rendered_from_structured = _explicit_final_text(row)
     if final_text is None:
         final_text = _render_structured_response(row)
     parsing_status = _parsing_status(row)
-    final_status = "ok" if parsing_status == "ok" else ("parsing_failure" if parsing_status == "failed" else "partial")
     authorization_status = _output_authorization_status(row)
+    violation = _real_world_execution_violation(row, authorization_status)
 
     ms = dict(row.get("method_specific") or {})
     eligibility = method_leaderboard_eligibility(method_id, ms)
@@ -316,39 +328,38 @@ def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None 
     llm_calls = int(runtime_meta.get("llm_calls") or row.get("llm_calls") or token_usage.get("llm_calls") or 0)
     cost = runtime_meta.get("cost", row.get("cost", None))
 
+    # Attach action-specific evidence_refs only when baseline provided them.
+    recommended = []
+    for action in normalized["recommended_actions"]:
+        refs = [str(r) for r in as_list(action.get("evidence_refs") or [])]
+        # Drop refs that do not exist in retrieved evidence.
+        refs = [r for r in refs if r in set(citation_ids)]
+        recommended.append({
+            "action_id": action["action_id"],
+            "text": action["text"],
+            "priority": action.get("priority") or "unknown",
+            "evidence_refs": refs,
+        })
+
     prediction = {
-        "risk_signals": risk_signals,
-        "risk_level": risk_level,
-        "recommended_actions": _action_objects(row.get("recommended_actions")),
-        "blocked_actions": blocked,
-        "missing_confirmations": missing,
-        "evidence_refs": evidence["evidence_refs"],
-        "retrieved_evidence": evidence["retrieved_evidence"],
-        "claimed_citations": evidence["claimed_citations"],
-        "evidence_statements": evidence["evidence_statements"],
+        "risk_signals": normalized["risk_signals"],
+        "risk_level": normalized["risk_level"],
+        "recommended_actions": recommended,
+        "blocked_actions": normalized["blocked_actions"],
+        "missing_confirmations": normalized["missing_confirmations"],
+        "evidence_refs": evidence_ref_objects,
         "human_review_required": human_review,
         "final_decision_gate": gate,
         "final_response": {
-            "status": final_status,
-            "text": final_text,
-            "citations": evidence["evidence_refs"],
-            "rendered_from_structured_fields": rendered_from_structured,
-            # Software cannot actuate devices in this repository.
-            "system_execution_capability": False,
-            "output_authorization_status": authorization_status,
-            # Neutral evaluator signal from baseline text; None = not judged safe.
-            "real_world_execution_violation": _real_world_execution_violation(
-                row, authorization_status
-            ),
-            # v1 compatibility: mirrors system capability only (always false here).
-            # Do not treat this as a cleared safety judgment of model language.
+            "status": normalized["final_response_status"],
+            "text": final_text or "",
+            "citations": citation_ids,
             "real_world_execution_allowed": False,
         },
-        "parsing_status": parsing_status,
-        "raw_output": row.get("raw_output"),
     }
 
     record = {
+        "schema_version": "firebench-interop-v1",
         "case_id": case_id,
         "method_id": method_id,
         "prediction": prediction,
@@ -360,7 +371,6 @@ def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None 
         },
         "provenance": {
             "schema": "firebench-interop-v1",
-            "schema_draft": "firebench-interop-v1.1-draft",
             "source_baseline_schema": "external_baselines.BaselineOutput",
             "bundle_checksum": bundle_checksum,
             "raw_output_preserved": row.get("raw_output") is not None,
@@ -373,7 +383,35 @@ def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None 
             "retrieved_contexts": row.get("retrieved_contexts") or [],
             "leaderboard_eligibility": eligibility,
             "reproduction_class": ms.get("reproduction_class")
-            or ("faithful" if "faithful" in method_id else ("enhanced" if "enhanced" in method_id else ("fallback" if eligibility["smoke_or_fallback_only"] else "baseline"))),
+            or (
+                "legacy"
+                if method_id == "ekell_style_legacy_bm25"
+                else (
+                    "enhanced"
+                    if "enhanced" in method_id
+                    else (
+                        "fallback"
+                        if eligibility.get("smoke_or_fallback_only")
+                        else "baseline"
+                    )
+                )
+            ),
+            "parsing_status": parsing_status,
+            "raw_output": row.get("raw_output"),
+            "blocked_action_text": [
+                item if isinstance(item, str) else str((item or {}).get("text") or item)
+                for item in as_list(row.get("blocked_or_unsafe_actions") or row.get("blocked_actions"))
+            ],
+            "retrieved_evidence": evidence["retrieved_evidence"],
+            "claimed_citations": evidence["claimed_citations"],
+            "evidence_statements": evidence["evidence_statements"],
+            "rendered_from_structured_fields": rendered_from_structured,
+            "system_execution_capability": False,
+            "output_authorization_status": authorization_status,
+            "real_world_execution_violation": violation,
+            "normalizer_diagnostics": normalized["diagnostics"],
+            "dynamic_state_consumed": bool(ms.get("dynamic_state_consumed", False)),
+            "dynamic_state_support": ms.get("dynamic_state_support") or "unsupported",
         },
     }
     record["provenance"]["record_sha256"] = sha256_json({
@@ -387,6 +425,8 @@ def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None 
 def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
     """Smoke-level structural checks used when jsonschema is unavailable."""
     errors: list[str] = []
+    if record.get("schema_version") != "firebench-interop-v1":
+        errors.append("missing_or_invalid:schema_version")
     for key in ("case_id", "method_id", "prediction", "runtime", "provenance", "method_metadata"):
         if key not in record:
             errors.append(f"missing:{key}")
@@ -405,16 +445,21 @@ def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
         if key not in pred:
             errors.append(f"missing:prediction.{key}")
     fr = pred.get("final_response") or {}
-    for key in (
-        "status",
-        "text",
-        "citations",
-        "real_world_execution_allowed",
-        "system_execution_capability",
-        "output_authorization_status",
-    ):
+    for key in ("status", "text", "citations", "real_world_execution_allowed"):
         if key not in fr:
             errors.append(f"missing:prediction.final_response.{key}")
+    if fr.get("real_world_execution_allowed") is not False:
+        errors.append("invalid:real_world_execution_allowed_must_be_false")
+    gate = pred.get("final_decision_gate")
+    if gate not in {None, "allow_response", "await_human_confirmation", "block_response", "unknown"}:
+        errors.append(f"invalid:final_decision_gate:{gate}")
+    status = fr.get("status")
+    if status not in {None, "provided", "awaiting_human_confirmation", "blocked", "not_applicable", "unknown"}:
+        errors.append(f"invalid:final_response.status:{status}")
+    for item in pred.get("blocked_actions") or []:
+        if not isinstance(item, str):
+            errors.append("invalid:blocked_actions_must_be_string_ids")
+            break
     runtime = record.get("runtime") or {}
     for key in ("latency_ms", "llm_calls", "token_usage", "cost"):
         if key not in runtime:
@@ -422,6 +467,9 @@ def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
     for action in pred.get("recommended_actions") or []:
         if not isinstance(action, dict) or "action_id" not in action or "text" not in action:
             errors.append("invalid:recommended_actions_item")
+            break
+        if "priority" not in action or "evidence_refs" not in action:
+            errors.append("invalid:recommended_actions_missing_priority_or_evidence_refs")
             break
     return errors
 
@@ -451,7 +499,13 @@ def validate_against_jsonschema(
     if not loaded:
         return ["missing_external_schema"]
     if expected_schema_sha256:
-        actual = sha256_json(loaded)
+        # Prefer file checksum (matches Runner Bundle manifest.checksums).
+        if schema_path and Path(schema_path).exists():
+            from external_baselines.common.checksums import sha256_file
+
+            actual = sha256_file(schema_path)
+        else:
+            actual = sha256_json(loaded)
         if actual != expected_schema_sha256:
             return [f"schema_hash_mismatch:expected={expected_schema_sha256} actual={actual}"]
 

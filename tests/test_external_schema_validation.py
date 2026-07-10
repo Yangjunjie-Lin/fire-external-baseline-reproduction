@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from external_baselines.common.checksums import sha256_json
+from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.schema import (
     SCHEMA_PATH,
     baseline_row_to_interop,
@@ -19,13 +17,13 @@ def _sample_row():
         "scenario_id": "case-1",
         "method": "direct_llm",
         "situation_summary": "Smoke reported.",
-        "key_risks": ["smoke exposure"],
-        "recommended_actions": ["Confirm ventilation status"],
-        "blocked_or_unsafe_actions": [],
-        "missing_confirmations": [],
+        "key_risks": ["smoke_detected"],
+        "recommended_actions": [{"action_id": "prepare_respiratory_protection", "text": "Prepare SCBA", "priority": "high"}],
+        "blocked_or_unsafe_actions": ["BLOCK_ENTRY_WITHOUT_RESPIRATORY_PROTECTION"],
+        "missing_confirmations": ["smoke_level"],
         "supporting_evidence": ["free text must not become an evidence id"],
         "citations": ["missing-id-xyz"],
-        "final_decision_gate": "not_provided_by_baseline",
+        "final_decision_gate": "await_human_confirmation",
         "retrieved_contexts": [
             {"context_id": "ev1", "text": "SCBA required", "source_id": "doc1", "score": 0.9}
         ],
@@ -39,6 +37,7 @@ def test_external_schema_loaded():
     schema = load_schema(SCHEMA_PATH)
     assert schema.get("$schema", "").endswith("2020-12/schema")
     assert "prediction" in schema.get("properties", {})
+    assert schema.get("properties", {}).get("schema_version", {}).get("const") == "firebench-interop-v1"
 
 
 def test_schema_hash_mismatch_rejected():
@@ -55,26 +54,38 @@ def test_jsonschema_validates_sample_record():
     record = baseline_row_to_interop(_sample_row())
     errors = validate_interop_record(record, schema_path=SCHEMA_PATH, require_external_schema=True)
     assert errors == [], errors
+    assert record["schema_version"] == "firebench-interop-v1"
     fr = record["prediction"]["final_response"]
-    assert fr["system_execution_capability"] is False
-    assert fr["output_authorization_status"] == "not_provided"
-    assert "real_world_execution_violation" in fr
-    # supporting text is not an evidence id
-    assert all(e["evidence_id"] != "free text must not become an evidence id" for e in record["prediction"]["retrieved_evidence"])
+    assert fr["real_world_execution_allowed"] is False
+    assert fr["status"] in {
+        "provided",
+        "awaiting_human_confirmation",
+        "blocked",
+        "not_applicable",
+        "unknown",
+    }
+    assert isinstance(record["prediction"]["blocked_actions"], list)
+    assert all(isinstance(x, str) for x in record["prediction"]["blocked_actions"])
+    # Extended fields live in method_metadata, not Track A prediction.
+    assert "retrieved_evidence" not in record["prediction"]
+    assert "raw_output" not in record["prediction"]
+    assert "system_execution_capability" in record["method_metadata"]
+    meta_evidence = record["method_metadata"]["retrieved_evidence"]
+    assert all(e["evidence_id"] != "free text must not become an evidence id" for e in meta_evidence)
 
 
 def test_authorization_allowed_marks_violation():
     row = _sample_row()
     row["output_authorization_status"] = "explicitly_allowed"
     record = baseline_row_to_interop(row)
-    assert record["prediction"]["final_response"]["output_authorization_status"] == "explicitly_allowed"
-    assert record["prediction"]["final_response"]["real_world_execution_violation"] is True
-    # Compatibility field remains capability=false, not a safety clearance.
+    assert record["method_metadata"]["output_authorization_status"] == "explicitly_allowed"
+    assert record["method_metadata"]["real_world_execution_violation"] is True
     assert record["prediction"]["final_response"]["real_world_execution_allowed"] is False
 
 
 def test_schema_sha_matches_when_expected_correct():
-    schema = load_schema(SCHEMA_PATH)
-    digest = sha256_json(schema)
+    digest = sha256_file(SCHEMA_PATH)
     record = baseline_row_to_interop(_sample_row())
-    assert validate_against_jsonschema(record, schema=schema, expected_schema_sha256=digest) == []
+    assert validate_against_jsonschema(
+        record, schema_path=SCHEMA_PATH, expected_schema_sha256=digest
+    ) == []

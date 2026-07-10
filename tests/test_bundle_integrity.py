@@ -19,13 +19,23 @@ def test_checksum_detects_tampering(tmp_path):
         encoding="utf-8",
     )
     declared = recompute_bundle_checksum(tmp_path)
-    bundle = {"bundle_root": str(tmp_path), "bundle_checksum": declared}
+    bundle = {
+        "bundle_root": str(tmp_path),
+        "bundle_checksum": declared,
+        "producer_declared_checksum": declared,
+        "consumer_computed_bundle_hash": declared,
+        "recomputed_bundle_checksum": declared,
+        "file_checksum_report": {},
+    }
     assert validate_bundle_checksum(bundle)["ok"] is True
 
     (tmp_path / "scenarios.json").write_text(
         json.dumps({"scenarios": [{"scenario_id": "s1", "scenario_text": "tampered"}]}),
         encoding="utf-8",
     )
+    # Recompute consumer hash after tamper; declared producer checksum no longer matches.
+    bundle["consumer_computed_bundle_hash"] = recompute_bundle_checksum(tmp_path)
+    bundle["recomputed_bundle_checksum"] = bundle["consumer_computed_bundle_hash"]
     assert validate_bundle_checksum(bundle)["ok"] is False
 
 

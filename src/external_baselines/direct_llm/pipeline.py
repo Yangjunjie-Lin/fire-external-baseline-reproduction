@@ -77,11 +77,15 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         "llm_config_summary": llm_config_summary(config, llm),
         "retrieval_used": False,
         "kg_used": False,
+        "corpus_accessed": False,
+        "dynamic_state_consumed": False,
+        "dynamic_state_support": "unsupported",
         "prompt_hash": prompt_hash(system, user),
         "runtime": llm_runtime_snapshot(llm),
         "parsing_failure": parsing_failure,
         "parsing_status": "failed" if parsing_failure else "ok",
         "structured_safety_fields": "baseline_generated_only",
         "normalizer_policy_injection": False,
+        "claim_label": "canonical no-retrieval LLM baseline",
     }
     return maybe_infer_structured_safety_fields(result, config)

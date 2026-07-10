@@ -96,8 +96,25 @@ def method_leaderboard_eligibility(method_id: str, method_specific: dict[str, An
             "reason": "explicit fallback method; never enters actual GraphRAG leaderboard",
         }
 
-    if mid in {"dense_rag", "hybrid_rag"} and ms.get("embedding_backend") in {None, "unavailable", "smoke_fixture"}:
-        if ms.get("dense_index_built") is False or ms.get("method_status") == "smoke_fixture_only":
+    if mid in {"dense_rag", "hybrid_rag"}:
+        backend = str(ms.get("embedding_backend") or "").lower()
+        status = str(ms.get("method_status") or "").lower()
+        smoke_markers = {
+            "",
+            "none",
+            "unavailable",
+            "smoke_fixture",
+            "smoke_hash_embedding",
+            "hash",
+            "synthetic",
+        }
+        if (
+            backend in smoke_markers
+            or status in {"smoke_fixture_only", "smoke_only"}
+            or ms.get("dense_index_built") is False
+            or ms.get("actual_embedding_used") is False
+            or ms.get("smoke_fallback_used") is True
+        ):
             return {
                 "formal_leaderboard": False,
                 "actual_graphrag_leaderboard": False,
@@ -105,6 +122,23 @@ def method_leaderboard_eligibility(method_id: str, method_specific: dict[str, An
                 "reason": "dense/hybrid without real embedding index; smoke/fixture only",
                 "reproduction_level": reproduction_level,
             }
+
+    if mid == "ekell_style_legacy_bm25":
+        return {
+            "formal_leaderboard": False,
+            "actual_graphrag_leaderboard": False,
+            "smoke_or_fallback_only": True,
+            "reason": "legacy diagnostic scaffold; not main-table E-KELL",
+        }
+
+    if mid == "ekell_style_enhanced":
+        return {
+            "formal_leaderboard": False,
+            "actual_graphrag_leaderboard": False,
+            "smoke_or_fallback_only": False,
+            "reason": "supplemental extension; not main-table / not paper-fidelity",
+            "reproduction_level": reproduction_level,
+        }
 
     return {
         "formal_leaderboard": True,

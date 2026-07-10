@@ -22,49 +22,9 @@ from external_baselines.interop.schema import baseline_row_to_interop, canonical
 
 
 def get_pipeline(method: str) -> Callable[..., dict[str, Any]]:
-    method = method.lower().strip()
-    method = canonicalize_method_id(method)
-    if method == "direct_llm":
-        from external_baselines.direct_llm.pipeline import run_scenario
-        return run_scenario
-    if method in {"bm25_rag", "vanilla_rag"}:
-        from external_baselines.vanilla_rag.pipeline import run_scenario
-        return run_scenario
-    if method == "dense_rag":
-        from external_baselines.dense_rag.pipeline import run_scenario
-        return run_scenario
-    if method == "hybrid_rag":
-        from external_baselines.hybrid_rag.pipeline import run_scenario
-        return run_scenario
-    if method in {
-        "ekell_style_controlled_shared_llm",
-        "ekell_style_faithful",
-        "ekell_style",
-        "e-kell-style",
-        "ekell",
-    }:
-        from external_baselines.ekell_style.full_pipeline import run_controlled_shared_llm
-        return run_controlled_shared_llm
-    if method == "ekell_style_paper_fidelity":
-        from external_baselines.ekell_style.full_pipeline import run_paper_fidelity
-        return run_paper_fidelity
-    if method == "ekell_style_enhanced":
-        from external_baselines.ekell_style.enhanced_pipeline import run_scenario_enhanced
-        return run_scenario_enhanced
-    # Legacy BM25-only E-KELL scaffold retained for diagnostics only.
-    if method == "ekell_style_legacy_bm25":
-        from external_baselines.ekell_style.pipeline import run_scenario_faithful
-        return run_scenario_faithful
-    if method == "lightrag":
-        from external_baselines.graphrag_adapter.lightrag_adapter import run_scenario
-        return run_scenario
-    if method in {"microsoft_graphrag", "graphrag"}:
-        from external_baselines.graphrag_adapter.microsoft_graphrag_adapter import run_scenario
-        return run_scenario
-    if method == "fallback_graph_retrieval":
-        from external_baselines.graphrag_adapter.fallback_graph_retrieval import run_scenario
-        return run_scenario
-    raise ValueError(f"Unknown baseline method: {method}")
+    from external_baselines.method_registry import resolve_pipeline
+
+    return resolve_pipeline(method)
 
 
 def _data_counts(corpus_dir: str | Path) -> dict[str, Any]:

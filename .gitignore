@@ -12,6 +12,7 @@ outputs/*.jsonl
 outputs/*.csv
 outputs/*.md
 outputs/run_manifest.json
+outputs/interop/
 !outputs/.gitkeep
 
 # Copied target-project input data can be large/private. Keep samples in git only when intentionally curated.

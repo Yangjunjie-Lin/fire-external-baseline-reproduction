@@ -19,8 +19,8 @@ def test_ekell_style_run_scenario_returns_unified_schema(tmp_path):
     config = {"paths": {"corpus_dir": str(corpus)}, "llm": {"provider": "heuristic", "temperature": 0.0, "max_tokens": 1200}, "scenario_parser": {"use_llm": False}, "ekell_style": {"prompt_dir": "configs/prompts"}}
     out = run_scenario(scenario, config=config, llm=HeuristicLLMClient())
     assert out["scenario_id"] == "s1"
-    assert out["method"] == "ekell_style_faithful"
-    assert out["method_specific"]["reproduction_class"] == "faithful"
+    assert out["method"] == "ekell_style_legacy_bm25"
+    assert out["method_specific"]["reproduction_class"] == "legacy_diagnostic"
     assert isinstance(out["recommended_actions"], list)
     assert "llm_config_summary" in out["method_specific"]
     assert out["retrieved_contexts"]

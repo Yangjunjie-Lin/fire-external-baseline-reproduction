@@ -120,8 +120,11 @@ def _scenario_id(record: dict[str, Any]) -> str:
 def _scenario_text(record: dict[str, Any]) -> str:
     if record.get("scenario_text"):
         return str(record["scenario_text"])
-    if record.get("input") and isinstance(record["input"], str):
-        return record["input"]
+    nested = record.get("input")
+    if isinstance(nested, dict) and nested.get("scenario") not in (None, ""):
+        return str(nested["scenario"])
+    if isinstance(nested, str) and nested.strip():
+        return nested
     if record.get("description"):
         return str(record["description"])
     parts = []
@@ -136,63 +139,94 @@ def _scenario_text(record: dict[str, Any]) -> str:
 
 
 def flatten_scenario(record: dict[str, Any]) -> dict[str, Any]:
-    """Convert flexible scenario-matrix records into dataset records.
+    """Convert flexible scenario-matrix / input_cases records into dataset records.
 
     Gold/expected is retained only for offline evaluation loaders. Prediction
     generation must call ``to_prediction_input`` so pipelines never see gold.
     """
+    nested = record.get("input") if isinstance(record.get("input"), dict) else {}
     expected = record.get("expected") or record.get("ground_truth") or record.get("labels") or {}
+    language = (
+        record.get("language")
+        or record.get("lang")
+        or nested.get("language")
+        or nested.get("lang")
+    )
+    input_mode = (
+        record.get("input_mode")
+        or record.get("mode")
+        or nested.get("input_mode")
+        or nested.get("mode")
+    )
     return {
         "scenario_id": _scenario_id(record),
         "case_id": _scenario_id(record),
         "scenario_text": _scenario_text(record),
-        "language": record.get("language") or record.get("lang"),
-        "input_mode": record.get("input_mode") or record.get("mode"),
+        "language": language,
+        "input_mode": input_mode,
+        "context": record.get("context") if isinstance(record.get("context"), dict) else {},
+        "dynamic_snapshots": list(record.get("dynamic_snapshots") or []),
+        "category": record.get("category"),
+        "severity": record.get("severity"),
+        "track_tags": list(record.get("track_tags") or []),
+        "source_type": record.get("source_type"),
+        "source_ref": record.get("source_ref"),
         "expected": expected if isinstance(expected, dict) else {"expected": expected},
         "source_record": record,
     }
 
 
 def to_prediction_input(scenario: dict[str, Any], *, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Strip gold/labels/annotations/target outputs before pipeline execution.
-
-    Allowed fields for prediction generation:
-    - case_id / scenario_id
-    - scenario text
-    - language
-    - input mode
-    - allowed dynamic snapshots (input-only)
-    - allowed corpus/config pointers (no gold)
-    """
+    """Strip gold/labels/annotations/target outputs before pipeline execution."""
     config = config or {}
     source = scenario.get("source_record") if isinstance(scenario.get("source_record"), dict) else scenario
+    nested = source.get("input") if isinstance(source.get("input"), dict) else {}
     case_id = str(scenario.get("case_id") or scenario.get("scenario_id") or _scenario_id(source))
     text = str(scenario.get("scenario_text") or _scenario_text(source))
 
-    allowed_snapshots = None
-    for key in ("allowed_dynamic_snapshots", "dynamic_snapshots", "dynamic_state", "input_dynamic_state"):
-        if key in source and str(key).lower() not in GOLD_KEYS:
-            # Only pass dynamic state when it is an input observation, not a label.
-            if key == "dynamic_state" and isinstance(source.get(key), dict):
-                # Drop nested gold-like keys if present.
-                allowed_snapshots = {
-                    k: v for k, v in source[key].items() if str(k).lower() not in GOLD_KEYS
-                }
-            else:
-                allowed_snapshots = source.get(key)
-            break
+    snapshots = scenario.get("dynamic_snapshots")
+    if snapshots is None:
+        snapshots = source.get("dynamic_snapshots")
+    if snapshots is None:
+        for key in ("allowed_dynamic_snapshots", "dynamic_state", "input_dynamic_state"):
+            if key in source and str(key).lower() not in GOLD_KEYS:
+                if key == "dynamic_state" and isinstance(source.get(key), dict):
+                    snapshots = {
+                        k: v for k, v in source[key].items() if str(k).lower() not in GOLD_KEYS
+                    }
+                else:
+                    snapshots = source.get(key)
+                break
+    if snapshots is None:
+        snapshots = []
+
+    context = scenario.get("context")
+    if not isinstance(context, dict):
+        context = source.get("context") if isinstance(source.get("context"), dict) else {}
 
     paths = config.get("paths", {}) if isinstance(config.get("paths"), dict) else {}
     return {
         "case_id": case_id,
         "scenario_id": case_id,
         "scenario_text": text,
-        "language": scenario.get("language") or source.get("language") or source.get("lang"),
-        "input_mode": scenario.get("input_mode") or source.get("input_mode") or source.get("mode"),
-        "allowed_dynamic_snapshots": allowed_snapshots,
+        "language": scenario.get("language") or source.get("language") or nested.get("language") or source.get("lang"),
+        "input_mode": scenario.get("input_mode") or source.get("input_mode") or nested.get("input_mode") or source.get("mode"),
+        "context": dict(context),
+        "dynamic_snapshots": list(snapshots) if isinstance(snapshots, list) else snapshots,
+        "allowed_dynamic_snapshots": list(snapshots) if isinstance(snapshots, list) else snapshots,
+        "metadata": {
+            "category": scenario.get("category") or source.get("category"),
+            "severity": scenario.get("severity") or source.get("severity"),
+            "track_tags": list(scenario.get("track_tags") or source.get("track_tags") or []),
+            "source_type": scenario.get("source_type") or source.get("source_type"),
+            "source_ref": scenario.get("source_ref") or source.get("source_ref"),
+        },
         "allowed_corpus_dir": paths.get("corpus_dir"),
         "allowed_config_keys": sorted(
-            k for k in ("retrieval", "llm", "paths", "ekell_style", "scenario_parser", "normalization", "dense_rag", "hybrid_rag")
+            k for k in (
+                "retrieval", "llm", "paths", "ekell_style", "scenario_parser",
+                "normalization", "dense_rag", "hybrid_rag",
+            )
             if k in config
         ),
     }
@@ -200,21 +234,34 @@ def to_prediction_input(scenario: dict[str, Any], *, config: dict[str, Any] | No
 
 def assert_no_gold_in_prediction_input(prediction_input: dict[str, Any]) -> None:
     """Raise if forbidden gold/target keys appear in a prediction input."""
-    blob = json.dumps(prediction_input, ensure_ascii=False, default=str).lower()
     for key in GOLD_KEYS:
-        if f'"{key.lower()}"' in blob or f"'{key.lower()}'" in blob:
-            # Allow the word only inside scenario_text narrative, not as structured keys.
-            if key.lower() in {str(k).lower() for k in prediction_input.keys()}:
-                raise AssertionError(f"Gold/target key leaked into prediction input: {key}")
-            nested = prediction_input.get("allowed_dynamic_snapshots")
-            if isinstance(nested, dict) and key.lower() in {str(k).lower() for k in nested.keys()}:
-                raise AssertionError(f"Gold/target key leaked into allowed_dynamic_snapshots: {key}")
+        if key.lower() in {str(k).lower() for k in prediction_input.keys()}:
+            raise AssertionError(f"Gold/target key leaked into prediction input: {key}")
+        nested = prediction_input.get("allowed_dynamic_snapshots")
+        if isinstance(nested, dict) and key.lower() in {str(k).lower() for k in nested.keys()}:
+            raise AssertionError(f"Gold/target key leaked into allowed_dynamic_snapshots: {key}")
+        meta = prediction_input.get("metadata")
+        if isinstance(meta, dict) and key.lower() in {str(k).lower() for k in meta.keys()}:
+            raise AssertionError(f"Gold/target key leaked into metadata: {key}")
 
 
 def load_scenarios(path: str | Path, limit: int | None = None) -> list[dict[str, Any]]:
-    raw = read_json(path)
+    """Load scenarios from JSONL (formal), JSON array, or legacy wrapper dict."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    suffix = path.suffix.lower()
+    raw: Any
+    if suffix == ".jsonl":
+        raw = read_jsonl(path)
+    else:
+        try:
+            raw = read_json(path)
+        except json.JSONDecodeError:
+            # Some environments mislabel JSONL as .json
+            raw = read_jsonl(path)
     if isinstance(raw, dict):
-        for key in ["scenarios", "scenario_matrix", "items", "data", "records"]:
+        for key in ["scenarios", "scenario_matrix", "items", "data", "records", "cases"]:
             if isinstance(raw.get(key), list):
                 raw = raw[key]
                 break

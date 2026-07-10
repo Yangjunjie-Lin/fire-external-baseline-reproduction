@@ -1,54 +1,58 @@
 # firebench-interop-v1 Integration
 
-This repository consumes the **Runner Bundle** only from the main project’s `firebench-interop-v1` protocol.
+This repository consumes the **Runner Bundle** only from the main project’s `firebench-interop-v1` protocol (`fire-agent-demo @ evaluation/benchmark-v1`).
 
-## Boundary
+## Authority split
 
-| Allowed | Forbidden |
+| Authority | Owner |
 |---|---|
-| Runner Bundle (scenarios input-only, corpus/KG snapshot, experiment config, manifests/checksums) | Evaluator Bundle |
-| Neutral prediction schema | Gold / expected / labels / annotations |
-| Shared model config (SiliconFlow-aligned) | Target SAFE-Router / Safety Checker / Dynamic REG / HITL / risk scoring |
+| Prediction generation | this external baseline repo |
+| Benchmark / evaluation scoring | `fire-agent-demo` shared evaluator |
 
-## Formal command (single experiment manifest)
+Local proxy metrics are **diagnostic only**.
+
+## Formal input
+
+Prefer `manifest.files.input_cases` → `input_cases.jsonl` with nested `input.scenario`.
+
+Also preserved: `language`, `input_mode`, `context`, `dynamic_snapshots` (methods that do not consume dynamic state must set `dynamic_state_consumed=false`).
+
+Checksums: validate **per-file** `manifest.checksums`. Aggregate `consumer_computed_bundle_hash` is diagnostic and must not be confused with a producer-declared aggregate checksum.
+
+## Formal output
+
+Root `schema_version: firebench-interop-v1`. Track A prediction fields match the main-project schema:
+
+- `blocked_actions`: string ID array
+- `missing_confirmations`: string ID array
+- `final_decision_gate`: `allow_response|await_human_confirmation|block_response|unknown`
+- `final_response.status`: `provided|awaiting_human_confirmation|blocked|not_applicable|unknown`
+- `real_world_execution_allowed`: always `false`
+- `evidence_refs`: objects with `evidence_id`
+
+Extended diagnostics (`retrieved_evidence`, `parsing_status`, `raw_output`, authorization fields) live under `method_metadata`.
+
+## Formal command
 
 ```bash
 python scripts/run_interop_baselines.py \
   --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
   --bundle path/to/formal_runner_bundle \
-  --output outputs/firebench_interop_v1_predictions.jsonl
+  --output outputs/interop/test_public/canonical/predictions.jsonl \
+  --manifest outputs/interop/test_public/manifests/run_manifest.json
 ```
 
-Merge order per method: `base_config` → `shared_model_config` → method `config`.
+Heuristic cross-repo smoke (no paid API):
 
-Multiple `--config` CLI overlays are **rejected** (ambiguous for paper runs).
+```bash
+python scripts/smoke_main_runner_bundle.py
+```
 
 ## Main table vs supplemental
 
 - Main table (controlled): `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`
-- Paper fidelity (separate experiment): `ekell_style_paper_fidelity`
-- Supplemental (`--include-supplemental`): `dense_rag`, `hybrid_rag`, `ekell_style_enhanced`
+- Paper fidelity (separate): `ekell_style_paper_fidelity`
+- Supplemental: `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` (smoke dense ≠ formal)
+- Fallback-only: `lightrag`, `microsoft_graphrag`, `fallback_graph_retrieval`
 
-Integrity details: `docs/interop_integrity_audit.md`. Schema draft proposal: `schemas/firebench_interop_v1_1_draft_prediction.schema.json`.
-
-## Adapter rules
-
-1. Maps only fields the baseline actually produced.
-2. No invented blocked/missing/gate fields (`infer_structured_safety_fields: false`).
-3. `raw_output` preserved; parsing failures recorded.
-4. Evidence text is never promoted to evidence IDs; global evidence is not auto-bound to every action.
-5. `system_execution_capability=false`; `output_authorization_status` / `real_world_execution_violation` come from baseline language (never auto-cleared to safe).
-6. `real_world_execution_allowed=false` is v1 capability compatibility only — not a safety clearance.
-7. Predictions validated with jsonschema Draft 2020-12 against local or bundle schema.
-8. `cross_repository_interop_verified` stays **false** until a formal main-project Runner Bundle is actually consumed and hashes verified.
-
-## Pending cross-repo verification
-
-After formal bundle arrives, verify:
-
-1. schema hash  
-2. scenario hash  
-3. corpus hash  
-4. input-only / gold isolation  
-5. baseline predictions  
-6. neutral evaluator compatibility  
+`cross_repository_interop_verified` stays **false** until formal shared-LLM generation + main-project evaluator confirmation.

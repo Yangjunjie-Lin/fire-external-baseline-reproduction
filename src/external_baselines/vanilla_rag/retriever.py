@@ -46,7 +46,10 @@ class LexicalRetriever:
             return []
         texts = [self._doc_text(doc) for doc in self.documents]
         scores = bm25_scores(query, texts)
-        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        ranked = sorted(
+            enumerate(scores),
+            key=lambda x: (-x[1], str(self.documents[x[0]].get("_chunk_id") or "")),
+        )
         contexts: list[RetrievedContext] = []
         for idx, score in ranked:
             if len(contexts) >= top_k:
