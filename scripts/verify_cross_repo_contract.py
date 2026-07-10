@@ -38,8 +38,8 @@ def main() -> None:
             result["reason"] = "runner_bundle_unavailable"
         else:
             try:
-                from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
                 from external_baselines.common.checksums import sha256_file
+                from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 
                 bundle = load_runner_bundle(MAIN_BUNDLE)
                 checksum = validate_bundle_checksum(bundle)
