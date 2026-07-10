@@ -158,18 +158,43 @@ def run_scenario(
         dense_index_checksum=index.checksum,
         corpus_checksum=index.build_manifest.get("corpus_checksum") or index.build_manifest.get("evidence_sha256"),
     )
+    from external_baselines.common.decision_finalize import (
+        append_decision_schema,
+        finalize_llm_decision,
+        use_unified_decision_output,
+    )
+
     contexts = [retrieved_context_to_dict(c) for c in contexts_raw]
+    unified = use_unified_decision_output(config)
+    snaps = scenario.get("dynamic_snapshots") or []
+    snap_text = "\n".join(str(s) for s in snaps) if snaps else "(none)"
 
     system = (
         "You are reproducing a hybrid BM25+dense RAG emergency decision-support baseline. "
-        "Use only retrieved contexts and the scenario. Do not use SAFE modules. Return valid JSON."
+        "Use only fused retrieved contexts and the scenario. Do not use SAFE modules or KG logic. "
+        "Return valid JSON. Do not invent evidence IDs. Do not authorize real-world execution."
     )
     ctx_text = "\n\n".join(
         f"[context_id={c.get('context_id')} source_id={c.get('source_id')} citation={c.get('citation')} "
-        f"score={c.get('score')}]\n{c.get('text')}"
+        f"score={c.get('score')} meta={c.get('metadata')}]\n{c.get('text')}"
         for c in contexts
     ) or "(none)"
-    user = f"""Scenario:
+    if unified:
+        user = f"""Scenario:
+{scenario['scenario_text']}
+
+Dynamic snapshots:
+{snap_text}
+
+Fused retrieved contexts (BM25 + Dense RRF):
+{ctx_text}
+
+Retrieval provenance: hybrid_rrf. Cite only listed context_id values from the fused set.
+Recommended actions should reference retrieved evidence IDs when used; do not forge citations.
+""".strip()
+        user = append_decision_schema(user)
+    else:
+        user = f"""Scenario:
 {scenario['scenario_text']}
 
 Retrieved contexts:
@@ -193,17 +218,11 @@ Return JSON with:
         top_p=config.get("llm", {}).get("top_p"),
         seed=config.get("llm", {}).get("seed"),
     )
-    parsed = extract_json_object(raw_text)
-    payload = parsed or {"situation_summary": raw_text}
-    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
-    output.retrieved_contexts = contexts
-    output.latency_sec = round(time.perf_counter() - start, 4)
-    output.raw_output = {"text": raw_text, "parsed": payload}
+    case_id = str(scenario.get("case_id") or scenario.get("scenario_id"))
     real_dense = bool(index.build_manifest.get("actual_embedding_used") or index.build_manifest.get("real_embedding_model_used"))
-    output.method_specific = {
+    method_meta = {
         "baseline_name": "Hybrid BM25 + dense RRF RAG baseline",
         "reproduction_class": "controlled_supplemental" if real_dense else "smoke_fixture",
-        "llm_config_summary": llm_config_summary(config, llm),
         "retrieval_used": True,
         "retrieval_backend": "hybrid_rrf",
         "fusion": "rrf",
@@ -223,12 +242,37 @@ Return JSON with:
         "component_scores_recorded": True,
         "no_result": len(contexts) == 0,
         "runtime_reuse": runtime.audit.to_dict() if getattr(runtime, "audit", None) else None,
-        "runtime": llm_runtime_snapshot(llm),
-        "parsing_failure": not bool(parsed),
-        "parsing_status": "failed" if not parsed else "ok",
         "structured_safety_fields": "baseline_generated_only",
         "tuning_note": "Fusion weights must be selected on dev only; test config is frozen.",
     }
     if reject_smoke and not real_dense:
         raise DenseIndexError("Hybrid reject_smoke/paper_final forbids smoke dense index.")
+    if unified:
+        result = finalize_llm_decision(
+            case_id=case_id,
+            method_id=METHOD,
+            raw_text=raw_text,
+            config=config,
+            llm=llm,
+            start=start,
+            retrieved_contexts=contexts,
+            method_metadata=method_meta,
+            provenance={"retrieval_backend": "hybrid_rrf", "index_checksum": index.checksum},
+        )
+        assert isinstance(result, dict)
+        return result
+
+    parsed = extract_json_object(raw_text)
+    payload = parsed or {"situation_summary": raw_text}
+    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
+    output.retrieved_contexts = contexts
+    output.latency_sec = round(time.perf_counter() - start, 4)
+    output.raw_output = {"text": raw_text, "parsed": payload}
+    output.method_specific = {
+        **method_meta,
+        "llm_config_summary": llm_config_summary(config, llm),
+        "runtime": llm_runtime_snapshot(llm),
+        "parsing_failure": not bool(parsed),
+        "parsing_status": "failed" if not parsed else "ok",
+    }
     return maybe_infer_structured_safety_fields(output.to_dict(), config)

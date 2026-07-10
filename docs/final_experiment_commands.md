@@ -43,7 +43,17 @@ python scripts/validate_formal_config.py \
   --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
-# 4) Five-method dry run
+# 4) Five-method dry run (unified decision I/O — preferred for evaluator handoff)
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle <runner_bundle> \
+  --method-set comparison_suite \
+  --execution-stage dry_run \
+  --limit 3 \
+  --prediction-dir outputs/interop/dry_run/predictions \
+  --decision-dir outputs/decision_runs/dry_run \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
+
+# Optional: legacy combined JSONL runner
 python scripts/run_interop_baselines.py \
   --execution-stage dry_run \
   --method-set comparison_suite \
@@ -70,7 +80,16 @@ python scripts/validate_formal_config.py \
   --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
-# 7) Formal comparison
+# 7) Formal comparison (per-method prediction JSONL for main-project evaluator)
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle <frozen_runner_bundle> \
+  --method-set comparison_suite \
+  --execution-stage formal \
+  --prediction-dir outputs/interop/test_public/predictions \
+  --decision-dir outputs/decision_runs/test_public \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
+
+# Optional: legacy combined JSONL
 python scripts/run_interop_baselines.py \
   --execution-stage formal \
   --method-set comparison_suite \

@@ -359,19 +359,44 @@ def run_scenario(
     if getattr(runtime, "audit", None) is not None:
         runtime.audit.case_count += 1
 
+    from external_baselines.common.decision_finalize import (
+        append_decision_schema,
+        finalize_llm_decision,
+        use_unified_decision_output,
+    )
+
     index = runtime.dense_index
     retriever = runtime.retriever
     contexts = [retrieved_context_to_dict(c) for c in retriever.retrieve(scenario["scenario_text"], top_k=top_k)]
+    unified = use_unified_decision_output(config)
+    snaps = scenario.get("dynamic_snapshots") or []
+    snap_text = "\n".join(str(s) for s in snaps) if snaps else "(none)"
 
     system = (
         "You are reproducing a dense-embedding RAG emergency decision-support baseline. "
-        "Use only retrieved contexts and the scenario. Do not use SAFE modules. Return valid JSON."
+        "Use only retrieved contexts and the scenario. Do not use SAFE modules, BM25, or KG logic. "
+        "Return valid JSON. Do not invent evidence IDs. Do not authorize real-world execution."
     )
     ctx_text = "\n\n".join(
         f"[context_id={c.get('context_id')} source_id={c.get('source_id')} citation={c.get('citation')} score={c.get('score')}]\n{c.get('text')}"
         for c in contexts
     ) or "(none)"
-    user = f"""Scenario:
+    if unified:
+        user = f"""Scenario:
+{scenario['scenario_text']}
+
+Dynamic snapshots:
+{snap_text}
+
+Retrieved contexts (dense vector):
+{ctx_text}
+
+Retrieval provenance: dense embedding index. Cite only listed context_id values.
+Recommended actions should reference retrieved evidence IDs when used; do not forge citations.
+""".strip()
+        user = append_decision_schema(user)
+    else:
+        user = f"""Scenario:
 {scenario['scenario_text']}
 
 Retrieved contexts:
@@ -395,17 +420,11 @@ Return JSON with:
         top_p=config.get("llm", {}).get("top_p"),
         seed=config.get("llm", {}).get("seed"),
     )
-    payload = extract_json_object(raw_text) or {"situation_summary": raw_text}
-    parsing_failure = not bool(extract_json_object(raw_text))
-    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
-    output.retrieved_contexts = contexts
-    output.latency_sec = round(time.perf_counter() - start, 4)
-    output.raw_output = {"text": raw_text, "parsed": payload}
+    case_id = str(scenario.get("case_id") or scenario.get("scenario_id"))
     real_dense = bool(index.build_manifest.get("actual_embedding_used") or index.build_manifest.get("real_embedding_model_used"))
-    output.method_specific = {
+    method_meta = {
         "baseline_name": "Dense embedding RAG baseline",
         "reproduction_class": "controlled_supplemental" if real_dense else "smoke_fixture",
-        "llm_config_summary": llm_config_summary(config, llm),
         "retrieval_used": True,
         "retrieval_backend": "dense",
         "embedding_backend": index.backend,
@@ -415,9 +434,34 @@ Return JSON with:
         "corpus_checksum": index.build_manifest.get("corpus_checksum") or index.build_manifest.get("evidence_sha256"),
         "index_build_manifest": index.build_manifest,
         "runtime_reuse": runtime.audit.to_dict() if getattr(runtime, "audit", None) else None,
+        "structured_safety_fields": "baseline_generated_only",
+    }
+    if unified:
+        result = finalize_llm_decision(
+            case_id=case_id,
+            method_id=METHOD,
+            raw_text=raw_text,
+            config=config,
+            llm=llm,
+            start=start,
+            retrieved_contexts=contexts,
+            method_metadata=method_meta,
+            provenance={"retrieval_backend": "dense", "index_checksum": index.checksum},
+        )
+        assert isinstance(result, dict)
+        return result
+
+    payload = extract_json_object(raw_text) or {"situation_summary": raw_text}
+    parsing_failure = not bool(extract_json_object(raw_text))
+    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=METHOD)
+    output.retrieved_contexts = contexts
+    output.latency_sec = round(time.perf_counter() - start, 4)
+    output.raw_output = {"text": raw_text, "parsed": payload}
+    output.method_specific = {
+        **method_meta,
+        "llm_config_summary": llm_config_summary(config, llm),
         "runtime": llm_runtime_snapshot(llm),
         "parsing_failure": parsing_failure,
         "parsing_status": "failed" if parsing_failure else "ok",
-        "structured_safety_fields": "baseline_generated_only",
     }
     return maybe_infer_structured_safety_fields(output.to_dict(), config)

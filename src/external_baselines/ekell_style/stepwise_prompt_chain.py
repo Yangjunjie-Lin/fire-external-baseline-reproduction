@@ -26,7 +26,7 @@ ID_KEYS = frozenset({
     "id", "entity_id", "triple_id", "path_id", "evidence_id", "context_id",
     "source_id", "chunk_id",
 })
-CITATION_KEYS = frozenset({"evidence_ids", "citations", "evidence_links"})
+CITATION_KEYS = frozenset({"evidence_ids", "citations", "evidence_links", "evidence_refs"})
 
 
 def _json(value: Any) -> str:
@@ -127,6 +127,7 @@ class StepwisePromptChain:
         kg_paths: Sequence[Any] | None = None,
         query: str = "",
         candidate_universe: Sequence[str] | None = None,
+        fol_execution: Any | None = None,
     ) -> dict[str, Any]:
         plan = _validated_plan(validated_ast)
         evidence = {"contexts": list(kg_contexts), "paths": list(kg_paths or [])}
@@ -176,11 +177,13 @@ class StepwisePromptChain:
 
         root_step_id = execute(plan)
         final_template = self._template(FINAL_PROMPT_FILE)
+        fol_json = _json(fol_execution) if fol_execution is not None else "(none)"
         final_rendered = (
             final_template.replace("{query}", query)
             .replace("{logical_ast}", _json(plan.to_dict()))
             .replace("{step_results}", _json(steps))
             .replace("{kg_context}", context_json)
+            .replace("{fol_execution}", fol_json)
         )
         raw, parsed, status, retries = self._call(final_rendered)
         final_output, removed = _filter_citations(parsed, allowed_ids)
@@ -216,6 +219,7 @@ def run_stepwise_prompt_chain(
     candidate_universe: Sequence[str] | None = None,
     prompt_dir: str | Path = DEFAULT_PROMPT_DIR,
     max_retries: int = 1,
+    fol_execution: Any | None = None,
 ) -> dict[str, Any]:
     return StepwisePromptChain(
         llm=llm, prompt_dir=prompt_dir, max_retries=max_retries,
@@ -225,6 +229,7 @@ def run_stepwise_prompt_chain(
         kg_paths=kg_paths,
         query=query,
         candidate_universe=candidate_universe,
+        fol_execution=fol_execution,
     )
 
 

@@ -188,6 +188,7 @@ class HeuristicLLMClient:
         if has_context:
             evidence.append("Retrieved KG facts or evidence contexts were considered by this external baseline.")
             found = sorted(set(re.findall(r"(?:citation|source_id|chunk_id|context_id)[:=]\s*([A-Za-z0-9_:\-./]+)", user)))
+            found += sorted(set(re.findall(r'"(?:citation|source_id|chunk_id|context_id|evidence_id|triple_id|path_id)"\s*:\s*"([^"]+)"', user)))
             citations.extend(found[:8])
 
         if "scenario parsing task" in user.lower() or "parser output schema" in user.lower():
@@ -235,7 +236,58 @@ class HeuristicLLMClient:
             self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
             return out
 
-        # Stepwise FOL prompt-chain operations / final KG-grounded response.
+        # Unified decision+response schema takes priority (including E-KELL final stage).
+        if (
+            '"decision"' in system.lower()
+            or '"decision"' in user.lower()
+            or "decision schema" in user.lower()
+            or "return only one json object with this exact top-level shape" in user.lower()
+        ):
+            gate = "await_human_confirmation" if missing or blocked else "allow_response"
+            human_review = bool(missing or blocked)
+            status = "awaiting_human_confirmation" if human_review else "provided"
+            action_objs = []
+            for i, action in enumerate(list(dict.fromkeys(actions)), start=1):
+                slug = re.sub(r"[^a-z0-9]+", "_", action.lower()).strip("_")[:48] or f"action_{i}"
+                refs = citations[:3] if citations else []
+                action_objs.append(
+                    {
+                        "action_id": slug,
+                        "text": action,
+                        "priority": "high" if human_review else "medium",
+                        "evidence_refs": refs,
+                    }
+                )
+            nl = (
+                "External baseline response generated from the scenario text and retrieved context "
+                "supplied to the method. Confirm missing status before irreversible actions."
+            )
+            out = json.dumps(
+                {
+                    "decision": {
+                        "risk_signals": list(dict.fromkeys(risks)),
+                        "risk_level": "high" if human_review else "medium",
+                        "recommended_actions": action_objs,
+                        "blocked_actions": list(dict.fromkeys(blocked)),
+                        "missing_confirmations": list(dict.fromkeys(missing)),
+                        "human_review_required": human_review,
+                        "final_decision_gate": gate,
+                    },
+                    "response": {
+                        "status": status,
+                        "text": nl,
+                        "citations": citations[:8],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            self.last_usage = {
+                "prompt_tokens": max(1, (len(system) + len(user)) // 4),
+                "completion_tokens": max(1, len(out) // 4),
+            }
+            return out
+
+        # Stepwise FOL prompt-chain operations / final KG-grounded response (legacy paper format).
         if "entities connected to" in text or "intersection of" in text or "union of" in text or "do not belong" in text or "based on the above information" in text or "kg_context" in user.lower() or "logical_ast" in user.lower() or "step_results" in user.lower():
             out = json.dumps({
                 "entities": ["power isolation", "respiratory protection"] if "smoke" in text or "electrical" in text else [],
@@ -268,17 +320,24 @@ class HeuristicLLMClient:
             self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
             return out
 
-        gate = "critical_information_missing_or_requires_human_confirmation" if missing or blocked else "baseline_response_without_explicit_gate"
-        out = json.dumps({
-            "situation_summary": "External baseline response generated from the scenario text and retrieved context supplied to the method.",
-            "key_risks": list(dict.fromkeys(risks)),
-            "recommended_actions": list(dict.fromkeys(actions)),
-            "blocked_or_unsafe_actions": list(dict.fromkeys(blocked)),
-            "missing_confirmations": list(dict.fromkeys(missing)),
-            "supporting_evidence": evidence,
-            "citations": citations,
-            "final_decision_gate": gate,
-        }, ensure_ascii=False)
+        legacy_gate = (
+            "critical_information_missing_or_requires_human_confirmation"
+            if missing or blocked
+            else "baseline_response_without_explicit_gate"
+        )
+        out = json.dumps(
+            {
+                "situation_summary": "External baseline response generated from the scenario text and retrieved context supplied to the method.",
+                "key_risks": list(dict.fromkeys(risks)),
+                "recommended_actions": list(dict.fromkeys(actions)),
+                "blocked_or_unsafe_actions": list(dict.fromkeys(blocked)),
+                "missing_confirmations": list(dict.fromkeys(missing)),
+                "supporting_evidence": evidence,
+                "citations": citations,
+                "final_decision_gate": legacy_gate,
+            },
+            ensure_ascii=False,
+        )
         self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
         return out
 

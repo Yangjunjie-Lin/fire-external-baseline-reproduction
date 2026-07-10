@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.checksums import sha256_text
+from external_baselines.common.decision_finalize import finalize_llm_decision, use_unified_decision_output
 from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary, llm_runtime_snapshot
 from external_baselines.common.schema import normalize_response_payload, retrieved_context_to_dict
 from external_baselines.ekell_style.logical_query import (
@@ -34,6 +35,14 @@ from external_baselines.ekell_style.scenario_parser import parse_scenario
 from external_baselines.ekell_style.stepwise_prompt_chain import run_stepwise_prompt_chain
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 
+# Controlled reproduction keeps enhanced hooks off.
+CONTROLLED_ENHANCED_HOOKS_OFF = {
+    "dense_entity_retrieval": False,
+    "hybrid_subgraph_ranking": False,
+    "reranker": False,
+    "self_consistency": False,
+    "structured_verification": False,
+}
 REPRODUCTION_LABEL = (
     "E-KELL-style paper-faithful pipeline-level reimplementation, "
     "not official E-KELL reproduction."
@@ -286,7 +295,10 @@ def run_ekell_full_pipeline(
         fol_result = exec_out.to_dict() if hasattr(exec_out, "to_dict") else dict(exec_out)
 
     # 5) Stepwise logical prompt chain
-    prompt_dir = ekell_cfg.get("prompt_dir", "configs/prompts/paper_fidelity")
+    if track == "controlled_shared_llm":
+        prompt_dir = ekell_cfg.get("prompt_dir", "configs/prompts/controlled")
+    else:
+        prompt_dir = ekell_cfg.get("prompt_dir", "configs/prompts/paper_fidelity")
     fallback_ast = {
         "operation": "projection",
         "entity": seed_nodes[0] if seed_nodes else "unknown",
@@ -301,6 +313,7 @@ def run_ekell_full_pipeline(
         candidate_universe=_candidate_universe(kg, seeds, paths),
         llm=llm,
         prompt_dir=prompt_dir,
+        fol_execution=fol_result,
     )
     if degraded:
         chain = dict(chain)
@@ -308,36 +321,18 @@ def run_ekell_full_pipeline(
         chain["fallback_reason"] = fallback_reason
 
     final_step = chain.get("final") or {}
-    if track == "paper_fidelity":
-        payload = _paper_fidelity_payload(final_step, fol_result, all_contexts)
-        paper_original_output_format = True
-        controlled_output_format = False
-    else:
-        payload = _controlled_payload(final_step, all_contexts)
-        paper_original_output_format = False
-        controlled_output_format = True
+    unified = use_unified_decision_output(config) and track == "controlled_shared_llm"
+    case_id = str(scenario.get("case_id") or scenario.get("scenario_id"))
 
-    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=method)
-    output.retrieved_contexts = all_contexts
-    output.latency_sec = round(time.perf_counter() - start, 4)
-    output.raw_output = {
-        "decomposition_raw": raw_decomp,
-        "stepwise_chain": chain,
-        "final_stage_text": final_step.get("raw_output"),
-        "full_response": payload.get("full_response"),
-        "parsed": {k: v for k, v in payload.items() if k != "paper_fidelity_fields"},
-    }
-    result = output.to_dict()
-    if payload.get("full_response"):
-        result["full_response"] = payload["full_response"]
-    result["method_specific"] = {
+    method_specific_base = {
         "baseline_name": f"E-KELL-style {track}",
         "reproduction_label": REPRODUCTION_LABEL,
         "reproduction_class": "paper_fidelity" if track == "paper_fidelity" else "controlled_shared_llm",
         "track": track,
         "official_reproduction": False,
-        "paper_original_output_format": paper_original_output_format,
-        "controlled_output_format": controlled_output_format,
+        "paper_original_output_format": track == "paper_fidelity",
+        "controlled_output_format": track == "controlled_shared_llm",
+        "enhanced_hooks": dict(CONTROLLED_ENHANCED_HOOKS_OFF),
         "pipeline_trace": [
             "Scenario Input",
             "Query Understanding",
@@ -381,8 +376,6 @@ def run_ekell_full_pipeline(
         "stepwise_prompt_chain": chain,
         "graph_paths": paths,
         "kg_status": kg_status,
-        "llm_config_summary": llm_config_summary(config, llm),
-        "runtime": llm_runtime_snapshot(llm),
         "structured_safety_fields": "baseline_generated_only",
         "normalizer_policy_injection": False,
         "deviations": [
@@ -391,6 +384,70 @@ def run_ekell_full_pipeline(
             "ChatGLM-6B paper-fidelity model run requires user hardware; smoke/heuristic is not paper fidelity.",
             "Vector smoke_hash backend is test-only; formal runs require actual embedding backend.",
         ],
+    }
+
+    if unified:
+        raw_final = final_step.get("raw_output") or ""
+        # Prefer parsed decision+response object when present.
+        parsed_final = final_step.get("parsed_output")
+        if isinstance(parsed_final, dict) and ("decision" in parsed_final or "response" in parsed_final):
+            import json as _json
+
+            raw_for_parse = _json.dumps(parsed_final, ensure_ascii=False)
+        else:
+            raw_for_parse = str(raw_final)
+        result = finalize_llm_decision(
+            case_id=case_id,
+            method_id=method,
+            raw_text=raw_for_parse,
+            config=config,
+            llm=llm,
+            start=start,
+            retrieved_contexts=all_contexts,
+            method_metadata=method_specific_base,
+            provenance={
+                "track": track,
+                "allowed_evidence_ids": chain.get("allowed_evidence_ids"),
+                "logical_ast": chain.get("validated_ast"),
+            },
+        )
+        assert isinstance(result, dict)
+        result["raw_output"] = {
+            "decomposition_raw": raw_decomp,
+            "stepwise_chain": chain,
+            "final_stage_text": final_step.get("raw_output"),
+            "parsed": parsed_final,
+        }
+        return result
+
+    if track == "paper_fidelity":
+        payload = _paper_fidelity_payload(final_step, fol_result, all_contexts)
+        paper_original_output_format = True
+        controlled_output_format = False
+    else:
+        payload = _controlled_payload(final_step, all_contexts)
+        paper_original_output_format = False
+        controlled_output_format = True
+
+    output = normalize_response_payload(payload, scenario_id=scenario["scenario_id"], method=method)
+    output.retrieved_contexts = all_contexts
+    output.latency_sec = round(time.perf_counter() - start, 4)
+    output.raw_output = {
+        "decomposition_raw": raw_decomp,
+        "stepwise_chain": chain,
+        "final_stage_text": final_step.get("raw_output"),
+        "full_response": payload.get("full_response"),
+        "parsed": {k: v for k, v in payload.items() if k != "paper_fidelity_fields"},
+    }
+    result = output.to_dict()
+    if payload.get("full_response"):
+        result["full_response"] = payload["full_response"]
+    result["method_specific"] = {
+        **method_specific_base,
+        "paper_original_output_format": paper_original_output_format,
+        "controlled_output_format": controlled_output_format,
+        "llm_config_summary": llm_config_summary(config, llm),
+        "runtime": llm_runtime_snapshot(llm),
     }
     # Never invent safety via normalizer for paper fidelity; controlled also defaults off.
     return maybe_infer_structured_safety_fields(result, config)

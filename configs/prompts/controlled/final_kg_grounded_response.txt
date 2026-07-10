@@ -1,9 +1,35 @@
-TASK: Final KG-grounded decision-support response.
+TASK: Final KG-grounded structured decision + natural-language response.
 
-Answer the request using only the supplied triples, paths, and step results. Clearly
-state unsupported or missing information. Evidence citations must exactly match IDs
-present in PROVIDED KG EVIDENCE; never create or alter an ID. Return JSON only:
-{"answer":"","result_entities":[],"evidence_ids":[],"unsupported_or_missing":[]}
+Answer using ONLY the supplied materials below:
+- original scenario / request
+- validated logical expression (AST)
+- operator execution / step results (projection, intersection, union, negation)
+- retrieved KG entities, relations, triples, paths, and evidence chunks
+- intermediate reasoning answers in STEP RESULTS
+
+Do not invent evidence IDs. Cite only IDs present in PROVIDED KG EVIDENCE or STEP RESULTS.
+Do not assume unstated field conditions. Do not claim you can execute real operations.
+Do not authorize real-world execution. If uncertain, use missing_confirmations and an appropriate gate.
+
+Return ONLY one JSON object with this exact top-level shape:
+{
+  "decision": {
+    "risk_signals": ["string"],
+    "risk_level": "none|low|medium|high|critical|unknown",
+    "recommended_actions": [
+      {"action_id": "snake_case_id", "text": "action text", "priority": "low|medium|high|critical|unknown", "evidence_refs": ["evidence_id"]}
+    ],
+    "blocked_actions": ["string"],
+    "missing_confirmations": ["string"],
+    "human_review_required": true,
+    "final_decision_gate": "allow_response|await_human_confirmation|block_response|unknown"
+  },
+  "response": {
+    "status": "provided|awaiting_human_confirmation|blocked|not_applicable|unknown",
+    "text": "natural language answer for the operator",
+    "citations": ["evidence_id"]
+  }
+}
 
 ORIGINAL REQUEST:
 {query}
@@ -11,8 +37,11 @@ ORIGINAL REQUEST:
 VALIDATED LOGICAL AST:
 {logical_ast}
 
-STEP RESULTS:
+OPERATOR / STEP RESULTS (intermediate reasoning):
 {step_results}
 
-PROVIDED KG EVIDENCE:
+FOL EXECUTION TRACE (if provided in extras):
+{fol_execution}
+
+PROVIDED KG EVIDENCE (entities / relations / triples / paths / chunks):
 {kg_context}

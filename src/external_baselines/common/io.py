@@ -214,13 +214,9 @@ def to_prediction_input(scenario: dict[str, Any], *, config: dict[str, Any] | No
         "context": dict(context),
         "dynamic_snapshots": list(snapshots) if isinstance(snapshots, list) else snapshots,
         "allowed_dynamic_snapshots": list(snapshots) if isinstance(snapshots, list) else snapshots,
-        "metadata": {
-            "category": scenario.get("category") or source.get("category"),
-            "severity": scenario.get("severity") or source.get("severity"),
-            "track_tags": list(scenario.get("track_tags") or source.get("track_tags") or []),
-            "source_type": scenario.get("source_type") or source.get("source_type"),
-            "source_ref": scenario.get("source_ref") or source.get("source_ref"),
-        },
+        # Intentionally omit category/severity/track_tags/source_ref/gold — pipelines
+        # must decide from scenario text + allowed resources only.
+        "metadata": {},
         "allowed_corpus_dir": paths.get("corpus_dir"),
         "allowed_config_keys": sorted(
             k for k in (

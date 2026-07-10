@@ -15,7 +15,7 @@ waiting for main project v1
 **Goal:** static validation, readiness checks, no paid API, no real model download.
 
 ```text
-five-method comparison implementation ready
+unified decision I/O ready for five-method comparison
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
@@ -43,6 +43,9 @@ python scripts/build_comparison_indexes.py \
   --bundle <optional> \
   --method-set comparison_suite \
   --validate-only
+
+# Offline decision-suite wiring (heuristic LLM; temporary Runner Bundle fixtures in tests)
+python -m pytest tests/test_decision_comparison_suite.py -q
 ```
 
 **Not allowed:** real LLM calls, embedding download, full index build, cross-repo dry run, formal experiment.

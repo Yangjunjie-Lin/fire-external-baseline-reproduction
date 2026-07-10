@@ -15,12 +15,20 @@ Provide **external** baselines (Direct LLM, BM25-RAG, E-KELL-style, optional Gra
 ## 2. Current status
 
 ```text
-five-method comparison implementation ready
+unified decision I/O ready for five-method comparison
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
 formal experiment not yet executed
 ```
+
+External baselines preserve native retrieval/reasoning and emit:
+
+1. structured decision JSON
+2. natural-language response
+3. firebench-interop-v1 prediction JSONL (per method)
+
+This repository **only generates predictions**. Formal scoring remains owned by `fire-agent-demo`.
 
 Controlled comparison code is complete for:
 
@@ -79,6 +87,37 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 ## 4. Formal interop workflow
 
 **Only formal entrypoint.** `.example` files are templates only — copy before running.
+
+### Unified decision comparison suite (preferred for evaluator handoff)
+
+All five methods share the same Runner Bundle input and independently emit structured decision + natural-language response + per-method `firebench-interop-v1` JSONL. Natural language is for human review; decision fields are the primary comparison object for the main-project evaluator.
+
+```bash
+# Dry run (heuristic/smoke OK for local wiring checks)
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle path/to/runner_bundle \
+  --method-set comparison_suite \
+  --execution-stage dry_run \
+  --limit 3 \
+  --prediction-dir outputs/interop/dry_run/predictions \
+  --decision-dir outputs/decision_runs/dry_run
+
+# Formal (after real resources + freeze; uses Bundle prediction_schema.json)
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle path/to/frozen_runner_bundle \
+  --method-set comparison_suite \
+  --execution-stage formal \
+  --prediction-dir outputs/interop/test_public/predictions \
+  --decision-dir outputs/decision_runs/test_public \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
+```
+
+Artifacts:
+
+- `outputs/interop/<split>/predictions/<method_id>.jsonl` — hand to `fire-agent-demo` evaluator
+- `outputs/decision_runs/<split>/<method_id>/{decisions,responses}.jsonl` + `run_summary.json`
+
+### Legacy combined interop runner
 
 ```bash
 pip install -e ".[llm,embeddings]"

@@ -38,3 +38,6 @@ Machine-readable twin: [`method_fidelity_matrix.json`](method_fidelity_matrix.js
 6. LightRAG / Microsoft GraphRAG remain `fallback_only` until actual package indexing + query + checksums are recorded.
 7. Source of truth for IDs/wiring: `src/external_baselines/method_registry.py`.
 8. Formal freeze uses stage-aware validation: template (provisional) → dry_run (provisional|frozen) → formal (frozen + freeze_manifest).
+9. All comparison methods share Runner Bundle input + unified decision/response output schema; internal retrieval/reasoning stays method-specific.
+10. External repo emits predictions only; `fire-agent-demo` owns the formal evaluator. Natural language is not the primary `io_macro_score` object — decision fields are.
+11. E-KELL controlled is pipeline-level reproduction (query decomposition → logic → KG → staged generation). Dense/Hybrid are not E-KELL reproduction.

@@ -3,22 +3,18 @@
 ## Current phase
 
 ```text
-five-method comparison implementation ready
+unified decision I/O ready for five-method comparison
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
 formal experiment not yet executed
 ```
 
-Five-method controlled comparison code and resource interfaces are complete. Real indexes, paid API dry runs, DEV freeze, and formal TEST remain deferred until main-project Runner Bundle + embedding model revision are installed.
-
-Manual `status.main_project_v1_ready: true` is an approval signal only and cannot bypass branch/bundle/schema/checksum validation.
-
-Formal model identity is frozen in YAML. Environment variables provide credentials and endpoints only.
+Five methods share one Runner Bundle input protocol and independently emit structured decision JSON, natural-language response, and per-method `firebench-interop-v1` prediction JSONL. Native retrieval/reasoning designs are preserved. Formal evaluation remains owned by `fire-agent-demo`.
 
 ## Valid claim
 
-The repository is **five-method controlled comparison code complete** with stage-aware freeze validation. **No formal experiment has been started.**
+The repository is **ready to receive real scenarios, corpora, indexes and model resources** for unified decision comparison. **No formal experiment has been started.**
 
 It is **not** paper-ready, **not** empirically validated, and **not** an official E-KELL reproduction.
 
@@ -28,6 +24,8 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 |---|---|
 | Shared real LLM config | prepared (env vars only; gitignored) |
 | `main_table` + `comparison_suite` method sets | implemented |
+| Unified `DecisionOutput` + strict formal parser | implemented |
+| Per-method decision suite runner | `scripts/run_decision_comparison_suite.py` |
 | Dense real text2vec index build/load/query | implemented (fake-model tests only) |
 | Hybrid BM25 + Dense + RRF | implemented; reuses Dense index |
 | Shared embedding backend factory | `src/external_baselines/retrieval/embedding_backends.py` |
@@ -42,9 +40,9 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 - Main-project v1 Runner Bundle + scenarios/corpus
 - Embedding model revision mount / download
 - Real Dense + E-KELL index builds
-- 1–3 case dry run
+- 1–3 case dry run with shared SiliconFlow LLM
 - DEV parameter selection + human freeze
-- Formal TEST + main-project evaluator
+- Formal TEST + main-project evaluator scoring
 
 ## Method layers
 
