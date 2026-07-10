@@ -27,7 +27,8 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
-    if path.suffix.lower() in {".yaml", ".yml"}:
+    name = path.name.lower()
+    if path.suffix.lower() in {".yaml", ".yml"} or name.endswith(".yaml.example") or name.endswith(".yml.example"):
         raw = read_yaml(path)
     else:
         raw = read_json(path)

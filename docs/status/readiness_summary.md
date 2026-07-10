@@ -6,7 +6,8 @@
 | formal_interop_entrypoint | true | `scripts/run_interop_baselines.py` |
 | ekell_controlled_code_ready | true | `full_pipeline.run_controlled_shared_llm` |
 | ekell_paper_fidelity_interface_ready | true | config/adapter only |
-| cross_repository_interop_verified | false | await formal shared-LLM + main evaluator |
+| cross_repository_interop_verified | false | formal shared-LLM + main evaluator still pending |
+| cross_repository_contract_verified | true* | *when `scripts/verify_cross_repo_contract.py` succeeds locally |
 | real_shared_llm_run | false | user credentials / paid API |
 | real_chatglm_run | false | user server |
 | actual_lightrag | false | fallback_only |

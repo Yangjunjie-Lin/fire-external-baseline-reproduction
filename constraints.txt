@@ -1,0 +1,7 @@
+# Pinned runtime constraints (generated for reproducibility tooling).
+# Regenerate with: pip freeze > constraints.txt  (review before committing)
+PyYAML>=6.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+jsonschema>=4.0.0
+pytest>=8.0.0

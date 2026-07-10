@@ -1,0 +1,4 @@
+# DEPRECATED duplicate manifest — use configs/experiments/controlled_main_table_v1.yaml.example
+deprecated: true
+redirect_to: configs/experiments/controlled_main_table_v1.yaml.example
+reason: Consolidated into single formal main-table manifest (controlled_main_table_v1).

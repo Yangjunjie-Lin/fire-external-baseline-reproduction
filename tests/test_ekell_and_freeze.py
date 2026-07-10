@@ -82,6 +82,7 @@ def test_frozen_config_not_overwritten():
         "bm25_rag_v1.yaml",
         "dense_rag_v1.yaml",
         "hybrid_rag_v1.yaml",
+        "ekell_controlled_shared_llm_v1.yaml",
         "ekell_style_faithful_v1.yaml",
         "ekell_style_enhanced_v1.yaml",
         "freeze_manifest.json",

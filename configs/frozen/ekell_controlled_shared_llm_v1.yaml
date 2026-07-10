@@ -1,0 +1,59 @@
+# Frozen E-KELL controlled shared-LLM config (canonical main-table method).
+method_id: ekell_style_controlled_shared_llm
+freeze_id: ekell_controlled_shared_llm_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
+split_policy: tuned_on_dev_only_test_frozen
+reproduction_class: controlled_paper_architecture
+official_reproduction: false
+
+scenario_parser:
+  use_llm: true
+
+retrieval:
+  top_k: 5
+  top_k_entities: 8
+  top_k_triples: 20
+  top_k_relations: 10
+  top_k_evidence: 6
+  entity_min_score: 0.08
+  max_context_chars: 8000
+
+ekell_style:
+  prompt_dir: configs/prompts/controlled
+  dense_entity_retrieval: false
+  hybrid_subgraph_ranking: false
+  reranker: false
+  self_consistency: false
+  structured_verification: false
+  neighborhood_k_hop: 1
+  neighborhood_max_nodes: 50
+  neighborhood_max_triples: 80
+
+ekell_vector:
+  backend: text2vec
+  model_name: REQUIRED_BEFORE_FORMAL_RUN
+  model_version: REQUIRED_BEFORE_FORMAL_RUN
+  dimension: REQUIRED_BEFORE_FORMAL_RUN
+  similarity: cosine
+  top_k: 8
+  normalize_embeddings: true
+  reject_smoke: true
+  reuse_index: true
+  index_path: outputs/indexes/ekell/<model-hash>/<corpus-hash>/
+
+llm:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1200
+  seed: 7
+
+normalization:
+  infer_structured_safety_fields: false
+
+tuning_search_space:
+  top_k_entities: [5, 8, 12]
+  top_k_triples: [10, 20, 30]
+  entity_min_score: [0.05, 0.08, 0.12]
+  max_context_chars: [4000, 8000]
+selection_criterion: "dev: Safety-Gated + Critical Failure Rate + Risk/Action F1 + evidence support + latency"

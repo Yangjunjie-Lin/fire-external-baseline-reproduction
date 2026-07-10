@@ -48,11 +48,11 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 pip install -e .
 pip install -r requirements.txt
 
-cp configs/experiments/paper_main_table_v1.yaml.example configs/experiments/paper_main_table_v1.yaml
+cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
 # set shared model config; do not auto-call paid APIs from CI/agents
 
 python scripts/run_interop_baselines.py \
-  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/runner_bundle \
   --output outputs/interop/predictions.jsonl \
   --manifest outputs/interop/run_manifest.json

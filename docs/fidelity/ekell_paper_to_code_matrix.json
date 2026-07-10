@@ -1,0 +1,104 @@
+{
+  "matrix_version": "1",
+  "paper": "https://arxiv.org/abs/2311.08732",
+  "claim": "E-KELL-style high-fidelity pipeline-level reimplementation, not official reproduction",
+  "modules": [
+    {
+      "module_id": "logical_query_decomposition",
+      "paper_location": "Sec 3.2; Fig 3",
+      "required_behavior": "LLM decomposes NL query into logical expression AST",
+      "implementation_paths": ["src/external_baselines/ekell_style/logical_query/query_decomposer.py"],
+      "test_paths": ["tests/test_fol_executor.py", "tests/test_ekell_full_pipeline_smoke.py"],
+      "status": "approximated",
+      "deviation": "Prompts paraphrased; not official verbatim templates",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "ast_validation",
+      "paper_location": "Sec 3.2",
+      "required_behavior": "Validate logical AST against KG vocabulary",
+      "implementation_paths": ["src/external_baselines/ekell_style/logical_query/validator.py"],
+      "test_paths": ["tests/test_fol_executor.py"],
+      "status": "approximated",
+      "deviation": "Degraded fallback when AST invalid",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "fol_executor",
+      "paper_location": "Sec 3.2 Eqs (2)-(5)",
+      "required_behavior": "Execute p / AND / OR / NOT over KG",
+      "implementation_paths": ["src/external_baselines/ekell_style/logical_query/fol_executor.py"],
+      "test_paths": ["tests/test_fol_executor.py"],
+      "status": "approximated",
+      "deviation": "Choudhary-style deterministic executor",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "vector_kg_retrieval",
+      "paper_location": "Sec 4; Fig 4",
+      "required_behavior": "Vector retrieval over KG segments (text2vec)",
+      "implementation_paths": [
+        "src/external_baselines/ekell_style/vector_retriever.py",
+        "src/external_baselines/ekell_style/vector_index.py",
+        "src/external_baselines/ekell_style/embedding_backends.py"
+      ],
+      "test_paths": ["tests/test_ekell_vector_retrieval.py"],
+      "status": "implemented_but_not_empirically_run",
+      "deviation": "Smoke hash backend allowed only in smoke configs",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "neighborhood_expansion",
+      "paper_location": "Sec 3.2 Eqs (6)-(9); Fig 6",
+      "required_behavior": "k-hop neighborhood expansion on KG",
+      "implementation_paths": ["src/external_baselines/ekell_style/neighborhood_expander.py"],
+      "test_paths": ["tests/test_neighborhood_expander.py"],
+      "status": "approximated",
+      "deviation": "Budget caps and relation whitelist",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "stepwise_prompt_chain",
+      "paper_location": "Sec 3.2; App A",
+      "required_behavior": "Stepwise sub-prompts over KG segments",
+      "implementation_paths": [
+        "src/external_baselines/ekell_style/stepwise_prompt_chain.py",
+        "configs/prompts/paper_fidelity/"
+      ],
+      "test_paths": ["tests/test_stepwise_prompt_chain.py"],
+      "status": "approximated",
+      "deviation": "Paraphrased App A templates",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "official_kg",
+      "paper_location": "Sec 4 (2264 triples)",
+      "required_behavior": "Official expert-refined E-KELL KG",
+      "implementation_paths": ["src/external_baselines/ekell_style/kg_loader.py"],
+      "test_paths": ["tests/test_kg_construction_smoke.py"],
+      "status": "unavailable_publicly",
+      "deviation": "Substituted fire-domain copied corpus",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "chatglm6b_system_llm",
+      "paper_location": "Sec 4",
+      "required_behavior": "ChatGLM-6B local inference",
+      "implementation_paths": ["configs/models/chatglm6b_local.yaml.example"],
+      "test_paths": [],
+      "status": "interface_only",
+      "deviation": "Adapter/config only; no empirical run",
+      "empirically_validated": false
+    },
+    {
+      "module_id": "expert_evaluation",
+      "paper_location": "Sec 5.2 Table 2",
+      "required_behavior": "Firefighter/commander expert ratings",
+      "implementation_paths": ["docs/manual_evaluation_rubric.md"],
+      "test_paths": [],
+      "status": "unavailable_publicly",
+      "deviation": "Protocol templates only",
+      "empirically_validated": false
+    }
+  ]
+}

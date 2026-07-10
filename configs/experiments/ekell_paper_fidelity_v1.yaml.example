@@ -1,0 +1,38 @@
+# Formal E-KELL paper-fidelity track (separate from controlled main table).
+schema_version: firebench-interop-v1
+experiment_id: ekell_paper_fidelity_v1
+track: B_paper_fidelity
+run_mode: formal
+freeze_status: provisional
+paper_final: true
+paper_fidelity_model_run: false
+
+bundle: path/to/runner_bundle
+
+base_config: configs/default.yaml
+shared_model_config: configs/models/chatglm6b_local.yaml.example
+
+require_bundle_checksum: true
+require_external_schema: true
+require_complete_case_match: true
+fail_on_schema_error: true
+fail_on_duplicate_case_id: true
+fail_on_missing_case: true
+fail_on_extra_case: true
+
+main_table_methods: []
+paper_fidelity_methods:
+  - ekell_style_paper_fidelity
+
+methods:
+  - method_id: ekell_style_paper_fidelity
+    paper_table_role: paper_fidelity
+    config: configs/ekell_paper_fidelity_chatglm6b.yaml.example
+    enabled: true
+
+output: outputs/interop/ekell_paper_fidelity_v1/predictions.jsonl
+run_manifest: outputs/interop/ekell_paper_fidelity_v1/run_manifest.json
+
+notes:
+  - ChatGLM-6B + text2vec must be configured before formal run.
+  - Interface-ready ≠ empirically validated.

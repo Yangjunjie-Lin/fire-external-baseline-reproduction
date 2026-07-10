@@ -140,6 +140,35 @@ def method_leaderboard_eligibility(method_id: str, method_specific: dict[str, An
             "reproduction_level": reproduction_level,
         }
 
+    if mid in {"ekell_style_controlled_shared_llm", "ekell_style_paper_fidelity"}:
+        backend = str(ms.get("embedding_backend") or ms.get("vector_backend") or "").lower()
+        smoke_used = bool(ms.get("smoke_fallback_used")) or backend in {
+            "",
+            "smoke",
+            "hash",
+            "deterministic_hash_smoke",
+            "smoke_hash_embedding",
+        }
+        if smoke_used or ms.get("actual_embedding_used") is False:
+            return {
+                "formal_leaderboard": False,
+                "actual_graphrag_leaderboard": False,
+                "smoke_or_fallback_only": True,
+                "reason": "E-KELL vector path used smoke/hash embedding; formal requires real backend",
+                "reproduction_level": reproduction_level,
+            }
+
+    if mid == "direct_llm":
+        provider = str(ms.get("llm_provider") or "").lower()
+        if provider in {"heuristic", "local", "smoke", ""}:
+            return {
+                "formal_leaderboard": False,
+                "actual_graphrag_leaderboard": False,
+                "smoke_or_fallback_only": True,
+                "reason": "direct_llm requires recorded real LLM provider for formal eligibility",
+                "reproduction_level": reproduction_level,
+            }
+
     return {
         "formal_leaderboard": True,
         "actual_graphrag_leaderboard": False,

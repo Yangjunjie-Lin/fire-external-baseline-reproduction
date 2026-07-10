@@ -31,3 +31,6 @@ data/scenarios/*.json
 !data/corpus/triples.jsonl
 !data/scenarios/scenario_matrix_v2.json
 data/data_manifest.json
+
+dist/
+*.egg-info/

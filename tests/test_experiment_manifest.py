@@ -16,12 +16,12 @@ from external_baselines.common.experiment_manifest import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_load_paper_main_table_manifest_example(tmp_path):
-    src = ROOT / "configs" / "experiments" / "paper_main_table_v1.yaml.example"
-    # Point shared model at heuristic smoke for unit test (no paid API).
+def test_load_controlled_main_table_manifest_example(tmp_path):
+    src = ROOT / "configs" / "experiments" / "controlled_main_table_v1.yaml.example"
     text = src.read_text(encoding="utf-8")
+    text = text.replace("paper_final: true", "paper_final: false")
     text = text.replace(
-        "shared_model_config: configs/shared_real_model.yaml",
+        "shared_model_config: configs/models/shared_real_model.yaml.example",
         "shared_model_config: configs/deterministic_heuristic_smoke.yaml",
     )
     text = text.replace("bundle: path/to/runner_bundle", "bundle: unused")
@@ -32,7 +32,7 @@ def test_load_paper_main_table_manifest_example(tmp_path):
     main = enabled_methods(manifest, include_supplemental=False)
     assert [m["method_id"] for m in main] == list(MAIN_TABLE_METHODS)
     supp = enabled_methods(manifest, include_supplemental=True)
-    assert len(supp) == 3  # only enabled main-table entries (supplemental disabled)
+    assert len(supp) == 3
 
 
 def test_method_config_merge_order(tmp_path):
@@ -75,7 +75,7 @@ def test_run_interop_rejects_multi_config():
     argv = [
         str(script),
         "--experiment-manifest",
-        "configs/experiments/paper_main_table_v1.yaml.example",
+        "configs/experiments/controlled_main_table_v1.yaml.example",
         "--config",
         "a.yaml",
         "--config",

@@ -33,10 +33,10 @@
     "configs/frozen/bm25_rag_v1.yaml",
     "configs/frozen/dense_rag_v1.yaml",
     "configs/frozen/hybrid_rag_v1.yaml",
-    "configs/frozen/ekell_style_faithful_v1.yaml",
+    "configs/frozen/ekell_controlled_shared_llm_v1.yaml",
     "configs/frozen/ekell_style_enhanced_v1.yaml"
   ],
-  "main_table_methods": ["direct_llm", "bm25_rag", "ekell_style_faithful"],
+  "main_table_methods": ["direct_llm", "bm25_rag", "ekell_style_controlled_shared_llm"],
   "supplemental_methods": ["dense_rag", "hybrid_rag", "ekell_style_enhanced"],
   "dev_results_dir": "outputs/tuning",
   "note": "Populate outputs/tuning/* with actual shared-LLM DEV search logs before promoting freeze_status to locked."

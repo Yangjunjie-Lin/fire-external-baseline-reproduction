@@ -1,38 +1,8 @@
-# Frozen E-KELL-style FAITHFUL config. No enhanced features.
-method_id: ekell_style_faithful
-freeze_id: ekell_style_faithful_v1
-freeze_status: provisional
-provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
-split_policy: tuned_on_dev_only_test_frozen
-reproduction_class: faithful
-official_reproduction: false
-scenario_parser:
-  use_llm: true
-retrieval:
-  top_k: 5
-  top_k_entities: 8
-  top_k_triples: 20
-  top_k_relations: 10
-  top_k_evidence: 6
-  entity_min_score: 0.08
-  max_context_chars: 8000
-ekell_style:
-  prompt_dir: configs/prompts/paper_fidelity
-  dense_entity_retrieval: false
-  hybrid_subgraph_ranking: false
-  reranker: false
-  self_consistency: false
-  structured_verification: false
-llm:
-  temperature: 0.0
-  top_p: 1.0
-  max_tokens: 1200
-  seed: 7
-normalization:
-  infer_structured_safety_fields: false
-tuning_search_space:
-  top_k_entities: [5, 8, 12]
-  top_k_triples: [10, 20, 30]
-  entity_min_score: [0.05, 0.08, 0.12]
-  max_context_chars: [4000, 8000]
-selection_criterion: "dev: Safety-Gated + Critical Failure Rate + Risk/Action F1 + evidence support + latency"
+# DEPRECATED — do not use in new formal runs.
+# Redirect: configs/frozen/ekell_controlled_shared_llm_v1.yaml
+# CLI alias ekell_style_faithful is accepted but canonical method_id is ekell_style_controlled_shared_llm.
+deprecated: true
+redirect_to: configs/frozen/ekell_controlled_shared_llm_v1.yaml
+method_id: ekell_style_controlled_shared_llm
+freeze_id: ekell_controlled_shared_llm_v1
+note: This file is a compatibility stub only; full config lives in ekell_controlled_shared_llm_v1.yaml.

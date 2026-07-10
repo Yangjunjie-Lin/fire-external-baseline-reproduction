@@ -1,0 +1,43 @@
+# Formal supplemental methods experiment (optional).
+schema_version: firebench-interop-v1
+experiment_id: supplemental_v1
+track: A_shared_outcome
+run_mode: formal
+freeze_status: provisional
+paper_final: true
+
+bundle: path/to/runner_bundle
+
+base_config: configs/default.yaml
+shared_model_config: configs/models/shared_real_model.yaml.example
+
+require_bundle_checksum: true
+require_external_schema: true
+require_complete_case_match: true
+fail_on_schema_error: true
+fail_on_duplicate_case_id: true
+fail_on_missing_case: true
+fail_on_extra_case: true
+
+main_table_methods: []
+supplemental_methods:
+  - dense_rag
+  - hybrid_rag
+  - ekell_style_enhanced
+
+methods:
+  - method_id: dense_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/dense_rag_v1.yaml
+    enabled: true
+  - method_id: hybrid_rag
+    paper_table_role: supplemental_extended
+    config: configs/frozen/hybrid_rag_v1.yaml
+    enabled: true
+  - method_id: ekell_style_enhanced
+    paper_table_role: supplemental_extended
+    config: configs/frozen/ekell_style_enhanced_v1.yaml
+    enabled: true
+
+output: outputs/interop/supplemental_v1/predictions.jsonl
+run_manifest: outputs/interop/supplemental_v1/run_manifest.json

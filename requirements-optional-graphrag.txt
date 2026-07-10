@@ -1,0 +1,2 @@
+# Optional GraphRAG interface dependencies (not installed by default).
+# Actual LightRAG / Microsoft GraphRAG indexing is user-managed.
