@@ -1,26 +1,39 @@
-# Frozen Dense RAG config.
-# NOTE: smoke_hash_embedding is NOT a real embedding model. Formal dense leaderboard
-# requires a real embedding model + index checksum recorded at run time.
+# Frozen Dense RAG config (supplemental; not enabled for main table).
+# Real index build deferred until main-project v1 + DEV tuning.
 method_id: dense_rag
 freeze_id: dense_rag_v1
 freeze_status: provisional
 provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
+enabled_for_main_table: false
+paper_table_role: supplemental
+reproduction_class: controlled_paper_architecture
+official_reproduction: false
+
 retrieval:
   top_k: 5
+
 dense_rag:
-  backend: smoke_hash_embedding
-  model_name: smoke-hash-embedding
-  model_version: v0-smoke
-  dim: 64
+  backend: text2vec
+  model_name: BAAI/bge-m3
+  model_version: REQUIRED_BEFORE_REAL_INDEX_BUILD
+  dimension: 1024
+  normalize_embeddings: true
+  similarity: cosine
+  top_k: 5
+  batch_size: 16
   reuse_index: true
-  index_path: outputs/dense_index_smoke.json
+  index_path: outputs/indexes/dense/bge-m3/<corpus-checksum>/
+  reject_smoke: true
+
 llm:
   temperature: 0.0
   top_p: 1.0
   max_tokens: 1200
   seed: 7
+
 normalization:
   infer_structured_safety_fields: false
+
 formal_leaderboard_ready: false
-blocker: "Replace smoke_hash_embedding with a real embedding model before paper dense runs."
+blocker: "Dense pipeline real index build adapter pending; config prepared only."

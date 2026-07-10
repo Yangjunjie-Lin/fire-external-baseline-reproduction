@@ -15,13 +15,31 @@ Provide **external** baselines (Direct LLM, BM25-RAG, E-KELL-style, optional Gra
 ## 2. Current status
 
 ```text
-Engineering-complete external baseline scaffold
-+ code-level E-KELL-style reproduction
-+ firebench-interop-v1 interop
-≠ formal experiments completed
-≠ official E-KELL reproduction
-≠ empirically validated paper results
+Baseline engineering and formal configuration are prepared.
+Execution is intentionally deferred until the main project produces its
+first stable model version and formal Runner Bundle.
+
+engineering complete
+configuration prepared
+execution intentionally deferred
+waiting for main project v1
 ```
+
+Baseline 工程和正式配置已准备完成。真实联调被主动推迟，直到主项目形成第一版稳定模型和正式 Runner Bundle。
+
+Readiness gates:
+
+| Flag | Value |
+|---|---|
+| configuration_prepared | true |
+| api_environment_available | present_or_unknown |
+| real_model_calls_executed | false |
+| embedding_index_built | false |
+| main_project_v1_ready | false |
+| cross_repository_real_dry_run | false |
+| formal_experiment_started | false |
+
+Stage plan: [`docs/experiments/staged_execution_plan.md`](docs/experiments/staged_execution_plan.md)
 
 Details: [`docs/status/current_project_status.md`](docs/status/current_project_status.md)
 
@@ -48,10 +66,13 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 pip install -e .
 pip install -r requirements.txt
 
-# Controlled main table
+# Copy templates before formal runs (local files are gitignored):
 cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
 cp configs/models/shared_real_model.yaml.example configs/models/shared_real_model.yaml
-# Fill all placeholders (model, ekell_vector, bundle path, etc.)
+
+# Preparation checks (no API calls):
+python scripts/check_main_project_readiness.py --resources configs/local/experiment_resources.yaml
+python scripts/show_experiment_state.py
 
 python scripts/validate_formal_config.py \
   --config configs/experiments/controlled_main_table_v1.yaml

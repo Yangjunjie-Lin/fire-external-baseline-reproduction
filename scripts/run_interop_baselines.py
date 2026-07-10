@@ -112,6 +112,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Debugging only: allow missing/duplicate/extra case×method predictions.",
     )
     parser.add_argument("--config", action="append", default=[], help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--override-readiness-lock",
+        action="store_true",
+        help="Manual bypass only; never use in CI or automation.",
+    )
     args = parser.parse_args(argv)
 
     if args.config:
@@ -121,6 +126,15 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     experiment = load_experiment_manifest(args.experiment_manifest)
+
+    from external_baselines.common.execution_lock import assert_formal_execution_allowed  # noqa: E402
+
+    assert_formal_execution_allowed(
+        experiment_manifest=experiment,
+        bundle_path=args.bundle or experiment.get("bundle"),
+        override_readiness_lock=bool(args.override_readiness_lock),
+    )
+
     bundle_path = args.bundle or experiment.get("bundle")
     if not bundle_path:
         raise SystemExit("Runner Bundle path required via --bundle or experiment manifest.bundle")

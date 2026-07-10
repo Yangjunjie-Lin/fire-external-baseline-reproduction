@@ -33,5 +33,10 @@ data/scenarios/*.json
 data/data_manifest.json
 
 configs/models/shared_real_model.yaml
+configs/experiments/*.yaml
+!configs/experiments/*.yaml.example
+configs/models/*.yaml
+!configs/models/*.yaml.example
+configs/local/
 
 *.egg-info/

@@ -1,36 +1,56 @@
-# Frozen Hybrid RAG config (RRF). Weights selected on DEV only.
+# Frozen Hybrid RAG config (RRF; supplemental; not enabled for main table).
 method_id: hybrid_rag
 freeze_id: hybrid_rag_v1
 freeze_status: provisional
 provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
+enabled_for_main_table: false
+paper_table_role: supplemental
+reproduction_class: controlled_paper_architecture
+official_reproduction: false
+
 retrieval:
   top_k: 5
+
 hybrid_rag:
+  lexical_method: bm25
+  dense_method: text2vec
+  dense_model_name: BAAI/bge-m3
+  dense_model_version: REQUIRED_BEFORE_REAL_INDEX_BUILD
+  dimension: 1024
+  normalize_embeddings: true
   top_k: 5
+  candidate_pool: 20
   rrf_k: 60
   lexical_weight: 1.0
   dense_weight: 1.0
-  candidate_pool: 20
+  reject_smoke: true
+
 dense_rag:
-  backend: smoke_hash_embedding
-  model_name: smoke-hash-embedding
-  model_version: v0-smoke
-  dim: 64
+  backend: text2vec
+  model_name: BAAI/bge-m3
+  model_version: REQUIRED_BEFORE_REAL_INDEX_BUILD
+  dimension: 1024
+  normalize_embeddings: true
   reuse_index: true
-  index_path: outputs/dense_index_smoke.json
+  index_path: outputs/indexes/dense/bge-m3/<corpus-checksum>/
+  reject_smoke: true
+
 llm:
   temperature: 0.0
   top_p: 1.0
   max_tokens: 1200
   seed: 7
+
 normalization:
   infer_structured_safety_fields: false
+
 tuning_search_space:
   lexical_weight: [0.5, 1.0, 1.5]
   dense_weight: [0.5, 1.0, 1.5]
   rrf_k: [30, 60]
   top_k: [3, 5, 8]
+
 selection_criterion: "dev: Safety-Gated + Critical Failure Rate + Risk/Action F1 + blocked recall; freeze after selection"
 formal_leaderboard_ready: false
 blocker: "Requires real dense embeddings for formal hybrid paper runs."

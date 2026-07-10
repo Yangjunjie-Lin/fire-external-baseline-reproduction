@@ -3,14 +3,37 @@
 ## Current phase
 
 ```text
-Engineering convergence before formal experiments
+Configuration prepared — execution intentionally deferred
+waiting for main project first_model_v1_ready + formal Runner Bundle
 ```
+
+Baseline engineering and formal configuration are prepared. Real cross-repository dry runs and formal experiments remain **locked** until the main project publishes its first stable model version.
 
 ## Valid claim
 
-The repository is an **engineering-complete external baseline scaffold** with code-level E-KELL-style reproduction and `firebench-interop-v1` interop support. **Formal experiments remain pending.**
+The repository is an **engineering-complete external baseline scaffold** with formal configs, readiness gates, and deferred execution locks. **No formal experiment has been started.**
 
-It is **not** an official E-KELL reproduction and is **not** empirically validated on shared real LLMs.
+It is **not** paper-ready, **not** experiment-ready, and **not** empirically validated on shared real LLMs in a cross-repo setting.
+
+## Preparation complete (this phase)
+
+| Item | Status |
+|---|---|
+| Shared real LLM config (`configs/models/shared_real_model.yaml`) | prepared (env vars only; gitignored) |
+| Controlled main-table manifest | prepared (`bundle` placeholder) |
+| E-KELL vector embedding config (`text2vec` + BAAI/bge-m3 candidate) | prepared; index not built |
+| Dense/Hybrid supplemental configs | prepared; disabled for main table |
+| Main-project readiness checker | `scripts/check_main_project_readiness.py` |
+| Experiment state + execution lock | `configs/local/experiment_state.yaml` + `run_interop_baselines.py` |
+| Staged execution plan | `docs/experiments/staged_execution_plan.md` |
+
+## Still pending (deferred)
+
+- Shared real SiliconFlow LLM **runs** (no API calls in this phase)
+- Real embedding index build / download
+- Cross-repository real dry run (1–3 cases)
+- DEV tuning and config freeze
+- Formal TEST run and main-project evaluator scoring
 
 ## Implemented (code)
 
