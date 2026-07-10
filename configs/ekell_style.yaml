@@ -8,7 +8,7 @@ retrieval:
   top_k_evidence: 8
   max_context_chars: 10000
 ekell_style:
-  prompt_dir: configs/prompts
+  prompt_dir: configs/prompts/paper_fidelity
 prompt_chain:
   stages:
     - situation_understanding

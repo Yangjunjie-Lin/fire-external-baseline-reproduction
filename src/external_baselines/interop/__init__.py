@@ -6,7 +6,12 @@ from external_baselines.interop.schema import (
     load_schema,
     validate_interop_record,
 )
-from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
+from external_baselines.interop.bundle import (
+    assert_path_inside_bundle,
+    load_runner_bundle,
+    recompute_bundle_checksum,
+    validate_bundle_checksum,
+)
 
 __all__ = [
     "baseline_row_to_interop",
@@ -14,5 +19,7 @@ __all__ = [
     "load_schema",
     "validate_interop_record",
     "load_runner_bundle",
+    "recompute_bundle_checksum",
+    "assert_path_inside_bundle",
     "validate_bundle_checksum",
 ]

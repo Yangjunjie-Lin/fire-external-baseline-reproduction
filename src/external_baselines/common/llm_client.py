@@ -36,6 +36,26 @@ class TokenUsage:
         self.total_tokens = self.prompt_tokens + self.completion_tokens
         self.llm_calls += 1
 
+    def snapshot(self) -> TokenUsage:
+        """Return an immutable-in-practice copy of the current counters."""
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.total_tokens,
+            llm_calls=self.llm_calls,
+        )
+
+    def difference(self, earlier: TokenUsage) -> TokenUsage:
+        """Return usage accrued since an earlier snapshot."""
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens - earlier.prompt_tokens,
+            completion_tokens=self.completion_tokens - earlier.completion_tokens,
+            total_tokens=self.total_tokens - earlier.total_tokens,
+            llm_calls=self.llm_calls - earlier.llm_calls,
+        )
+
+    delta = difference
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "prompt_tokens": self.prompt_tokens,
@@ -100,6 +120,12 @@ class UsageTrackingLLMClient:
             approx_completion = max(1, len(text or "") // 4)
             self.usage.add(prompt=approx_prompt, completion=approx_completion)
         return text
+
+    def usage_snapshot(self) -> TokenUsage:
+        return self.usage.snapshot()
+
+    def usage_delta(self, earlier: TokenUsage) -> TokenUsage:
+        return self.usage.difference(earlier)
 
 
 @dataclass
@@ -188,6 +214,46 @@ class HeuristicLLMClient:
                 "emergency_stage": "initial_response",
                 "missing_information": list(dict.fromkeys(missing)),
                 "evidence_used": citations,
+            }, ensure_ascii=False)
+            self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+            return out
+
+        # E-KELL logical query decomposition (constrained AST only).
+        if "constrained json ast" in text or "ast shape example" in text or "known entities:" in text:
+            entity = "electrical fire" if ("electrical" in text or "电" in text) else ("high smoke" if ("smoke" in text or "烟" in text) else "unknown")
+            relation = "requires_confirmation" if "electrical" in text or "power" in text else ("requires" if "smoke" in text else "related_to")
+            if "smoke" in text and ("electrical" in text or "power" in text):
+                payload = {
+                    "operation": "intersection",
+                    "operands": [
+                        {"operation": "projection", "entity": "electrical fire", "relation": "requires_confirmation"},
+                        {"operation": "projection", "entity": "high smoke", "relation": "requires"},
+                    ],
+                }
+            else:
+                payload = {"operation": "projection", "entity": entity, "relation": relation}
+            out = json.dumps(payload, ensure_ascii=False)
+            self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
+            return out
+
+        # Stepwise FOL prompt-chain operations / final KG-grounded response.
+        if "entities connected to" in text or "intersection of" in text or "union of" in text or "do not belong" in text or "based on the above information" in text or "kg_context" in user.lower() or "logical_ast" in user.lower() or "step_results" in user.lower():
+            out = json.dumps({
+                "entities": ["power isolation", "respiratory protection"] if "smoke" in text or "electrical" in text else [],
+                "summary": "KG-grounded decision support from retrieved triples and expanded neighborhood.",
+                "situation_summary": "KG-grounded decision support from retrieved triples and expanded neighborhood.",
+                "risks": risks,
+                "key_risks": risks,
+                "actions": actions,
+                "recommended_actions": [{"action_id": "action_1", "text": a, "evidence_refs": citations[:2]} for a in actions[:3]],
+                "blocked_or_unsafe_actions": blocked,
+                "missing_information": missing,
+                "missing_confirmations": missing,
+                "evidence_ids": citations[:8],
+                "citations": citations[:8],
+                "response": "Use retrieved KG facts only; confirm missing status before irreversible actions.",
+                "final_response": "Use retrieved KG facts only; confirm missing status before irreversible actions.",
+                "final_decision_gate": "critical_information_missing_or_requires_human_confirmation" if missing else "baseline_response_without_explicit_gate",
             }, ensure_ascii=False)
             self.last_usage = {"prompt_tokens": max(1, (len(system) + len(user)) // 4), "completion_tokens": max(1, len(out) // 4)}
             return out

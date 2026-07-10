@@ -3,5 +3,7 @@ PyYAML>=6.0
 openai>=1.0.0
 # Optional; loads .env the same way as fire-agent-demo (SILICONFLOW_*).
 python-dotenv>=1.0.0
+# External schema validation for firebench-interop
+jsonschema>=4.0.0
 # Development / smoke tests
 pytest>=8.0.0

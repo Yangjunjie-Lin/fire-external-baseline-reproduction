@@ -71,6 +71,19 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
             ctx["score"] = round(float(ctx.get("score") or 0.0) + bonus, 6)
     contexts = sorted(contexts, key=lambda c: (-float(c.get("score") or 0.0), str(c.get("context_id") or "")))
 
+    # Enhanced keeps the legacy 3-stage prompts; do not inherit paper_fidelity stepwise dir.
+    prompt_dir = "configs/prompts"
+    legacy = ekell_cfg.get("legacy_prompt_dir")
+    if isinstance(legacy, str) and legacy.strip():
+        candidate = Path(legacy.strip())
+        if (candidate / "ekell_stage1_situation_understanding.txt").is_file():
+            prompt_dir = str(candidate)
+    else:
+        inherited = ekell_cfg.get("prompt_dir")
+        if isinstance(inherited, str) and inherited.strip():
+            candidate = Path(inherited.strip())
+            if (candidate / "ekell_stage1_situation_understanding.txt").is_file():
+                prompt_dir = str(candidate)
     chain = run_prompt_chain(
         scenario_text=scenario["scenario_text"],
         parsed_scenario=parsed,
@@ -79,7 +92,7 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         temperature=float(config.get("llm", {}).get("temperature", 0.0)),
         max_tokens=int(config.get("llm", {}).get("max_tokens", 1400)),
         max_context_chars=int(retrieval_cfg.get("max_context_chars", 10000)),
-        prompt_dir=ekell_cfg.get("prompt_dir", "configs/prompts"),
+        prompt_dir=prompt_dir,
     )
     final_payload = chain["stage3_final_response"]
     output = normalize_response_payload(final_payload, scenario_id=scenario["scenario_id"], method=METHOD)

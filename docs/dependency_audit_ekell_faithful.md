@@ -1,36 +1,40 @@
-# Dependency Audit: `ekell_style_faithful`
+# Dependency Audit: Complete E-KELL Pipelines
 
-**Goal:** Prove the main-table faithful method does not call dense RAG, hybrid RAG, enhanced hooks, or target-system safety/routing code.
+**Methods covered**
 
-## Static import closure (faithful module)
+- Main table controlled: `ekell_style_controlled_shared_llm` (`full_pipeline.py`)
+- Paper fidelity: `ekell_style_paper_fidelity` (`full_pipeline.py`)
+- Legacy alias: `ekell_style_faithful` → controlled full pipeline
+- Legacy BM25 scaffold only: `ekell_style_legacy_bm25` (`pipeline.py`) — diagnostics, not main table
+- Supplemental: `ekell_style_enhanced` (`enhanced_pipeline.py`)
 
-Allowed roots for `src/external_baselines/ekell_style/pipeline.py` and its local ekell helpers:
+## Forbidden for complete / faithful tracks
 
-- `external_baselines.ekell_style.*` (scenario_parser, entity_matcher, kg_loader, subgraph_retriever, prompt_chain)
-- `external_baselines.common.*` (llm_client, schema, checksums, text_utils, io)
-- `external_baselines.evaluation.normalizer` (injection **default off**)
-
-Forbidden for faithful:
-
-| Forbidden dependency | Status |
+| Dependency | Rule |
 |---|---|
-| `external_baselines.dense_rag` | Must not import |
-| `external_baselines.hybrid_rag` | Must not import |
-| `external_baselines.ekell_style.enhanced_pipeline` | Must not import |
-| `fire_agent_demo` | Must not import |
-| SAFE-Router / Safety Checker / Dynamic REG / HITL / risk scoring APIs | Must not import/call |
+| `fire_agent_demo` / SAFE-Router / Safety Checker / Dynamic REG / HITL / target risk scoring | Forbidden |
+| `external_baselines.dense_rag` | Forbidden (generic baseline) |
+| `external_baselines.hybrid_rag` | Forbidden |
+| `ekell_style.enhanced_pipeline` | Forbidden import into full/faithful path |
 
-## Runtime guards
+## Allowed and required for paper-faithful architecture
 
-- `run_scenario` sets `embedding_scorer=None`.
-- Config flags `dense_entity_retrieval`, `hybrid_subgraph_ranking`, `reranker`, `self_consistency`, `structured_verification` raise if true under faithful.
-- Enhanced lives only in `enhanced_pipeline.py` (supplemental).
+| Module | Role |
+|---|---|
+| `ekell_style.vector_retriever` / `vector_index` / `embedding_backends` | Paper Sec 4 vector KG retrieval |
+| `ekell_style.logical_query` | FOL p/i/u/n |
+| `ekell_style.neighborhood_expander` | Neighborhood expansion |
+| `ekell_style.stepwise_prompt_chain` | Logical prompt chain |
+| `ekell_style.kg_construction` | Sec 3.1 scaffolding |
 
-## Automated test
+**Corrected rule:** faithful must **not** set `embedding_scorer=None` as a fidelity requirement. It must use the E-KELL-native vector retriever and must not call generic dense_rag.
 
-`tests/test_ekell_faithful_dependency_audit.py` AST-scans faithful pipeline + recursively imported `ekell_style` modules for forbidden imports.
+## Automated tests
 
-## Paper table role
+`tests/test_ekell_faithful_dependency_audit.py`
 
-- Main table: `direct_llm`, `bm25_rag`, `ekell_style_faithful`
-- Supplemental only: `dense_rag`, `hybrid_rag`, `ekell_style_enhanced`
+## Paper table roles
+
+- Main: `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`
+- Paper fidelity experiment (separate): `ekell_style_paper_fidelity`
+- Supplemental: `dense_rag`, `hybrid_rag`, `ekell_style_enhanced`

@@ -8,12 +8,13 @@ Does SAFE Fire Agent improve over external KG/RAG/GraphRAG/LLM baseline systems 
 
 | Label | method_id | Status |
 |---|---|---|
-| B0 | `direct_llm` | Strong no-retrieval baseline |
-| B1 | `bm25_rag` | True BM25 lexical RAG |
-| B2 | `dense_rag` | Formal only with real embeddings |
-| B3 | `hybrid_rag` | Formal only with real dense + frozen RRF |
-| B4 | `ekell_style_faithful` | Level-3 paper-faithful; **not** official E-KELL |
-| B5 | `ekell_style_enhanced` | Separate enhanced row |
+| B0 | `direct_llm` | Strong no-retrieval baseline (main table) |
+| B1 | `bm25_rag` | True BM25 lexical RAG (main table) |
+| B2 | `ekell_style_controlled_shared_llm` | Complete E-KELL architecture; shared LLM/schema (main table) |
+| B2f | `ekell_style_paper_fidelity` | Paper-fidelity track (ChatGLM-6B); separate experiment |
+| B3 | `dense_rag` | Supplemental; formal only with real embeddings |
+| B4 | `hybrid_rag` | Supplemental; formal only with real dense + frozen RRF |
+| B5 | `ekell_style_enhanced` | Supplemental only; must not replace B2/B2f |
 | B6 | `lightrag` | Actual only if index+query; else fallback_only |
 | B7 | `microsoft_graphrag` | Actual only if index+query; else fallback_only |
 | Ours | SAFE Fire Agent | Exported via main project / shared evaluator |

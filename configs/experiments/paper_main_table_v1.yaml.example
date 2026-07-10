@@ -2,6 +2,9 @@
 # Merge order per method: base_config → shared_model_config → method config.
 #
 # freeze_status: provisional until real shared-LLM DEV trials + selection evidence exist.
+#
+# Main table uses controlled shared-LLM E-KELL (same model/data/schema as main project).
+# Paper-fidelity ChatGLM track is a separate experiment (see ekell_paper_fidelity.yaml.example).
 
 schema_version: firebench-interop-v1
 experiment_id: paper_main_table_baselines_v1
@@ -19,7 +22,7 @@ shared_model_config: configs/shared_real_model.yaml
 main_table_methods:
   - direct_llm
   - bm25_rag
-  - ekell_style_faithful
+  - ekell_style_controlled_shared_llm
 
 supplemental_methods:
   - dense_rag
@@ -35,11 +38,11 @@ methods:
     config: configs/frozen/bm25_rag_v1.yaml
     paper_table_role: main_table
     enabled: true
-  - method_id: ekell_style_faithful
+  - method_id: ekell_style_controlled_shared_llm
     config: configs/frozen/ekell_style_faithful_v1.yaml
     paper_table_role: main_table
     enabled: true
-  # Supplemental / extended — disabled by default; do not replace faithful results.
+  # Supplemental / extended — disabled by default; do not replace controlled/fidelity results.
   - method_id: dense_rag
     config: configs/frozen/dense_rag_v1.yaml
     paper_table_role: supplemental_extended
@@ -58,8 +61,10 @@ legacy_output: outputs/baseline_outputs_legacy.jsonl
 run_manifest: outputs/interop_run_manifest.json
 
 notes:
-  - Main paper table baselines are only direct_llm, bm25_rag, ekell_style_faithful.
-  - dense_rag / hybrid_rag / ekell_style_enhanced are supplemental and must not replace faithful.
+  - Main paper table baselines are direct_llm, bm25_rag, ekell_style_controlled_shared_llm.
+  - Legacy alias ekell_style_faithful canonicalizes to ekell_style_controlled_shared_llm.
+  - Paper fidelity (ChatGLM-6B) is NOT this manifest; use configs/experiments/ekell_paper_fidelity.yaml.example.
+  - dense_rag / hybrid_rag / ekell_style_enhanced are supplemental and must not replace controlled/fidelity.
   - configs/frozen/* are provisional until DEV trial logs + selection criterion evidence are attached.
   - Do not run paid APIs from CI; user runs after SILICONFLOW_API_KEY is set.
   - cross_repository_interop_verified remains false until formal Runner Bundle is consumed.

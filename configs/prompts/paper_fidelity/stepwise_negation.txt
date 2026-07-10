@@ -1,0 +1,12 @@
+TASK: Negation.
+
+Return entities in the explicitly provided candidate universe that are absent from the
+operand result (Table 3 logical negation structure). If no universe is supplied, report
+an empty result rather than inventing one. Return JSON only:
+{"operation":"negation","result_entities":[],"evidence_ids":[]}
+
+OPERAND RESULT AND CANDIDATE UNIVERSE:
+{dependency_results}
+
+PROVIDED KG TRIPLES/PATHS:
+{kg_context}

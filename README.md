@@ -56,43 +56,52 @@ Minimum formal method set (strong, independent baselines):
 
 | ID | method_id | Class |
 |---|---|---|
-| B0 | `direct_llm` | baseline |
-| B1 | `bm25_rag` (`vanilla_rag` alias) | baseline |
-| B2 | `dense_rag` | enhanced / smoke until real embeddings |
-| B3 | `hybrid_rag` | enhanced / smoke until real dense |
-| B4 | `ekell_style_faithful` | faithful (not official E-KELL) |
-| B5 | `ekell_style_enhanced` | enhanced (separate paper row) |
-| B6 | `lightrag` | actual only if indexing+query; else fallback_only |
-| B7 | `microsoft_graphrag` | actual only if indexing+query; else fallback_only |
+| B0 | `direct_llm` | baseline (main table) |
+| B1 | `bm25_rag` (`vanilla_rag` alias) | baseline (main table) |
+| B2 | `ekell_style_controlled_shared_llm` | complete E-KELL architecture; shared LLM/schema (main table) |
+| B3 | `ekell_style_paper_fidelity` | paper-fidelity track (ChatGLM-6B interface; separate experiment) |
+| B4 | `dense_rag` | supplemental / smoke until real embeddings |
+| B5 | `hybrid_rag` | supplemental / smoke until real dense |
+| B6 | `ekell_style_enhanced` | supplemental only (must not replace B2/B3) |
+| B7 | `lightrag` | actual only if indexing+query; else fallback_only |
+| B8 | `microsoft_graphrag` | actual only if indexing+query; else fallback_only |
 
+Legacy alias: `ekell_style_faithful` → `ekell_style_controlled_shared_llm`.  
 Also: explicit `fallback_graph_retrieval` (never enters actual GraphRAG leaderboard).
 
 Additional package features:
 
-- `firebench-interop-v1` Runner Bundle integration
-- gold-isolated prediction generation
-- frozen DEV-selected configs under `configs/frozen/`
+- FOL query decomposition + p/i/u/n executor
+- E-KELL-native vector KG retrieval + neighborhood expansion
+- stepwise logical prompt chain (`configs/prompts/paper_fidelity/`)
+- `firebench-interop-v1` / v1.1-draft Runner Bundle integration
+- gold-isolated prediction generation; recomputed bundle checksums
+- frozen DEV-selected configs under `configs/frozen/` (provisional)
 - unified legacy schema + canonical interop predictions
-- run manifest / checksums
+- run manifest / checksums / per-case token accounting
 - proxy diagnostics (not a substitute for the shared paper evaluator)
-- manual evaluation rubric templates
+- original E-KELL evaluation protocol templates (empty scores)
 
-E-KELL-style pipeline:
+Complete E-KELL pipeline:
 
 ```text
-Scenario Input
-→ Situation Understanding / Parsing
-→ Entity Matching
-→ KG Subgraph Retrieval
-→ Evidence Context Construction
-→ Prompt Chain Reasoning
-→ Final Response
-→ Output Normalization
+Scenario
+→ Query Understanding
+→ Logical Query Decomposition
+→ AST Validation
+→ Vector KG Retrieval
+→ Neighborhood Expansion
+→ FOL Execution (p / ∧ / ∨ / ¬)
+→ Stepwise Prompt Chain
+→ Evidence-grounded Final Response
+→ Trace/Provenance Export
 ```
 
 Label:
 
 > **E-KELL-style paper-faithful pipeline-level reimplementation, not official E-KELL reproduction.**
+
+Track docs: [`docs/paper_fidelity_vs_controlled_comparison.md`](docs/paper_fidelity_vs_controlled_comparison.md), [`docs/ekell_reproduction_spec.md`](docs/ekell_reproduction_spec.md).
 
 ## What is not reproduced
 
@@ -162,10 +171,11 @@ python scripts/run_interop_baselines.py \
   --output outputs/firebench_interop_v1_predictions.jsonl
 ```
 
-**Paper main table:** `direct_llm`, `bm25_rag`, `ekell_style_faithful` only.  
-**Supplemental:** `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` (optional `--include-supplemental`; must not replace faithful).
+**Paper main table (controlled):** `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm`.  
+**Paper fidelity (separate):** `configs/experiments/ekell_paper_fidelity.yaml.example` + ChatGLM-6B.  
+**Supplemental:** `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` (optional `--include-supplemental`; must not replace controlled/fidelity).
 
-See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md) and [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md).
+See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md), [`docs/interop_integrity_audit.md`](docs/interop_integrity_audit.md), and [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md).
 
 Gold-isolated split workflow:
 

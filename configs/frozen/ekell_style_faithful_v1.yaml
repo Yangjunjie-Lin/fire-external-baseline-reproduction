@@ -17,7 +17,7 @@ retrieval:
   entity_min_score: 0.08
   max_context_chars: 8000
 ekell_style:
-  prompt_dir: configs/prompts
+  prompt_dir: configs/prompts/paper_fidelity
   dense_entity_retrieval: false
   hybrid_subgraph_ranking: false
   reranker: false

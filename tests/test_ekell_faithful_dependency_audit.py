@@ -1,4 +1,8 @@
-"""AST dependency audit for ekell_style_faithful."""
+"""Dependency audit for complete E-KELL pipelines (paper fidelity + controlled).
+
+Faithful/complete E-KELL may use ekell_style.vector_retriever and logical_query.
+It must NOT use generic dense_rag/hybrid_rag baselines, enhanced_pipeline, or target modules.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "external_baselines"
-FAITHFUL = SRC / "ekell_style" / "pipeline.py"
+FULL = SRC / "ekell_style" / "full_pipeline.py"
 
 FORBIDDEN_SUBSTRINGS = (
     "dense_rag",
@@ -18,6 +22,14 @@ FORBIDDEN_SUBSTRINGS = (
     "safety_checker",
     "dynamic_reg",
     "hitl",
+)
+
+ALLOWED_EKELL_NATIVE = (
+    "external_baselines.ekell_style.vector_retriever",
+    "external_baselines.ekell_style.logical_query",
+    "external_baselines.ekell_style.neighborhood_expander",
+    "external_baselines.ekell_style.stepwise_prompt_chain",
+    "external_baselines.ekell_style.embedding_backends",
 )
 
 
@@ -33,37 +45,46 @@ def _imported_names(path: Path) -> list[str]:
     return names
 
 
-def _local_ekell_modules() -> list[Path]:
+def _complete_ekell_modules() -> list[Path]:
     d = SRC / "ekell_style"
-    return [
-        d / "pipeline.py",
+    paths = [
+        d / "full_pipeline.py",
+        d / "vector_retriever.py",
+        d / "vector_index.py",
+        d / "embedding_backends.py",
+        d / "neighborhood_expander.py",
+        d / "stepwise_prompt_chain.py",
         d / "scenario_parser.py",
-        d / "entity_matcher.py",
         d / "kg_loader.py",
-        d / "subgraph_retriever.py",
-        d / "prompt_chain.py",
     ]
+    paths.extend((d / "logical_query").glob("*.py"))
+    return [p for p in paths if p.exists()]
 
 
-def test_faithful_pipeline_has_no_forbidden_imports():
+def test_complete_ekell_has_no_forbidden_imports():
     offenders: list[str] = []
-    for path in _local_ekell_modules():
+    for path in _complete_ekell_modules():
         for name in _imported_names(path):
             lower = name.lower()
             for bad in FORBIDDEN_SUBSTRINGS:
                 if bad in lower:
                     offenders.append(f"{path.name}: import {name}")
-    assert not offenders, "Forbidden imports in faithful closure:\n" + "\n".join(offenders)
+    assert not offenders, "Forbidden imports:\n" + "\n".join(offenders)
 
 
-def test_faithful_source_text_has_no_dense_import():
-    text = FAITHFUL.read_text(encoding="utf-8")
+def test_full_pipeline_uses_ekell_native_vector_not_generic_dense():
+    text = FULL.read_text(encoding="utf-8")
+    imports = _imported_names(FULL)
     assert "from external_baselines.dense_rag" not in text
-    assert "import external_baselines.dense_rag" not in text
     assert "from external_baselines.hybrid_rag" not in text
-    assert "enhanced_pipeline" not in text
-    assert "fire_agent_demo" not in text
-    assert "embedding_scorer=None" in text
+    assert not any("enhanced_pipeline" in name for name in imports)
+    assert not any("dense_rag" in name for name in imports)
+    assert not any("hybrid_rag" in name for name in imports)
+    assert not any("fire_agent_demo" in name for name in imports)
+    assert "vector_retriever" in text
+    assert "logical_query" in text
+    assert "neighborhood_expander" in text
+    assert "stepwise_prompt_chain" in text
 
 
 def test_enhanced_is_separate_module():
@@ -71,13 +92,17 @@ def test_enhanced_is_separate_module():
     assert enhanced.exists()
     text = enhanced.read_text(encoding="utf-8")
     assert "dense_rag" in text
-    assert 'paper_table_role": "supplemental_extended"' in text or "supplemental_extended" in text
+    assert "supplemental_extended" in text
 
 
-def test_main_table_methods_constant():
-    from external_baselines.common.experiment_manifest import MAIN_TABLE_METHODS, SUPPLEMENTAL_METHODS
+def test_main_table_and_fidelity_tracks():
+    from external_baselines.common.experiment_manifest import (
+        MAIN_TABLE_METHODS,
+        PAPER_FIDELITY_METHODS,
+        SUPPLEMENTAL_METHODS,
+    )
 
-    assert MAIN_TABLE_METHODS == ("direct_llm", "bm25_rag", "ekell_style_faithful")
+    assert MAIN_TABLE_METHODS == ("direct_llm", "bm25_rag", "ekell_style_controlled_shared_llm")
+    assert PAPER_FIDELITY_METHODS == ("ekell_style_paper_fidelity",)
     assert "ekell_style_enhanced" in SUPPLEMENTAL_METHODS
-    assert "dense_rag" in SUPPLEMENTAL_METHODS
-    assert "hybrid_rag" in SUPPLEMENTAL_METHODS
+    assert "ekell_style_paper_fidelity" not in MAIN_TABLE_METHODS

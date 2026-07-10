@@ -1,0 +1,2 @@
+{"head":"electrical fire","relation":"requires_confirmation","tail":"power isolation","source_id":"fixture"}
+{"head":"high smoke","relation":"requires","tail":"respiratory protection","source_id":"fixture"}

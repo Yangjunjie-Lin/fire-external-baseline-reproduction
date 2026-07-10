@@ -26,13 +26,19 @@ from external_baselines.common.experiment_manifest import (
     load_experiment_manifest,
 )
 from external_baselines.common.guards import assert_paper_final_allowed
+from external_baselines.common.fairness import validate_cross_method_fairness
 from external_baselines.common.io import write_json, write_jsonl
 from external_baselines.interop.bundle import (
     assert_no_evaluator_bundle_access,
     load_runner_bundle,
+    recompute_bundle_checksum,
     validate_bundle_checksum,
 )
-from external_baselines.interop.schema import baseline_row_to_interop, validate_interop_record
+from external_baselines.interop.schema import (
+    SCHEMA_PATH,
+    baseline_row_to_interop,
+    validate_interop_record,
+)
 from external_baselines.runner import generate_predictions
 
 
@@ -96,8 +102,11 @@ def main(argv: list[str] | None = None) -> None:
 
     assert_no_evaluator_bundle_access(bundle_path)
     bundle = load_runner_bundle(bundle_path)
-    checksum_report = validate_bundle_checksum(bundle, expected=args.expected_bundle_checksum)
-    if args.expected_bundle_checksum and not checksum_report["ok"]:
+    expected_checksum = (
+        args.expected_bundle_checksum or experiment.get("expected_bundle_checksum")
+    )
+    checksum_report = validate_bundle_checksum(bundle, expected=expected_checksum)
+    if not checksum_report["ok"]:
         raise SystemExit(f"Bundle checksum mismatch: {checksum_report}")
     if not bundle.get("scenarios_path"):
         raise SystemExit("Runner Bundle does not contain a scenarios file.")
@@ -113,10 +122,11 @@ def main(argv: list[str] | None = None) -> None:
         cfg = build_method_config(experiment, entry)
         if bundle.get("corpus_dir"):
             cfg.setdefault("paths", {})["corpus_dir"] = bundle["corpus_dir"]
-        cfg["bundle_checksum"] = bundle.get("bundle_checksum")
+        cfg["bundle_checksum"] = recompute_bundle_checksum(bundle["bundle_root"])
         assert_paper_final_allowed(cfg)
         method_configs[mid] = cfg
         methods.append(mid)
+    fairness_report = validate_cross_method_fairness(method_configs)
 
     output = args.output or experiment.get("output")
     legacy_output = args.legacy_output or experiment.get("legacy_output")
@@ -140,8 +150,17 @@ def main(argv: list[str] | None = None) -> None:
         for row in legacy_rows
     ]
     errors = []
+    bundle_schema = bundle.get("prediction_schema") or bundle.get("schemas", {}).get("prediction")
+    schema_path = bundle.get("prediction_schema_path")
+    expected_schema_sha = bundle.get("prediction_schema_sha256") or experiment.get("expected_prediction_schema_sha256")
     for i, row in enumerate(interop_rows):
-        errs = validate_interop_record(row)
+        errs = validate_interop_record(
+            row,
+            schema=bundle_schema if isinstance(bundle_schema, dict) else None,
+            schema_path=schema_path or SCHEMA_PATH,
+            expected_schema_sha256=expected_schema_sha,
+            require_external_schema=bool(experiment.get("paper_final")),
+        )
         if errs:
             errors.append({"index": i, "case_id": row.get("case_id"), "errors": errs})
     if errors:
@@ -166,6 +185,7 @@ def main(argv: list[str] | None = None) -> None:
                 "corpus_dir": bundle.get("corpus_dir"),
             },
             "checksum_validation": checksum_report,
+            "cross_method_fairness": fairness_report,
             "hash_verification": hash_report,
             "n_predictions": len(interop_rows),
             "output": output,

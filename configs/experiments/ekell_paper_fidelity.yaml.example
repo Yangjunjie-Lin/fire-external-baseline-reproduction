@@ -1,0 +1,21 @@
+schema_version: firebench-interop-v1
+experiment_id: ekell_paper_fidelity_v1
+track: paper_fidelity
+freeze_status: provisional
+paper_final: false
+paper_fidelity_model_run: false
+
+base_config: configs/default.yaml
+shared_model_config: configs/models/chatglm6b_local.yaml.example
+
+methods:
+  - method_id: ekell_style_paper_fidelity
+    config: configs/ekell_paper_fidelity_chatglm6b.yaml.example
+    paper_table_role: paper_fidelity
+    enabled: true
+
+output: outputs/ekell_paper_fidelity_predictions.jsonl
+notes:
+  - Do not run until ChatGLM-6B weights and actual text2vec index are available
+  - smoke/heuristic outputs are not paper-fidelity empirical results
+  - Official E-KELL KG/results unavailable

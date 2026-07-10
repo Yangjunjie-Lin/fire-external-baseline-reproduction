@@ -13,6 +13,18 @@ from external_baselines.common.io import load_scenarios, read_jsonl  # noqa: E40
 from external_baselines.ekell_style.kg_loader import audit_corpus  # noqa: E402
 
 
+def _resolve_layout(data_dir: Path) -> tuple[Path, Path]:
+    """Support both data/{scenarios,corpus} and flat fixture layouts."""
+    nested_scenarios = data_dir / "scenarios" / "scenario_matrix_v2.json"
+    nested_corpus = data_dir / "corpus"
+    if nested_scenarios.exists() or nested_corpus.exists():
+        scenario = nested_scenarios if nested_scenarios.exists() else data_dir / "scenarios" / "scenarios.json"
+        return scenario, nested_corpus
+    # Flat fixture: entities/triples/evidence at root + scenarios.json
+    flat_scenario = data_dir / "scenarios.json"
+    return flat_scenario, data_dir
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate data availability for external baseline runs.")
     parser.add_argument("--data", default="data")
@@ -20,8 +32,7 @@ def main() -> None:
     args = parser.parse_args()
 
     data_dir = Path(args.data)
-    scenario_file = data_dir / "scenarios" / "scenario_matrix_v2.json"
-    corpus_dir = data_dir / "corpus"
+    scenario_file, corpus_dir = _resolve_layout(data_dir)
     warnings: list[str] = []
     errors: list[str] = []
 
@@ -42,7 +53,10 @@ def main() -> None:
     audit = audit_corpus(corpus_dir)
     for filename in ["entities.jsonl", "relations.jsonl", "triples.jsonl"]:
         if filename in audit.get("missing_files", []):
-            warnings.append(f"KG asset missing for KG-based methods: {filename}")
+            if "fixture" in str(data_dir).replace("\\", "/"):
+                errors.append(f"KG asset missing in fixture: {filename}")
+            else:
+                warnings.append(f"KG asset missing for KG-based methods: {filename}")
 
     warnings.extend(audit.get("schema_warnings", [])[:20])
     report = {

@@ -33,8 +33,11 @@ See `docs/resource_access_matrix.md`.
 ## Preferred interop path
 
 1. Main project provides Runner Bundle + Evaluator Bundle (baselines read Runner only).
-2. `python scripts/run_interop_baselines.py --bundle ... --output outputs/firebench_interop_v1_predictions.jsonl`
-3. Main-project neutral evaluator scores paired predictions (bootstrap CI, Wilcoxon/permutation, McNemar, Holm, breakdowns).
+2. Controlled track: `python scripts/run_interop_baselines.py --experiment-manifest configs/experiments/paper_main_table_v1.yaml --bundle ...`
+3. Paper-fidelity track is a **separate** experiment (`ekell_style_paper_fidelity` / ChatGLM-6B); do not merge rows with controlled FireBench results.
+4. Main-project neutral evaluator scores paired predictions (bootstrap CI, Wilcoxon/permutation, McNemar, Holm, breakdowns).
+
+See `docs/paper_fidelity_vs_controlled_comparison.md`.
 
 ## Legacy side-by-side (optional)
 

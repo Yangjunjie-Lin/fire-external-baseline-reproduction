@@ -1,0 +1,10 @@
+{"query_id": "Q_TEMPLATE_01", "category": "Material Reserves", "query_text": "REPLACE_WITH_FIRE_DOMAIN_QUERY_SAME_CATEGORY", "language": "en", "notes": "Category-matched template only; not an official E-KELL Appendix B query."}
+{"query_id": "Q_TEMPLATE_02", "category": "On-site Command", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_03", "category": "Hazard Source Identification", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_04", "category": "Accident Investigation", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_05", "category": "Fire Extinguishment", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_06", "category": "Personal Protective Equipment", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_07", "category": "Rescuing", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_08", "category": "Isolation", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_09", "category": "Hazard Source Management", "query_text": "REPLACE", "language": "en"}
+{"query_id": "Q_TEMPLATE_10", "category": "Report Compilation", "query_text": "REPLACE", "language": "en"}

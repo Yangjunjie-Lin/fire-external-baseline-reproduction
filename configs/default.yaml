@@ -47,7 +47,9 @@ hybrid_rag:
   candidate_pool: 20
 
 ekell_style:
-  prompt_dir: configs/prompts
+  # Full FOL/vector pipeline uses paper-fidelity stepwise templates.
+  # Legacy BM25 scaffold still reads stage1/2/3 from configs/prompts when used.
+  prompt_dir: configs/prompts/paper_fidelity
   dense_entity_retrieval: false
   hybrid_subgraph_ranking: false
   reranker: false

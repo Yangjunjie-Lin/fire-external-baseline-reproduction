@@ -1,0 +1,4 @@
+{"entity_id":"E_ELECTRICAL_FIRE","name":"electrical fire","type":"incident_type","aliases":["electrical room fire"]}
+{"entity_id":"E_HIGH_SMOKE","name":"high smoke","type":"hazard","aliases":["smoke level is high"]}
+{"entity_id":"E_POWER_ISOLATION","name":"power isolation","type":"action"}
+{"entity_id":"E_RESPIRATORY_PROTECTION","name":"respiratory protection","type":"equipment"}

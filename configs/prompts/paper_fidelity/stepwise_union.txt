@@ -1,0 +1,12 @@
+TASK: Union.
+
+Return entities present in any supplied operand result, without duplicates (Table 3
+logical union structure). Ground the result solely in provided dependencies and KG
+evidence. Return JSON only:
+{"operation":"union","result_entities":[],"evidence_ids":[]}
+
+OPERAND RESULTS:
+{dependency_results}
+
+PROVIDED KG TRIPLES/PATHS:
+{kg_context}

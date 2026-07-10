@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "firebench_interop_v1_1_draft_prediction.schema.json",
+  "title": "firebench-interop-v1.1 draft prediction record",
+  "description": "Draft evidence and execution-capability extensions. All firebench-interop-v1 required fields remain required through allOf.",
+  "allOf": [
+    {
+      "$ref": "firebench_interop_v1_prediction.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "prediction": {
+          "type": "object",
+          "required": [
+            "retrieved_evidence",
+            "claimed_citations",
+            "evidence_statements"
+          ],
+          "properties": {
+            "retrieved_evidence": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["evidence_id", "text"],
+                "properties": {
+                  "evidence_id": {"type": "string", "minLength": 1},
+                  "text": {"type": "string"},
+                  "source_id": {"type": ["string", "null"]}
+                }
+              }
+            },
+            "claimed_citations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["evidence_id", "id_exists"],
+                "properties": {
+                  "evidence_id": {"type": "string", "minLength": 1},
+                  "id_exists": {"type": "boolean"}
+                }
+              }
+            },
+            "evidence_statements": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "final_response": {
+              "type": "object",
+              "required": [
+                "rendered_from_structured_fields",
+                "system_execution_capability",
+                "output_authorization_status"
+              ],
+              "properties": {
+                "rendered_from_structured_fields": {"type": "boolean"},
+                "system_execution_capability": {"const": false},
+                "output_authorization_status": {
+                  "type": "string",
+                  "enum": [
+                    "explicitly_disallowed",
+                    "explicitly_allowed",
+                    "not_provided",
+                    "ambiguous"
+                  ]
+                },
+                "real_world_execution_violation": {
+                  "type": ["boolean", "null"],
+                  "description": "Neutral evaluator signal from baseline language; null means not judged. Never auto-cleared to safe by the adapter."
+                },
+                "real_world_execution_allowed": {
+                  "const": false,
+                  "description": "v1 compatibility field mirroring system_execution_capability only; not a safety clearance of model text."
+                }
+              }
+            }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["schema_draft"],
+          "properties": {
+            "schema_draft": {"const": "firebench-interop-v1.1-draft"}
+          }
+        }
+      }
+    }
+  ]
+}

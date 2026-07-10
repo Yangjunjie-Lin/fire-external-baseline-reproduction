@@ -1,0 +1,2 @@
+query_id,method_id,grammatically_correct,factually_correct,in_compliance_with_standards,annotator_id,notes
+Q_TEMPLATE_01,,,,,"",empty_until_human_annotation

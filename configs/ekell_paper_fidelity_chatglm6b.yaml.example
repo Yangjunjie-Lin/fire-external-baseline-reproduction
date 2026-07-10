@@ -1,0 +1,29 @@
+# Paper-fidelity E-KELL method config (architecture + ChatGLM interface).
+method_id: ekell_style_paper_fidelity
+track: paper_fidelity
+paper_original_output_format: true
+controlled_output_format: false
+official_reproduction: false
+freeze_status: provisional
+
+scenario_parser:
+  use_llm: true
+
+ekell_style:
+  prompt_dir: configs/prompts/paper_fidelity
+  neighborhood_k_hop: 1
+  neighborhood_max_nodes: 80
+  neighborhood_max_triples: 120
+
+ekell_vector:
+  backend: text2vec
+  model_name: REPLACE_WITH_TEXT2VEC_MODEL
+  model_version: REPLACE
+  dimension: 768
+  reject_smoke: true
+  top_k: 8
+
+normalization:
+  infer_structured_safety_fields: false
+
+kg_status_note: substituted_fire_domain_kg_not_official_2264

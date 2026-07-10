@@ -1,0 +1,52 @@
+{
+  "run_id": "a7e986c05a104c0c935aa74ee33eb5fa",
+  "timestamp": "2026-07-10T04:56:36.190049+00:00",
+  "methods": [
+    "direct_llm",
+    "bm25_rag",
+    "ekell_style_controlled_shared_llm"
+  ],
+  "dataset": "data/scenarios/scenario_matrix_v2.json",
+  "limit": 1,
+  "corpus_dir": "data/corpus",
+  "llm_provider": "heuristic",
+  "llm_model": "local-deterministic-heuristic-smoke-test",
+  "temperature": 0.0,
+  "heuristic_fallback": true,
+  "git_commit_if_available": "169691e8a7ab749cc329bf78f31ea80fe6dd8e23",
+  "data_counts": {
+    "entities": 3,
+    "relations": 2,
+    "triples": 2,
+    "evidence_chunks": 2,
+    "missing_files": [],
+    "schema_warning_count": 0
+  },
+  "reproduction_label": "E-KELL-style paper-faithful pipeline-level reimplementation",
+  "run_usage_by_method": {
+    "direct_llm": {
+      "prompt_tokens": 383,
+      "completion_tokens": 273,
+      "total_tokens": 656,
+      "llm_calls": 1
+    },
+    "bm25_rag": {
+      "prompt_tokens": 300,
+      "completion_tokens": 326,
+      "total_tokens": 626,
+      "llm_calls": 1
+    },
+    "ekell_style_controlled_shared_llm": {
+      "prompt_tokens": 10757,
+      "completion_tokens": 1504,
+      "total_tokens": 12261,
+      "llm_calls": 5
+    }
+  },
+  "run_usage_total": {
+    "prompt_tokens": 11440,
+    "completion_tokens": 2103,
+    "total_tokens": 13543,
+    "llm_calls": 7
+  }
+}

@@ -1,0 +1,35 @@
+# ChatGLM-6B local adapter config (paper fidelity).
+# Does NOT auto-run. User must provide model weights / transformers env.
+paper_final: false
+paper_fidelity_model_run: false
+
+llm:
+  provider: chatglm_local  # adapter placeholder; wire when transformers+weights available
+  model: THUDM/chatglm3-6b
+  model_version: REPLACE_WITH_REVISION
+  temperature: 0.2
+  top_p: 0.7
+  max_tokens: 1200
+  seed: 7
+  device: cuda
+  quantization: none
+  hardware_note: "Paper used NVIDIA A100; record actual hardware here."
+
+ekell_vector:
+  backend: text2vec
+  model_name: REPLACE_WITH_TEXT2VEC_MODEL
+  model_version: REPLACE_WITH_VERSION
+  dimension: 768
+  reject_smoke: true
+  top_k: 8
+
+ekell_style:
+  prompt_dir: configs/prompts/paper_fidelity
+  neighborhood_k_hop: 1
+
+normalization:
+  infer_structured_safety_fields: false
+
+notes:
+  - paper_fidelity_model_run remains false until a real ChatGLM-6B inference completes
+  - heuristic/smoke results must never be labeled as paper fidelity empirical results

@@ -14,9 +14,9 @@ from typing import Any
 from external_baselines.common.io import deep_merge, load_config, read_json, read_yaml
 from external_baselines.interop.schema import canonicalize_method_id
 
-MAIN_TABLE_METHODS = ("direct_llm", "bm25_rag", "ekell_style_faithful")
+MAIN_TABLE_METHODS = ("direct_llm", "bm25_rag", "ekell_style_controlled_shared_llm")
 SUPPLEMENTAL_METHODS = ("dense_rag", "hybrid_rag", "ekell_style_enhanced")
-
+PAPER_FIDELITY_METHODS = ("ekell_style_paper_fidelity",)
 
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)
@@ -66,6 +66,7 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
         "supplemental_methods": list(raw.get("supplemental_methods") or SUPPLEMENTAL_METHODS),
         "bundle": raw.get("bundle"),
+        "expected_bundle_checksum": raw.get("expected_bundle_checksum"),
         "output": raw.get("output") or "outputs/firebench_interop_v1_predictions.jsonl",
         "legacy_output": raw.get("legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
         "run_manifest": raw.get("run_manifest") or "outputs/interop_run_manifest.json",

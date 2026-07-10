@@ -1,0 +1,18 @@
+TASK: Final KG-grounded decision-support response.
+
+Answer the request using only the supplied triples, paths, and step results. Clearly
+state unsupported or missing information. Evidence citations must exactly match IDs
+present in PROVIDED KG EVIDENCE; never create or alter an ID. Return JSON only:
+{"answer":"","result_entities":[],"evidence_ids":[],"unsupported_or_missing":[]}
+
+ORIGINAL REQUEST:
+{query}
+
+VALIDATED LOGICAL AST:
+{logical_ast}
+
+STEP RESULTS:
+{step_results}
+
+PROVIDED KG EVIDENCE:
+{kg_context}

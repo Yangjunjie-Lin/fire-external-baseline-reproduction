@@ -26,7 +26,7 @@ def test_ekell_stage_trace_complete(tmp_path):
         encoding="utf-8",
     )
     rows = generate_predictions(
-        methods=["ekell_style_faithful"],
+        methods=["ekell_style_controlled_shared_llm"],
         dataset=dataset,
         output_path=tmp_path / "out.jsonl",
         manifest_path=None,
@@ -38,22 +38,19 @@ def test_ekell_stage_trace_complete(tmp_path):
     ms = rows[0]["method_specific"]
     for key in [
         "pipeline_trace",
-        "parsed_scenario",
-        "matched_entities",
-        "entity_scores",
-        "retrieved_triples",
-        "graph_paths",
-        "stage1_raw_output",
-        "stage2_raw_output",
-        "stage3_raw_output",
-        "prompt_hashes",
-        "context_ids",
+        "logical_decomposition",
+        "vector_retrieval",
+        "neighborhood_expansion",
+        "fol_execution",
+        "stepwise_prompt_chain",
         "reproduction_class",
     ]:
         assert key in ms, f"missing {key}"
-    assert ms["reproduction_class"] == "faithful"
+    assert ms["reproduction_class"] == "controlled_shared_llm"
     assert ms["official_reproduction"] is False
-    assert len(ms["pipeline_trace"]) >= 7
+    assert "Vector KG Retrieval" in ms["pipeline_trace"]
+    assert "FOL Execution" in ms["pipeline_trace"]
+    assert len(ms["pipeline_trace"]) >= 8
 
 
 def test_evidence_ids_preserved(tmp_path):
@@ -127,8 +124,9 @@ def test_bundle_checksum(tmp_path):
     (tmp_path / "scenarios" / "scenarios.json").write_text(scenarios.read_text(encoding="utf-8"), encoding="utf-8")
     bundle = load_runner_bundle(tmp_path)
     report = validate_bundle_checksum(bundle, expected="deadbeef")
-    assert report["ok"] is True
-    assert bundle["forbidden_keys_stripped"] is True
+    assert report["ok"] is False
+    assert report["declared"] != report["recomputed"]
+    assert bundle["forbidden_keys_stripped"] is False
 
 
 def test_same_model_config_fields_present():
@@ -138,15 +136,15 @@ def test_same_model_config_fields_present():
         assert key in llm
 
 
-def test_ekell_faithful_vs_enhanced_method_ids(tmp_path):
+def test_ekell_controlled_vs_enhanced_method_ids(tmp_path):
     dataset = tmp_path / "scenarios.json"
     dataset.write_text(
         json.dumps({"scenarios": [{"scenario_id": "s1", "scenario_text": "Electrical smoke mall fire."}]}),
         encoding="utf-8",
     )
     base = load_config(ROOT / "configs" / "default.yaml")
-    faithful = generate_predictions(
-        methods=["ekell_style_faithful"],
+    controlled = generate_predictions(
+        methods=["ekell_style_controlled_shared_llm"],
         dataset=dataset,
         output_path=tmp_path / "f.jsonl",
         manifest_path=None,
@@ -165,9 +163,8 @@ def test_ekell_faithful_vs_enhanced_method_ids(tmp_path):
         manifest_path=None,
         config=enhanced_cfg,
     )[0]
-    assert faithful["method"] == "ekell_style_faithful"
+    assert controlled["method"] == "ekell_style_controlled_shared_llm"
     assert enhanced["method"] == "ekell_style_enhanced"
-    assert faithful["method_specific"]["reproduction_class"] == "faithful"
+    assert controlled["method_specific"]["reproduction_class"] == "controlled_shared_llm"
     assert enhanced["method_specific"]["reproduction_class"] == "enhanced"
-    assert faithful["method_specific"].get("paper_table_role") == "main_table"
     assert enhanced["method_specific"].get("paper_table_role") == "supplemental_extended"

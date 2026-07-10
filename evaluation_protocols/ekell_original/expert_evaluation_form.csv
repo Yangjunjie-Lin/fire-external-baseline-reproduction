@@ -1,0 +1,2 @@
+query_id,method_id,blind_code,comprehensibility,accuracy,conciseness,instructiveness,expert_role,expert_id,notes
+Q_TEMPLATE_01,,,"","","","","firefighter_or_commander","",empty_until_blind_expert_scoring

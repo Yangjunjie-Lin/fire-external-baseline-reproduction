@@ -24,16 +24,21 @@ This repository does **not** claim to reproduce official E-KELL results.
 
 ## Current achieved level
 
-**Current label: Level 3 — data-compatible, pipeline-level, paper-faithful reimplementation.**
+**Current label: Level 3 — data-compatible, pipeline-level, paper-faithful reimplementation (code).**
 
 Method IDs:
 
-- `ekell_style_faithful` — paper-faithful path (no enhanced hooks)
-- `ekell_style_enhanced` — separate enhanced path (dense entity / hybrid ranking optional)
+- `ekell_style_controlled_shared_llm` — complete E-KELL architecture under shared LLM/schema (main table)
+- `ekell_style_paper_fidelity` — paper-fidelity track (ChatGLM-6B interface; separate experiment)
+- `ekell_style_faithful` — legacy alias → controlled full pipeline
+- `ekell_style_enhanced` — supplemental only (dense/hybrid hooks)
+- `ekell_style_legacy_bm25` — old BM25+3-stage scaffold (diagnostics only)
+
+Complete pipeline modules: FOL AST, vector KG retrieval, neighborhood expansion, stepwise prompt chain (`full_pipeline.py`). See `docs/ekell_reproduction_spec.md` and `docs/ekell_paper_to_code_matrix.md`.
 
 This repository implements the E-KELL-style module sequence and runs it on copied fire emergency KG/evidence/scenario inputs. It does not reach Level 4 because the original E-KELL expert evaluation is not reproduced with emergency commanders/firefighters. It does not reach Level 5 because official E-KELL code/data/prompts/results are not integrated.
 
-Traces recorded for faithful runs include: parsed scenario, matched entities + scores, triples, graph paths, evidence chunks, retrieval scores, stage-1/2/3 raw outputs, prompt hashes, context IDs, latency/tokens, fidelity level, and deviations.
+**Empirically validated:** false until real ChatGLM / shared SiliconFlow / evaluator / expert runs complete.
 
 ## What is reproduced
 
