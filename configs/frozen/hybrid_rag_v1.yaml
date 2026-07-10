@@ -1,6 +1,8 @@
 # Frozen Hybrid RAG config (RRF). Weights selected on DEV only.
 method_id: hybrid_rag
 freeze_id: hybrid_rag_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 retrieval:
   top_k: 5

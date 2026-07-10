@@ -5,6 +5,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -217,6 +218,50 @@ class HeuristicLLMClient:
         return out
 
 
+DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+
+
+def _maybe_load_dotenv() -> None:
+    """Load local .env if python-dotenv is installed (same pattern as main project)."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    # Prefer baseline repo .env; do not override already-exported env vars.
+    root = Path(__file__).resolve().parents[3]
+    load_dotenv(root / ".env", override=False)
+
+
+def resolve_api_key(llm_cfg: dict[str, Any]) -> tuple[str, str]:
+    """Resolve API key from configured env names. Never logs the key value."""
+    candidates = [
+        str(llm_cfg.get("api_key_env") or ""),
+        "SILICONFLOW_API_KEY",
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+    ]
+    seen: set[str] = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        value = os.getenv(name)
+        if value and value.strip():
+            key = value.strip()
+            try:
+                key.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"{name} contains non-ASCII characters. Use the real API key, not a placeholder."
+                ) from exc
+            return key, name
+    raise RuntimeError(
+        "No LLM API key found. Set SILICONFLOW_API_KEY (preferred, matches fire-agent-demo) "
+        "or LLM_API_KEY / OPENAI_API_KEY."
+    )
+
+
 @dataclass
 class OpenAIChatClient:
     model: str
@@ -225,9 +270,15 @@ class OpenAIChatClient:
     provider: str = "openai"
     heuristic_fallback: bool = False
     timeout_sec: float = 60.0
+    connect_timeout_sec: float | None = None
+    read_timeout_sec: float | None = None
+    write_timeout_sec: float | None = None
     max_retries: int = 2
     model_version: str | None = None
+    default_base_url: str | None = None
+    enable_thinking: bool | None = None
     last_usage: dict[str, int] = field(default_factory=dict)
+    api_key_env_used: str | None = None
 
     def complete(
         self,
@@ -243,11 +294,13 @@ class OpenAIChatClient:
             from openai import OpenAI
         except Exception as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("openai package is not installed. Use heuristic provider or install openai.") from exc
-        api_key = os.getenv(self.api_key_env)
-        if not api_key:
-            raise RuntimeError(f"{self.api_key_env} is not set.")
-        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": self.timeout_sec, "max_retries": self.max_retries}
-        base_url = os.getenv(self.base_url_env)
+        api_key, used_env = resolve_api_key({"api_key_env": self.api_key_env})
+        self.api_key_env_used = used_env
+        base_url = os.getenv(self.base_url_env) or self.default_base_url
+        timeout = self.timeout_sec
+        if self.read_timeout_sec is not None:
+            timeout = float(self.read_timeout_sec)
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": timeout, "max_retries": self.max_retries}
         if base_url:
             kwargs["base_url"] = base_url
         client = OpenAI(**kwargs)
@@ -261,6 +314,8 @@ class OpenAIChatClient:
             create_kwargs["top_p"] = top_p
         if seed is not None:
             create_kwargs["seed"] = seed
+        if self.enable_thinking is not None:
+            create_kwargs["extra_body"] = {"enable_thinking": self.enable_thinking}
         response = client.chat.completions.create(**create_kwargs)
         usage = getattr(response, "usage", None)
         if usage is not None:
@@ -279,11 +334,38 @@ def _llm_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool = True) -> LLMClient:
+    _maybe_load_dotenv()
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
-    if provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
+
+    # Align with fire-agent-demo SiliconFlow OpenAI-compatible client.
+    if provider in {"siliconflow", "silicon-flow"}:
+        model = str(
+            llm_cfg.get("model")
+            or os.getenv("SILICONFLOW_MODEL")
+            or DEFAULT_SILICONFLOW_MODEL
+        )
         inner: Any = OpenAIChatClient(
+            model=model,
+            api_key_env=str(llm_cfg.get("api_key_env", "SILICONFLOW_API_KEY")),
+            base_url_env=str(llm_cfg.get("base_url_env", "SILICONFLOW_BASE_URL")),
+            provider="siliconflow",
+            timeout_sec=float(llm_cfg.get("timeout_sec", llm_cfg.get("read_timeout_sec", 120.0))),
+            connect_timeout_sec=float(llm_cfg["connect_timeout_sec"]) if llm_cfg.get("connect_timeout_sec") is not None else None,
+            read_timeout_sec=float(llm_cfg["read_timeout_sec"]) if llm_cfg.get("read_timeout_sec") is not None else None,
+            write_timeout_sec=float(llm_cfg["write_timeout_sec"]) if llm_cfg.get("write_timeout_sec") is not None else None,
+            max_retries=int(llm_cfg.get("max_retries", 0)),
+            model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or model),
+            default_base_url=DEFAULT_SILICONFLOW_BASE_URL,
+            enable_thinking=(
+                bool(llm_cfg.get("enable_thinking"))
+                if llm_cfg.get("enable_thinking") is not None
+                else None
+            ),
+        )
+    elif provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
+        inner = OpenAIChatClient(
             model=model,
             api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")),
             base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")),
@@ -314,15 +396,18 @@ def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = N
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider") or getattr(llm, "provider", "heuristic"))
     model = str(llm_cfg.get("model") or getattr(llm, "model", "unknown"))
+    inner = getattr(llm, "inner", llm)
     return {
         "provider": provider,
         "model": model,
-        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version"),
+        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version") or getattr(inner, "model_version", None),
         "temperature": float(llm_cfg.get("temperature", 0.0)),
         "top_p": llm_cfg.get("top_p"),
         "max_tokens": int(llm_cfg.get("max_tokens", 1200)),
         "seed": llm_cfg.get("seed"),
-        "timeout_sec": llm_cfg.get("timeout_sec"),
+        "timeout_sec": llm_cfg.get("timeout_sec") or llm_cfg.get("read_timeout_sec"),
         "max_retries": llm_cfg.get("max_retries"),
+        "api_key_env": llm_cfg.get("api_key_env") or getattr(inner, "api_key_env", None),
+        "base_url_env": llm_cfg.get("base_url_env") or getattr(inner, "base_url_env", None),
         "heuristic_fallback": bool(provider.lower() == "heuristic" or getattr(llm, "heuristic_fallback", False)),
     }

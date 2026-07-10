@@ -1,7 +1,16 @@
 {
-  "freeze_protocol_version": 1,
+  "freeze_protocol_version": 2,
   "created_at": "2026-07-10T00:00:00Z",
+  "freeze_status": "provisional",
   "policy": "All hyperparameter selection must use DEV/validation only. Test/private test must remain frozen.",
+  "provisional_reason": "No complete shared-LLM DEV trial logs, selection-criterion evidence, or selected-run artifacts are attached yet. Do not treat configs/frozen/* as empirically locked paper freezes.",
+  "required_to_promote_from_provisional": [
+    "shared LLM provider/model/version matching main project",
+    "DEV search space + all trial metrics under outputs/tuning/",
+    "documented multi-objective selection criterion application",
+    "selected config SHA + timestamp",
+    "explicit statement that test/private test were not used"
+  ],
   "selection_criteria": [
     "Safety-Gated score",
     "Critical Failure Rate",
@@ -16,7 +25,8 @@
     "reading gold during prediction generation",
     "injecting target-system Safety Checker / SAFE-Router / HITL logic",
     "reporting enhanced as faithful",
-    "reporting fallback as actual GraphRAG"
+    "reporting fallback as actual GraphRAG",
+    "claiming freeze is final without DEV evidence"
   ],
   "frozen_configs": [
     "configs/frozen/direct_llm_v1.yaml",
@@ -26,6 +36,8 @@
     "configs/frozen/ekell_style_faithful_v1.yaml",
     "configs/frozen/ekell_style_enhanced_v1.yaml"
   ],
+  "main_table_methods": ["direct_llm", "bm25_rag", "ekell_style_faithful"],
+  "supplemental_methods": ["dense_rag", "hybrid_rag", "ekell_style_enhanced"],
   "dev_results_dir": "outputs/tuning",
-  "note": "Populate outputs/tuning/* with actual dev search logs before paper_final runs."
+  "note": "Populate outputs/tuning/* with actual shared-LLM DEV search logs before promoting freeze_status to locked."
 }

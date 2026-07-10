@@ -149,15 +149,23 @@ python scripts/audit_corpus.py --corpus data/corpus
 
 ## firebench-interop-v1
 
+Formal runs use a **single experiment manifest** (shared SiliconFlow model + per-method configs). Multiple `--config` overlays are rejected.
+
 ```bash
+cp .env.example .env   # set SILICONFLOW_API_KEY (same names as fire-agent-demo)
+cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
+cp configs/experiments/paper_main_table_v1.yaml.example configs/experiments/paper_main_table_v1.yaml
+
 python scripts/run_interop_baselines.py \
-  --bundle path/to/runner_bundle \
-  --methods direct_llm,bm25_rag,dense_rag,hybrid_rag,ekell_style_faithful \
-  --config configs/shared_real_model.yaml \
+  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --bundle path/to/formal_runner_bundle \
   --output outputs/firebench_interop_v1_predictions.jsonl
 ```
 
-See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md).
+**Paper main table:** `direct_llm`, `bm25_rag`, `ekell_style_faithful` only.  
+**Supplemental:** `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` (optional `--include-supplemental`; must not replace faithful).
+
+See [`docs/firebench_interop_v1_integration.md`](docs/firebench_interop_v1_integration.md) and [`docs/final_experiment_commands.md`](docs/final_experiment_commands.md).
 
 Gold-isolated split workflow:
 

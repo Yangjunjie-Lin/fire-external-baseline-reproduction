@@ -3,6 +3,8 @@
 # requires a real embedding model + index checksum recorded at run time.
 method_id: dense_rag
 freeze_id: dense_rag_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 retrieval:
   top_k: 5

@@ -40,7 +40,7 @@ def get_pipeline(method: str) -> Callable[..., dict[str, Any]]:
         from external_baselines.ekell_style.pipeline import run_scenario_faithful
         return run_scenario_faithful
     if method == "ekell_style_enhanced":
-        from external_baselines.ekell_style.pipeline import run_scenario_enhanced
+        from external_baselines.ekell_style.enhanced_pipeline import run_scenario_enhanced
         return run_scenario_enhanced
     if method == "lightrag":
         from external_baselines.graphrag_adapter.lightrag_adapter import run_scenario
@@ -75,24 +75,31 @@ def generate_predictions(
     output_path: str | Path = "outputs/baseline_outputs.jsonl",
     manifest_path: str | Path | None = "outputs/run_manifest.json",
     config: dict[str, Any] | None = None,
+    method_configs: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate predictions with gold-isolated inputs only."""
-    config = config or load_config("configs/default.yaml", *(config_paths or []))
-    assert_paper_final_allowed(config)
-    config.setdefault("paths", {})["scenario_file"] = str(dataset)
+    """Generate predictions with gold-isolated inputs only.
+
+    If ``method_configs`` is provided, each method uses its own merged config
+    (shared model + method-specific). Otherwise a single ``config`` is used.
+    """
+    default_config = config or load_config("configs/default.yaml", *(config_paths or []))
+    assert_paper_final_allowed(default_config)
+    default_config.setdefault("paths", {})["scenario_file"] = str(dataset)
     scenarios = load_scenarios(dataset, limit=limit)
-    llm = build_llm_client(config)
-    corpus_dir = config.get("paths", {}).get("corpus_dir", "data/corpus")
+    corpus_dir = default_config.get("paths", {}).get("corpus_dir", "data/corpus")
 
     outputs: list[dict[str, Any]] = []
     for method in methods:
-        pipeline = get_pipeline(method)
+        method_id = canonicalize_method_id(method)
+        method_config = (method_configs or {}).get(method_id) or default_config
+        assert_paper_final_allowed(method_config)
+        llm = build_llm_client(method_config)
+        pipeline = get_pipeline(method_id)
         for scenario in scenarios:
-            prediction_input = to_prediction_input(scenario, config=config)
+            prediction_input = to_prediction_input(scenario, config=method_config)
             assert_no_gold_in_prediction_input(prediction_input)
-            out = pipeline(prediction_input, config=config, llm=llm)
-            # Ensure method field uses canonical id when possible.
-            out["method"] = canonicalize_method_id(str(out.get("method") or method))
+            out = pipeline(prediction_input, config=method_config, llm=llm)
+            out["method"] = canonicalize_method_id(str(out.get("method") or method_id))
             out["scenario_id"] = prediction_input["scenario_id"]
             outputs.append(out)
 
@@ -103,12 +110,11 @@ def generate_predictions(
             dataset=dataset,
             limit=limit,
             corpus_dir=corpus_dir,
-            config=config,
+            config=default_config,
             data_counts=_data_counts(corpus_dir),
         )
         write_run_manifest(manifest_path, manifest)
     return outputs
-
 
 def evaluate_predictions(
     *,

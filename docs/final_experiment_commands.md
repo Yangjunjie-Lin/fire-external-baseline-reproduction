@@ -1,71 +1,60 @@
 # Final Experiment Commands
 
-> Do **not** auto-run paid APIs. Commands below are for the user to execute after license review and credential setup.
+> **Do not auto-run paid APIs.** Commands are for the user after license review + credentials.
 
-## 0. Prepare Runner Bundle (from main project)
-
-Place the main-project Runner Bundle locally (scenarios input-only, corpus/KG snapshot, experiment config, checksums). Do not use Evaluator Bundle.
-
-## 1. Smoke (heuristic, free)
+## Unique formal command (main table only)
 
 ```bash
-python scripts/generate_predictions.py \
-  --methods direct_llm,bm25_rag,dense_rag,hybrid_rag,ekell_style_faithful,ekell_style_enhanced,fallback_graph_retrieval \
-  --config configs/deterministic_heuristic_smoke.yaml \
-  --limit 1 \
-  --output outputs/smoke_predictions.jsonl
+# 1) Align LLM with fire-agent-demo (SiliconFlow)
+cp .env.example .env
+# edit .env → set SILICONFLOW_API_KEY=...
+cp configs/shared_real_model.yaml.example configs/shared_real_model.yaml
+cp configs/experiments/paper_main_table_v1.yaml.example configs/experiments/paper_main_table_v1.yaml
+# edit paper_main_table_v1.yaml → set bundle: <formal Runner Bundle path>
 
-python -m pytest -q
-```
-
-## 2. Interop generation (real shared model — user runs)
-
-```bash
-# Copy and edit:
-#   configs/shared_real_model.yaml.example → configs/shared_real_model.yaml
-# Set OPENAI_API_KEY / OPENAI_BASE_URL (or provider equivalents).
-
+# 2) After main project exports formal firebench-interop-v1 Runner Bundle:
 python scripts/run_interop_baselines.py \
-  --bundle path/to/runner_bundle \
-  --methods direct_llm,bm25_rag,ekell_style_faithful \
-  --config configs/shared_real_model.yaml \
-  --config configs/frozen/bm25_rag_v1.yaml \
-  --config configs/frozen/ekell_style_faithful_v1.yaml \
+  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --bundle path/to/formal_runner_bundle \
+  --expected-bundle-checksum <bundle_checksum> \
   --output outputs/firebench_interop_v1_predictions.jsonl
 ```
 
-Optional dense/hybrid (only after real embedding model is configured):
+This runs **only** main-table methods: `direct_llm`, `bm25_rag`, `ekell_style_faithful`.
+
+Merge order per method: `base_config` → `shared_model_config` → method `config`.
+
+## Supplemental (optional; never replaces faithful)
 
 ```bash
 python scripts/run_interop_baselines.py \
-  --bundle path/to/runner_bundle \
-  --methods dense_rag,hybrid_rag,ekell_style_enhanced \
-  --config configs/shared_real_model.yaml \
-  --config configs/frozen/dense_rag_v1.yaml \
-  --config configs/frozen/hybrid_rag_v1.yaml \
-  --config configs/frozen/ekell_style_enhanced_v1.yaml \
-  --output outputs/firebench_interop_v1_predictions_enhanced.jsonl
+  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --bundle path/to/formal_runner_bundle \
+  --include-supplemental \
+  --output outputs/firebench_interop_v1_predictions_supplemental.jsonl
 ```
 
-## 3. Paper-final guard
+## Post-bundle verification checklist (await formal bundle)
 
-`paper_final: true` rejects:
+1. schema hash verification  
+2. scenario hash verification  
+3. corpus hash verification  
+4. input-only / gold isolation  
+5. baseline predictions JSONL  
+6. neutral evaluator compatibility  
 
-- heuristic provider
-- missing `model` / `model_version`
-- (optional) missing bundle checksum when `require_bundle_checksum: true`
+Until then: `cross_repository_interop_verified=false`.
 
-Fallback GraphRAG cannot set `actual_graphrag=true`.
+## Smoke only (free / heuristic)
 
-## 4. Evaluation
+```bash
+python scripts/generate_predictions.py \
+  --methods direct_llm,bm25_rag,ekell_style_faithful \
+  --config configs/deterministic_heuristic_smoke.yaml \
+  --limit 1 \
+  --output outputs/smoke_predictions.jsonl
+```
 
-- Local proxy only: `python scripts/evaluate_predictions.py --predictions ... --dataset ...`
-- Paper scores: main-project neutral shared evaluator on `outputs/firebench_interop_v1_predictions.jsonl`
+## Deprecated
 
-## 5. Formal leaderboard eligibility
-
-| Enter formal system-level board | Smoke / fallback only |
-|---|---|
-| direct_llm, bm25_rag, ekell_style_faithful, ekell_style_enhanced (separate rows) | heuristic runs |
-| dense/hybrid **with real embeddings** | dense/hybrid smoke_hash |
-| actual LightRAG / GraphRAG when flags prove indexing+query | lightrag/microsoft_graphrag fallback; `fallback_graph_retrieval` |
+Multiple `--config` overlays on `run_interop_baselines.py` are **rejected**. Use the experiment manifest.

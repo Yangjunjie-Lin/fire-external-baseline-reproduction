@@ -2,17 +2,16 @@
 
 ## Taxonomy
 
-| method_id | Class | Formal Track A | Notes |
+| method_id | Class | Paper table | Formal Track A |
 |---|---|---|---|
-| `direct_llm` | baseline | Yes (A1) | No retrieval |
-| `bm25_rag` (`vanilla_rag` alias) | baseline | Yes (A2) | True BM25 + multilingual tokenize |
-| `dense_rag` | enhanced / smoke | Only with real embeddings | Smoke hash fixture ≠ formal dense |
-| `hybrid_rag` | enhanced / smoke | Only with real dense | RRF fusion; component scores recorded |
-| `ekell_style_faithful` | faithful | Yes (A2; A3 only if architecture supports) | **Not** official E-KELL |
-| `ekell_style_enhanced` | enhanced | Yes (separate row) | Dense entity / hybrid ranking optional |
-| `lightrag` | actual **or** fallback | Actual only if indexing+query | Currently fallback_only |
-| `microsoft_graphrag` | actual **or** fallback | Actual only if indexing+query | Currently fallback_only |
-| `fallback_graph_retrieval` | fallback | No actual GraphRAG board | Explicit fallback |
+| `direct_llm` | baseline | **main** | Yes (A1) |
+| `bm25_rag` | baseline | **main** | Yes (A2) |
+| `ekell_style_faithful` | faithful | **main** | Yes (A2) |
+| `dense_rag` | enhanced / smoke | supplemental | Only with real embeddings |
+| `hybrid_rag` | enhanced / smoke | supplemental | Only with real dense |
+| `ekell_style_enhanced` | enhanced | supplemental | Separate row; never replaces faithful |
+| `lightrag` / `microsoft_graphrag` | actual or fallback | not main table | Actual only if indexing+query |
+| `fallback_graph_retrieval` | fallback | no | Never actual GraphRAG board |
 
 ## Shared claims
 

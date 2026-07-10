@@ -8,46 +8,40 @@ This repository consumes the **Runner Bundle** only from the main project’s `f
 |---|---|
 | Runner Bundle (scenarios input-only, corpus/KG snapshot, experiment config, manifests/checksums) | Evaluator Bundle |
 | Neutral prediction schema | Gold / expected / labels / annotations |
-| Shared model config | Target SAFE-Router / Safety Checker / Dynamic REG / HITL / risk scoring / final gate |
+| Shared model config (SiliconFlow-aligned) | Target SAFE-Router / Safety Checker / Dynamic REG / HITL / risk scoring |
 
-## Command
+## Formal command (single experiment manifest)
 
 ```bash
 python scripts/run_interop_baselines.py \
-  --bundle path/to/runner_bundle \
-  --methods direct_llm,bm25_rag,dense_rag,hybrid_rag,ekell_style_faithful \
-  --config configs/paper_shared_model.yaml \
+  --experiment-manifest configs/experiments/paper_main_table_v1.yaml \
+  --bundle path/to/formal_runner_bundle \
   --output outputs/firebench_interop_v1_predictions.jsonl
 ```
 
-## Canonical prediction record
+Merge order per method: `base_config` → `shared_model_config` → method `config`.
 
-Each JSONL line matches `schemas/firebench_interop_v1_prediction.schema.json`:
+Multiple `--config` CLI overlays are **rejected** (ambiguous for paper runs).
 
-- `case_id`, `method_id`
-- `prediction` (risks, actions, blocked, missing confirmations, evidence, gate, final_response)
-- `runtime` (latency_ms, llm_calls, token_usage, cost)
-- `provenance`, `method_metadata`
+## Main table vs supplemental
+
+- Main table: `direct_llm`, `bm25_rag`, `ekell_style_faithful`
+- Supplemental (`--include-supplemental`): `dense_rag`, `hybrid_rag`, `ekell_style_enhanced`
 
 ## Adapter rules
 
-1. `baseline_row_to_interop` only maps fields the baseline actually produced.
-2. Normalizer does **not** invent blocked actions / missing confirmations / gates (`infer_structured_safety_fields: false`).
-3. `raw_output` is always preserved.
-4. Parsing failures are recorded (`parsing_status`), not silently filled with high-score defaults.
-5. Baselines do not emit SAFE-Router internal module routing.
+1. Maps only fields the baseline actually produced.
+2. No invented blocked/missing/gate fields (`infer_structured_safety_fields: false`).
+3. `raw_output` preserved; parsing failures recorded.
+4. `cross_repository_interop_verified` stays **false** until a formal main-project Runner Bundle is actually consumed and hashes verified.
 
-## Split workflow
+## Pending cross-repo verification
 
-1. `scripts/generate_predictions.py` — gold-isolated generation
-2. `scripts/evaluate_predictions.py` — local **proxy** diagnostics only
-3. Main-project neutral evaluator — paper scores
-4. `scripts/build_report.py` — local report
+After formal bundle arrives, verify:
 
-## Checksums
-
-Interop runs record:
-
-- bundle checksum
-- corpus directory manifest aggregate SHA256
-- per-record prediction SHA256 under `provenance.record_sha256`
+1. schema hash  
+2. scenario hash  
+3. corpus hash  
+4. input-only / gold isolation  
+5. baseline predictions  
+6. neutral evaluator compatibility  

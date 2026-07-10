@@ -1,6 +1,8 @@
 # Frozen BM25 RAG config (dev-selected; do not retune on test).
 method_id: bm25_rag
 freeze_id: bm25_rag_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 retrieval:
   top_k: 5

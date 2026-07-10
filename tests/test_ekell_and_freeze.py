@@ -91,9 +91,12 @@ def test_frozen_config_not_overwritten():
     ]
     for name in required:
         assert (FROZEN / name).exists(), name
-    # Guard: freeze files must declare split_policy.
+    # Guard: freeze files must declare split_policy and provisional status until DEV evidence exists.
     text = (FROZEN / "bm25_rag_v1.yaml").read_text(encoding="utf-8")
     assert "tuned_on_dev_only_test_frozen" in text
+    assert "freeze_status: provisional" in text
+    freeze_manifest = (FROZEN / "freeze_manifest.json").read_text(encoding="utf-8")
+    assert '"freeze_status": "provisional"' in freeze_manifest
 
 
 def test_prediction_count_matches_cases(tmp_path):
@@ -166,3 +169,5 @@ def test_ekell_faithful_vs_enhanced_method_ids(tmp_path):
     assert enhanced["method"] == "ekell_style_enhanced"
     assert faithful["method_specific"]["reproduction_class"] == "faithful"
     assert enhanced["method_specific"]["reproduction_class"] == "enhanced"
+    assert faithful["method_specific"].get("paper_table_role") == "main_table"
+    assert enhanced["method_specific"].get("paper_table_role") == "supplemental_extended"

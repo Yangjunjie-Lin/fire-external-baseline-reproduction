@@ -1,6 +1,8 @@
 # Frozen E-KELL-style FAITHFUL config. No enhanced features.
 method_id: ekell_style_faithful
 freeze_id: ekell_style_faithful_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 reproduction_class: faithful
 official_reproduction: false

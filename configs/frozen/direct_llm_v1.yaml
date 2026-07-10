@@ -3,6 +3,8 @@
 # Selected: 2026-07-10 | freeze_id: direct_llm_v1
 method_id: direct_llm
 freeze_id: direct_llm_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 llm:
   temperature: 0.0

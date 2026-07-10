@@ -5,17 +5,21 @@ URL: https://arxiv.org/abs/2311.08732
 
 ## Paper-level concept to repository mapping
 
+See the detailed audit: [`docs/paper_to_code_fidelity_audit.md`](paper_to_code_fidelity_audit.md).
+
 | E-KELL paper-level concept | Repository implementation |
 |---|---|
-| Emergency scenario / decision demand | Flattened scenario records from `scenario_matrix_v2.json` |
-| Emergency knowledge graph | JSONL assets under `data/corpus/`: entities, relations, triples |
-| Standards/regulations/cases as evidence | `evidence_chunks.jsonl` copied as input data |
-| Query/scenario understanding | `src/external_baselines/ekell_style/scenario_parser.py` |
-| KG entity linking | `src/external_baselines/ekell_style/entity_matcher.py` |
-| Relevant KG segment / neighborhood evidence | `src/external_baselines/ekell_style/subgraph_retriever.py` |
-| Prompt-chain reasoning | `src/external_baselines/ekell_style/prompt_chain.py` + `configs/prompts/` |
-| Final decision support response | Unified schema in `src/external_baselines/common/schema.py` |
-| Evaluation dimensions | Proxy metrics + manual rubric mapped to comprehensibility, accuracy, conciseness, instructiveness |
+| Emergency scenario / decision demand | Flattened scenario records; gold stripped via `to_prediction_input` |
+| Emergency knowledge graph | JSONL assets under `data/corpus/` (substituted fire KG) |
+| Standards/regulations/cases as evidence | `evidence_chunks.jsonl` |
+| Query/scenario understanding | `ekell_style/scenario_parser.py` |
+| KG entity linking | `ekell_style/entity_matcher.py` |
+| Relevant KG segment / neighborhood evidence | `ekell_style/subgraph_retriever.py` |
+| Prompt-chain reasoning | `ekell_style/prompt_chain.py` + `configs/prompts/` |
+| Final decision support response | `ekell_style/pipeline.py` (`ekell_style_faithful`) |
+| Enhanced (non-faithful) extensions | `ekell_style/enhanced_pipeline.py` (**supplemental only**) |
+
+Main paper table method for E-KELL-style: **`ekell_style_faithful` only**.
 
 ## Key deviation
 

@@ -49,7 +49,9 @@ configs/frozen/ekell_style_enhanced_v1.yaml
 configs/frozen/freeze_manifest.json
 ```
 
-Each frozen YAML declares `split_policy: tuned_on_dev_only_test_frozen`.
+Each frozen YAML declares `split_policy: tuned_on_dev_only_test_frozen` and currently **`freeze_status: provisional`**.
+
+Promotion to locked freeze requires shared-LLM DEV trial logs, selection-criterion evidence, selected config SHA, and an explicit no-test-tuning statement (`configs/frozen/freeze_manifest.json`).
 
 ## Evidence that test was not used for tuning
 

@@ -2,6 +2,8 @@
 # Must NOT be reported as paper-faithful / official E-KELL reproduction.
 method_id: ekell_style_enhanced
 freeze_id: ekell_style_enhanced_v1
+freeze_status: provisional
+provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
 split_policy: tuned_on_dev_only_test_frozen
 reproduction_class: enhanced
 official_reproduction: false
