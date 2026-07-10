@@ -24,8 +24,6 @@ from typing import Any
 from external_baselines.common.checksums import sha256_text
 from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary, llm_runtime_snapshot
 from external_baselines.common.schema import normalize_response_payload, retrieved_context_to_dict
-from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-from external_baselines.ekell_style.kg_loader import load_kg, triple_id, triple_parts
 from external_baselines.ekell_style.logical_query import (
     decompose_query,
     execute_query,
@@ -34,7 +32,6 @@ from external_baselines.ekell_style.logical_query import (
 from external_baselines.ekell_style.neighborhood_expander import expand_neighborhood
 from external_baselines.ekell_style.scenario_parser import parse_scenario
 from external_baselines.ekell_style.stepwise_prompt_chain import run_stepwise_prompt_chain
-from external_baselines.ekell_style.vector_retriever import VectorRetriever
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 
 REPRODUCTION_LABEL = (
@@ -54,7 +51,7 @@ def _seed_entities_from_contexts(contexts: list[dict[str, Any]], matched: list[d
         for key in ("entity_id", "head", "tail", "subject", "object"):
             if meta.get(key):
                 seeds.append(str(meta[key]))
-        text = str(ctx.get("text") or "")
+        str(ctx.get("text") or "")
         # Prefer explicit IDs already collected; avoid inventing entities from free text.
         if meta.get("triple_id"):
             seeds.append(str(meta["triple_id"]))
@@ -177,6 +174,7 @@ def run_ekell_full_pipeline(
     *,
     config: dict[str, Any] | None = None,
     llm: LLMClient | None = None,
+    runtime: Any | None = None,
     method: str,
     track: str,
 ) -> dict[str, Any]:
@@ -186,20 +184,38 @@ def run_ekell_full_pipeline(
     """
     config = config or {}
     llm = llm or build_llm_client(config)
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
+    Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     ekell_cfg = config.get("ekell_style", {})
     retrieval_cfg = config.get("retrieval", {})
     vector_cfg = config.get("ekell_vector", {}) or ekell_cfg.get("vector", {})
     paper_final = bool(config.get("paper_final", False))
+    reject_smoke = bool(vector_cfg.get("reject_smoke", paper_final))
     start = time.perf_counter()
 
-    kg = load_kg(corpus_dir)
+    if runtime is None:
+        if paper_final or reject_smoke:
+            raise RuntimeError(
+                "E-KELL formal/reject_smoke requires a prepared EKELLRuntime; "
+                "refusing to rebuild the vector index per case."
+            )
+        from external_baselines.common.method_runtime import prepare_ekell_runtime
+
+        runtime = prepare_ekell_runtime(config)
+
+    kg = runtime.kg
+    retriever = runtime.vector_retriever
+    if getattr(runtime, "audit", None) is not None:
+        runtime.audit.case_count += 1
+
     kg_status = {
         "substituted_fire_domain_kg": True,
         "official_ekell_kg": False,
         "paper_reported_triple_count": 2264,
         "local_triple_count": len(kg.triples),
         "note": "Local fire-domain KG snapshot is substituted; not the official E-KELL 2264-triple KG.",
+        "index_path": vector_cfg.get("index_path"),
+        "index_checksum": (runtime.index_manifest or {}).get("index_checksum"),
+        "runtime_reused": True,
     }
 
     parsed = parse_scenario(
@@ -226,25 +242,7 @@ def run_ekell_full_pipeline(
     if degraded and not fallback_reason:
         fallback_reason = "invalid_or_unknown_logical_ast; continuing with vector+neighborhood retrieval only"
 
-    # 2) Vector KG retrieval (E-KELL-native; not generic dense_rag)
-    backend_name = str(vector_cfg.get("backend", "smoke"))
-    if paper_final and backend_name.casefold().replace("-", "_") in {"smoke", "smoke_hash", "hash", "hash_smoke"}:
-        raise RuntimeError("paper_final forbids smoke/hash embedding backend for E-KELL vector retrieval.")
-    backend = create_embedding_backend(
-        backend_name,
-        model_name=str(vector_cfg.get("model_name") or ("deterministic-hash-smoke" if "smoke" in backend_name or "hash" in backend_name else "")),
-        model_version=str(vector_cfg.get("model_version") or "unspecified"),
-        dimension=int(vector_cfg.get("dimension", 64)),
-        paper_final=paper_final,
-        reject_smoke=bool(vector_cfg.get("reject_smoke", paper_final)),
-    )
-    retriever = VectorRetriever.from_kg(
-        kg,
-        backend,
-        paper_final=paper_final,
-        reject_smoke=bool(vector_cfg.get("reject_smoke", paper_final)),
-        max_context_chars=int(retrieval_cfg.get("max_chunk_chars", 1200)),
-    )
+    # 2) Vector KG retrieval (reuse prepared index; never rebuild in formal mode)
     top_k = int(vector_cfg.get("top_k", retrieval_cfg.get("top_k", 8)))
     retrieved = retriever.retrieve(scenario["scenario_text"], top_k=top_k)
     contexts = [retrieved_context_to_dict(c) if hasattr(c, "context_id") else dict(c) for c in retrieved]
@@ -362,12 +360,21 @@ def run_ekell_full_pipeline(
             "fallback_reason": fallback_reason,
         },
         "vector_retrieval": {
-            "backend": backend_name,
-            "actual_embedding_used": bool(getattr(backend, "actual_embedding_used", False)),
-            "smoke_fallback_used": bool(getattr(backend, "smoke_fallback_used", True)),
+            "backend": (runtime.index_manifest or {}).get("backend")
+            or getattr(runtime.embedding_backend, "backend", None),
+            "actual_embedding_used": bool(
+                (runtime.index_manifest or {}).get("actual_embedding_used")
+                or getattr(runtime.embedding_backend, "actual_embedding_used", False)
+            ),
+            "smoke_fallback_used": bool(
+                (runtime.index_manifest or {}).get("smoke_fallback_used")
+                or getattr(runtime.embedding_backend, "smoke_fallback_used", True)
+            ),
             "index_metadata": getattr(retriever.index, "metadata", {}),
+            "index_checksum": (runtime.index_manifest or {}).get("index_checksum"),
             "top_k": top_k,
             "n_retrieved": len(contexts),
+            "runtime_reuse": runtime.audit.to_dict() if getattr(runtime, "audit", None) else None,
         },
         "neighborhood_expansion": expansion if isinstance(expansion, dict) else {"paths": paths},
         "fol_execution": fol_result,
@@ -389,21 +396,35 @@ def run_ekell_full_pipeline(
     return maybe_infer_structured_safety_fields(result, config)
 
 
-def run_paper_fidelity(scenario: dict[str, Any], *, config: dict[str, Any] | None = None, llm: LLMClient | None = None) -> dict[str, Any]:
+def run_paper_fidelity(
+    scenario: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    llm: LLMClient | None = None,
+    runtime: Any | None = None,
+) -> dict[str, Any]:
     return run_ekell_full_pipeline(
         scenario,
         config=config,
         llm=llm,
+        runtime=runtime,
         method="ekell_style_paper_fidelity",
         track="paper_fidelity",
     )
 
 
-def run_controlled_shared_llm(scenario: dict[str, Any], *, config: dict[str, Any] | None = None, llm: LLMClient | None = None) -> dict[str, Any]:
+def run_controlled_shared_llm(
+    scenario: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    llm: LLMClient | None = None,
+    runtime: Any | None = None,
+) -> dict[str, Any]:
     return run_ekell_full_pipeline(
         scenario,
         config=config,
         llm=llm,
+        runtime=runtime,
         method="ekell_style_controlled_shared_llm",
         track="controlled_shared_llm",
     )

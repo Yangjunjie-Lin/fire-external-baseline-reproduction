@@ -81,8 +81,8 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 **Only formal entrypoint.** `.example` files are templates only — copy before running.
 
 ```bash
-pip install -e .
-pip install -r requirements.txt
+pip install -e ".[llm,embeddings]"
+# or: pip install -r requirements.txt && pip install -r requirements-optional-embeddings.txt
 
 # Copy templates before formal runs (local files are gitignored):
 cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
@@ -98,6 +98,7 @@ python scripts/show_experiment_state.py
 
 python scripts/validate_formal_config.py \
   --validation-stage dry_run \
+  --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \

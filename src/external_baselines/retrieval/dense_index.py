@@ -148,7 +148,17 @@ def build_dense_index(
 
     evidence_checksum = sha256_file(evidence_path)
     corpus_checksum = corpus_checksum or evidence_checksum
-    docs_checksum = sha256_json({"chunk_ids": [d["chunk_id"] for d in documents]})
+    docs_checksum = sha256_json(
+        [
+            {
+                "chunk_id": d.get("chunk_id"),
+                "text": d.get("text"),
+                "source_id": d.get("source_id"),
+                "citation": d.get("citation"),
+            }
+            for d in documents
+        ]
+    )
 
     ensure_dir(index_dir)
     docs_path = index_dir / "documents.jsonl"
@@ -232,11 +242,52 @@ def load_dense_index(
     if int(manifest.get("dimension") or 0) != dim:
         raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
 
-    docs_checksum = sha256_json({"chunk_ids": [d.get("chunk_id") for d in documents]})
+    docs_checksum = sha256_json(
+        [
+            {
+                "chunk_id": d.get("chunk_id"),
+                "text": d.get("text"),
+                "source_id": d.get("source_id"),
+                "citation": d.get("citation"),
+            }
+            for d in documents
+        ]
+    )
     if docs_checksum != manifest.get("documents_checksum"):
-        raise DenseIndexError("documents checksum mismatch.")
+        raise DenseIndexError("documents_checksum mismatch (semantic document content).")
+    if manifest.get("documents_file_checksum") and _file_sha256(docs_path) != manifest.get(
+        "documents_file_checksum"
+    ):
+        raise DenseIndexError("documents_file_checksum mismatch.")
     if _file_sha256(emb_path) != manifest.get("embeddings_checksum"):
-        raise DenseIndexError("embeddings checksum mismatch.")
+        raise DenseIndexError("embeddings_checksum mismatch.")
+    expected_index = sha256_json(
+        {
+            "backend": manifest.get("backend"),
+            "model_name": manifest.get("model_name"),
+            "model_version": manifest.get("model_version"),
+            "dimension": dim,
+            "document_count": len(documents),
+            "documents_checksum": docs_checksum,
+            "embeddings_checksum": manifest.get("embeddings_checksum"),
+            "corpus_checksum": manifest.get("corpus_checksum"),
+            "evidence_source_checksum": manifest.get("evidence_source_checksum"),
+        }
+    )
+    if manifest.get("index_checksum") and expected_index != manifest.get("index_checksum"):
+        raise DenseIndexError("index_checksum mismatch.")
+    if bool(manifest.get("smoke_fallback_used")) and (
+        expected_backend and str(expected_backend).lower() not in {"smoke", "hash", "smoke_hash_embedding"}
+    ):
+        raise DenseIndexError("smoke_fallback_used=true is forbidden for real dense index loads.")
+    if expected_backend and str(expected_backend).lower() not in {
+        "smoke",
+        "hash",
+        "smoke_hash_embedding",
+        "deterministic_hash_smoke",
+    }:
+        if not bool(manifest.get("actual_embedding_used", True)):
+            raise DenseIndexError("actual_embedding_used must be true for real dense indexes.")
 
     if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
         raise DenseIndexError(

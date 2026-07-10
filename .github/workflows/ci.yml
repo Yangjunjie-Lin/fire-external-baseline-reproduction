@@ -29,14 +29,32 @@ jobs:
         run: |
           ruff check \
             src/external_baselines/common/formal_config_validator.py \
+            src/external_baselines/common/method_runtime.py \
+            src/external_baselines/common/comparison_readiness.py \
+            src/external_baselines/common/freeze_manifest.py \
+            src/external_baselines/retrieval/dense_index.py \
+            src/external_baselines/ekell_style/vector_index.py \
             scripts/audit \
             scripts/validate_formal_config.py \
             scripts/audit_release_readiness.py \
             scripts/package_reproducibility_artifact.py \
             scripts/verify_cross_repo_contract.py \
-            scripts/check_repository_hygiene.py
+            scripts/check_repository_hygiene.py \
+            scripts/build_comparison_indexes.py \
+            scripts/check_comparison_readiness.py \
+            scripts/create_freeze_manifest.py \
+            scripts/run_interop_baselines.py
       - name: Pytest
         run: python -m pytest -q
+      - name: Comparison suite offline tests
+        run: |
+          python -m pytest -q \
+            tests/test_dense_real_index.py \
+            tests/test_hybrid_rrf.py \
+            tests/test_ekell_index_persistence.py \
+            tests/test_method_runtime.py \
+            tests/test_method_set_and_freeze.py \
+            tests/test_comparison_readiness_and_fairness.py
       - name: Independence audit
         run: python -m pytest -q tests/test_no_fire_agent_demo_import.py tests/test_ekell_faithful_dependency_audit.py
       - name: Interop contract tests

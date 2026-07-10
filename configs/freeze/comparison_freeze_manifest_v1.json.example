@@ -25,6 +25,25 @@
     "backend": "text2vec",
     "model_name": "BAAI/bge-m3",
     "model_version": "REQUIRED_BEFORE_REAL_INDEX_BUILD",
-    "dimension": 1024
+    "dimension": 1024,
+    "normalize_embeddings": true
+  },
+  "indexes": {
+    "dense": {
+      "index_checksum": "",
+      "index_manifest_sha256": "",
+      "corpus_checksum": "",
+      "model_version": ""
+    },
+    "hybrid_dense_dependency": {
+      "index_checksum": ""
+    },
+    "ekell": {
+      "index_checksum": "",
+      "index_manifest_sha256": "",
+      "kg_checksum": "",
+      "corpus_checksum": "",
+      "model_version": ""
+    }
   }
 }

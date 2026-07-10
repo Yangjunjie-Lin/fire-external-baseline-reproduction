@@ -42,6 +42,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Deprecated alias for --validation-stage template.",
     )
     parser.add_argument("--method-config", action="store_true", help="Treat --config as a method config")
+    parser.add_argument(
+        "--method-set",
+        choices=["main_table", "comparison_suite"],
+        default="main_table",
+        help="Which method set to validate (default: main_table).",
+    )
     args = parser.parse_args(argv)
 
     stage = args.validation_stage
@@ -92,6 +98,7 @@ def main(argv: list[str] | None = None) -> None:
                 path,
                 allow_placeholders=(stage == "template"),
                 validation_stage=stage,
+                method_set=args.method_set,
             )
         print(json.dumps(result, indent=2))
     except FormalConfigError as exc:

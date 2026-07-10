@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 
 from external_baselines.common.llm_client import build_llm_client, llm_config_summary, llm_runtime_snapshot
 from external_baselines.common.schema import RetrievedContext, normalize_response_payload, retrieved_context_to_dict
 from external_baselines.common.text_utils import extract_json_object
-from external_baselines.dense_rag.pipeline import DenseRetriever, build_dense_index
+from external_baselines.dense_rag.pipeline import DenseRetriever
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 from external_baselines.retrieval.dense_index import DenseIndexError
-from external_baselines.retrieval.embedding_backends import create_embedding_backend, resolve_dimension
 from external_baselines.vanilla_rag.retriever import LexicalRetriever
 
 METHOD = "hybrid_rag"
@@ -119,79 +117,35 @@ def hybrid_retrieve(
     return out
 
 
-def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = None, llm=None) -> dict[str, Any]:
+def run_scenario(
+    scenario: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    llm=None,
+    runtime=None,
+) -> dict[str, Any]:
+    from external_baselines.common.method_runtime import prepare_hybrid_runtime
+
     config = config or {}
     llm = llm or build_llm_client(config)
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     hybrid_cfg = config.get("hybrid_rag", {})
-    dense_cfg = dict(config.get("dense_rag") or {})
-    # Allow hybrid_rag dense_* fields to populate dense_cfg when nested block absent.
-    if hybrid_cfg.get("dense_model_name") and not dense_cfg.get("model_name"):
-        dense_cfg["model_name"] = hybrid_cfg["dense_model_name"]
-    if hybrid_cfg.get("dense_model_version") and not dense_cfg.get("model_version"):
-        dense_cfg["model_version"] = hybrid_cfg["dense_model_version"]
-    if hybrid_cfg.get("dense_method") and not dense_cfg.get("backend"):
-        dense_cfg["backend"] = hybrid_cfg["dense_method"]
-    if hybrid_cfg.get("dimension") and not dense_cfg.get("dimension"):
-        dense_cfg["dimension"] = hybrid_cfg["dimension"]
-    if hybrid_cfg.get("reject_smoke") is not None and "reject_smoke" not in dense_cfg:
-        dense_cfg["reject_smoke"] = hybrid_cfg["reject_smoke"]
-
+    paper_final = bool(config.get("paper_final", False))
+    reject_smoke = bool(
+        (config.get("dense_rag") or {}).get("reject_smoke", False)
+        or paper_final
+        or hybrid_cfg.get("reject_smoke", False)
+    )
     top_k = int(config.get("retrieval", {}).get("top_k", hybrid_cfg.get("top_k", 5)))
     start = time.perf_counter()
-    evidence_path = corpus_dir / "evidence_chunks.jsonl"
-    lexical = LexicalRetriever.from_jsonl(str(evidence_path))
 
-    backend = str(dense_cfg.get("backend", hybrid_cfg.get("dense_method", "smoke_hash_embedding")))
-    model_name = str(dense_cfg.get("model_name", "smoke-hash-embedding"))
-    model_version = str(dense_cfg.get("model_version", "v0-smoke"))
-    dim = resolve_dimension(dense_cfg, resolve_dimension(hybrid_cfg, 64))
-    reject_smoke = bool(dense_cfg.get("reject_smoke", False) or config.get("paper_final", False) or hybrid_cfg.get("reject_smoke", False))
-    paper_final = bool(config.get("paper_final", False))
-    cache_path = dense_cfg.get("index_path") or hybrid_cfg.get("dense_index_path")
-    if not cache_path:
-        cache_path = str(Path(config.get("paths", {}).get("output_dir", "outputs")) / "dense_index_smoke.json")
+    if runtime is None:
+        runtime = prepare_hybrid_runtime(config)
+    if getattr(runtime, "audit", None) is not None:
+        runtime.audit.case_count += 1
 
-    if reject_smoke and not Path(cache_path).exists() and not Path(cache_path).is_dir():
-        # For directory indexes, parent may not exist yet — still hard-fail in real mode if missing.
-        if not (Path(cache_path).is_dir() and (Path(cache_path) / "index_manifest.json").is_file()):
-            raise DenseIndexError(
-                "Hybrid requires an existing Dense index in real/reject_smoke mode; "
-                "refusing to silently fall back to BM25-only."
-            )
-
-    emb = create_embedding_backend(
-        backend,
-        model_name=model_name,
-        model_version=model_version,
-        dimension=dim,
-        paper_final=paper_final,
-        reject_smoke=reject_smoke,
-        model=dense_cfg.get("injected_model"),
-    )
-    try:
-        index = build_dense_index(
-            evidence_path,
-            model_name=model_name,
-            model_version=model_version,
-            backend=backend,
-            dim=dim,
-            cache_path=cache_path,
-            embedding_model=dense_cfg.get("injected_model"),
-            batch_size=int(dense_cfg.get("batch_size", 16)),
-            normalize_embeddings=bool(dense_cfg.get("normalize_embeddings", True)),
-            paper_final=paper_final,
-            reject_smoke=reject_smoke,
-            corpus_checksum=config.get("corpus_checksum") or (config.get("paths") or {}).get("corpus_checksum"),
-        )
-    except Exception as exc:
-        if reject_smoke or paper_final:
-            raise DenseIndexError(
-                f"Hybrid cannot load/build Dense index and will not fall back to BM25-only: {exc}"
-            ) from exc
-        raise
-
-    dense = DenseRetriever(index, embedding_backend=emb)
+    index = runtime.dense_runtime.dense_index
+    dense = runtime.dense_runtime.retriever
+    lexical = runtime.lexical_retriever
     contexts_raw = hybrid_retrieve(
         scenario["scenario_text"],
         lexical=lexical,
@@ -268,10 +222,13 @@ Return JSON with:
         "method_status": "ready" if real_dense else "smoke_fixture_only",
         "component_scores_recorded": True,
         "no_result": len(contexts) == 0,
+        "runtime_reuse": runtime.audit.to_dict() if getattr(runtime, "audit", None) else None,
         "runtime": llm_runtime_snapshot(llm),
         "parsing_failure": not bool(parsed),
         "parsing_status": "failed" if not parsed else "ok",
         "structured_safety_fields": "baseline_generated_only",
         "tuning_note": "Fusion weights must be selected on dev only; test config is frozen.",
     }
+    if reject_smoke and not real_dense:
+        raise DenseIndexError("Hybrid reject_smoke/paper_final forbids smoke dense index.")
     return maybe_infer_structured_safety_fields(output.to_dict(), config)

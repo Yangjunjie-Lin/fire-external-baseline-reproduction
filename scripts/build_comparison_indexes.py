@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> None:
         "consumer_computed_bundle_hash": bundle.get("consumer_computed_bundle_hash"),
         "corpus_dir": bundle.get("corpus_dir"),
     }
+    corpus_dir = Path(str(bundle.get("corpus_dir") or "data/corpus"))
     methods = enabled_methods(experiment, method_set=args.method_set)
+    dense_checksum = None
     for entry in methods:
         mid = entry["method_id"]
         cfg = build_method_config(experiment, entry)
@@ -80,13 +82,30 @@ def main(argv: list[str] | None = None) -> None:
             if args.validate_only:
                 if _is_placeholder(dense.get("model_version")):
                     status["error"] = "model_version_placeholder"
+                elif index_path and Path(str(index_path)).is_dir():
+                    try:
+                        from external_baselines.retrieval.dense_index import load_dense_index
+
+                        payload = load_dense_index(
+                            index_path,
+                            expected_model_name=str(dense.get("model_name")) if dense.get("model_name") else None,
+                            expected_model_version=str(dense.get("model_version"))
+                            if dense.get("model_version") and not _is_placeholder(dense.get("model_version"))
+                            else None,
+                            expected_backend=str(dense.get("backend")) if dense.get("backend") else None,
+                        )
+                        status["checksum"] = payload.get("checksum")
+                        status["validated"] = True
+                        dense_checksum = payload.get("checksum")
+                    except Exception as exc:  # noqa: BLE001
+                        status["error"] = str(exc)
+                        report["errors"].append(f"dense_validate:{exc}")
                 report["indexes"]["dense"] = status
                 continue
-            # Real build path (not executed in this Cursor phase by default).
             from external_baselines.dense_rag.pipeline import build_dense_index
             from external_baselines.retrieval.embedding_backends import resolve_dimension
 
-            evidence = Path(cfg.get("paths", {}).get("corpus_dir", "data/corpus")) / "evidence_chunks.jsonl"
+            evidence = corpus_dir / "evidence_chunks.jsonl"
             index = build_dense_index(
                 evidence,
                 model_name=str(dense.get("model_name")),
@@ -102,26 +121,98 @@ def main(argv: list[str] | None = None) -> None:
             )
             status["checksum"] = index.checksum
             status["built"] = True
+            dense_checksum = index.checksum
             report["indexes"]["dense"] = status
         elif mid == "hybrid_rag":
             dense = cfg.get("dense_rag") or {}
             report["indexes"]["hybrid_dense_dependency"] = {
                 "reuses_dense_index_path": dense.get("index_path"),
+                "checksum": dense_checksum,
                 "note": "Hybrid reuses Dense evidence index; no separate hybrid index.",
             }
         elif mid == "ekell_style_controlled_shared_llm":
             vector = cfg.get("ekell_vector") or {}
-            report["indexes"]["ekell"] = {
-                "configured_index_path": vector.get("index_path"),
-                "exists": bool(vector.get("index_path")) and Path(str(vector.get("index_path"))).exists(),
+            index_path = vector.get("index_path")
+            status = {
+                "configured_index_path": index_path,
+                "exists": bool(index_path) and Path(str(index_path)).exists(),
                 "backend": vector.get("backend"),
                 "model_name": vector.get("model_name"),
                 "model_version": vector.get("model_version"),
                 "note": "E-KELL KG/entity index remains separate from Dense evidence index.",
             }
+            if args.validate_only:
+                if _is_placeholder(vector.get("model_version")):
+                    status["error"] = "model_version_placeholder"
+                elif index_path and Path(str(index_path)).is_dir():
+                    try:
+                        from external_baselines.ekell_style.vector_index import VectorIndex
+
+                        loaded = VectorIndex.load_directory(
+                            index_path,
+                            expected_backend=str(vector.get("backend")) if vector.get("backend") else None,
+                            expected_model_name=str(vector.get("model_name")) if vector.get("model_name") else None,
+                            expected_model_version=str(vector.get("model_version"))
+                            if vector.get("model_version") and not _is_placeholder(vector.get("model_version"))
+                            else None,
+                            require_real_embedding=True,
+                        )
+                        status["checksum"] = (loaded.metadata or {}).get("index_checksum")
+                        status["validated"] = True
+                    except Exception as exc:  # noqa: BLE001
+                        status["error"] = str(exc)
+                        report["errors"].append(f"ekell_validate:{exc}")
+                report["indexes"]["ekell"] = status
+                continue
+
+            from external_baselines.ekell_style.kg_loader import load_kg
+            from external_baselines.ekell_style.vector_index import VectorIndex
+            from external_baselines.retrieval.embedding_backends import (
+                create_embedding_backend,
+                resolve_dimension,
+            )
+
+            kg = load_kg(corpus_dir)
+            backend = create_embedding_backend(
+                str(vector.get("backend", "text2vec")),
+                model_name=str(vector.get("model_name") or ""),
+                model_version=str(vector.get("model_version") or "unspecified"),
+                dimension=resolve_dimension(vector, 1024),
+                paper_final=bool(cfg.get("paper_final")),
+                reject_smoke=bool(vector.get("reject_smoke", True)),
+            )
+            index = VectorIndex.from_kg(
+                kg,
+                backend,
+                corpus_checksum=sha256_file(corpus_dir / "evidence_chunks.jsonl")
+                if (corpus_dir / "evidence_chunks.jsonl").is_file()
+                else None,
+                paper_final=bool(cfg.get("paper_final")),
+                reject_smoke=bool(vector.get("reject_smoke", True)),
+            )
+            if not index_path or _is_placeholder(index_path):
+                status["error"] = "ekell_index_path_missing"
+                report["errors"].append("ekell_index_path_missing")
+            else:
+                manifest = index.save_directory(index_path)
+                reloaded = VectorIndex.load_directory(
+                    index_path,
+                    expected_backend=str(vector.get("backend")),
+                    expected_model_name=str(vector.get("model_name")),
+                    expected_model_version=str(vector.get("model_version")),
+                    require_real_embedding=True,
+                )
+                status["checksum"] = manifest.get("index_checksum") or (reloaded.metadata or {}).get(
+                    "index_checksum"
+                )
+                status["built"] = True
+                status["reloaded"] = True
+            report["indexes"]["ekell"] = status
 
     write_json(args.output, report)
     print(json.dumps(report, indent=2))
+    if report["errors"] and not args.validate_only:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

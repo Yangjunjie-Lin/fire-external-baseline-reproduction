@@ -15,6 +15,12 @@ from external_baselines.common.io import (
 )
 from external_baselines.common.llm_client import TokenUsage, UsageTrackingLLMClient, build_llm_client
 from external_baselines.common.manifest import build_run_manifest, write_run_manifest
+from external_baselines.common.method_runtime import (
+    close_method_runtime,
+    pipeline_accepts_runtime,
+    prepare_method_runtime,
+    runtime_index_checksum,
+)
 from external_baselines.ekell_style.kg_loader import audit_corpus
 from external_baselines.evaluation.metrics import aggregate_metrics, score_output
 from external_baselines.evaluation.report import build_report, write_metrics_csv
@@ -63,38 +69,52 @@ def generate_predictions(
 
     outputs: list[dict[str, Any]] = []
     run_usage_by_method: dict[str, dict[str, Any]] = {}
+    runtime_metadata_by_method: dict[str, dict[str, Any]] = {}
     for method in methods:
         method_id = canonicalize_method_id(method)
         method_config = (method_configs or {}).get(method_id) or default_config
         assert_paper_final_allowed(method_config)
         llm = build_llm_client(method_config)
         pipeline = get_pipeline(method_id)
-        for scenario in scenarios:
-            usage_before = (
-                llm.usage_snapshot()
-                if isinstance(llm, UsageTrackingLLMClient)
-                else TokenUsage()
-            )
-            prediction_input = to_prediction_input(scenario, config=method_config)
-            assert_no_gold_in_prediction_input(prediction_input)
-            out = pipeline(prediction_input, config=method_config, llm=llm)
-            case_usage = (
-                llm.usage_delta(usage_before)
-                if isinstance(llm, UsageTrackingLLMClient)
-                else TokenUsage()
-            )
-            runtime = out.setdefault("method_specific", {}).setdefault("runtime", {})
-            runtime.update({
-                "llm_calls": case_usage.llm_calls,
-                "token_usage": case_usage.to_dict(),
-                "case_llm_calls": case_usage.llm_calls,
-                "case_prompt_tokens": case_usage.prompt_tokens,
-                "case_completion_tokens": case_usage.completion_tokens,
-                "case_total_tokens": case_usage.total_tokens,
-            })
-            out["method"] = canonicalize_method_id(str(out.get("method") or method_id))
-            out["scenario_id"] = prediction_input["scenario_id"]
-            outputs.append(out)
+        runtime = prepare_method_runtime(method_id, method_config)
+        accepts_runtime = pipeline_accepts_runtime(pipeline)
+        try:
+            for scenario in scenarios:
+                usage_before = (
+                    llm.usage_snapshot()
+                    if isinstance(llm, UsageTrackingLLMClient)
+                    else TokenUsage()
+                )
+                prediction_input = to_prediction_input(scenario, config=method_config)
+                assert_no_gold_in_prediction_input(prediction_input)
+                if accepts_runtime and runtime is not None:
+                    out = pipeline(prediction_input, config=method_config, llm=llm, runtime=runtime)
+                else:
+                    out = pipeline(prediction_input, config=method_config, llm=llm)
+                case_usage = (
+                    llm.usage_delta(usage_before)
+                    if isinstance(llm, UsageTrackingLLMClient)
+                    else TokenUsage()
+                )
+                runtime_block = out.setdefault("method_specific", {}).setdefault("runtime", {})
+                runtime_block.update({
+                    "llm_calls": case_usage.llm_calls,
+                    "token_usage": case_usage.to_dict(),
+                    "case_llm_calls": case_usage.llm_calls,
+                    "case_prompt_tokens": case_usage.prompt_tokens,
+                    "case_completion_tokens": case_usage.completion_tokens,
+                    "case_total_tokens": case_usage.total_tokens,
+                })
+                out["method"] = canonicalize_method_id(str(out.get("method") or method_id))
+                out["scenario_id"] = prediction_input["scenario_id"]
+                outputs.append(out)
+        finally:
+            close_method_runtime(runtime)
+
+        if runtime is not None and getattr(runtime, "audit", None) is not None:
+            audit = runtime.audit.to_dict()
+            audit["index_checksum"] = runtime_index_checksum(runtime)
+            runtime_metadata_by_method[method_id] = audit
         if isinstance(llm, UsageTrackingLLMClient):
             run_usage_by_method[method_id] = llm.usage.snapshot().to_dict()
 
@@ -113,6 +133,7 @@ def generate_predictions(
             key: sum(int(value.get(key, 0)) for value in run_usage_by_method.values())
             for key in ("prompt_tokens", "completion_tokens", "total_tokens", "llm_calls")
         }
+        manifest["runtime_reuse_by_method"] = runtime_metadata_by_method
         write_run_manifest(manifest_path, manifest)
     return outputs
 

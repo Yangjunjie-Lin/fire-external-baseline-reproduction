@@ -71,23 +71,34 @@ class Text2VecEmbeddingBackend(EmbeddingBackend):
     actual_embedding_used: bool = True
     smoke_fallback_used: bool = False
 
+    _load_count: int = 0
+
     def __post_init__(self) -> None:
         if not self.model_name.strip():
             raise ValueError("model_name must be explicitly configured.")
-        if self.model is None:
-            try:
-                from text2vec import SentenceModel  # type: ignore
-            except ImportError as exc:
-                raise EmbeddingBackendError(
-                    "text2vec is required for the real embedding backend."
-                ) from exc
-            self.model = SentenceModel(self.model_name)
+        # Injected models (tests) are already loaded; real SentenceModel is lazy.
+        if self.model is not None:
+            self._load_count = 1
+
+    def _ensure_model(self) -> Any:
+        if self.model is not None:
+            return self.model
+        try:
+            from text2vec import SentenceModel  # type: ignore
+        except ImportError as exc:
+            raise EmbeddingBackendError(
+                "text2vec is required for the real embedding backend."
+            ) from exc
+        self.model = SentenceModel(self.model_name)
+        self._load_count += 1
+        return self.model
 
     def encode(self, texts: Sequence[str]) -> list[list[float]]:
         batch = [str(text) for text in texts]
         if not batch:
             return []
-        encoder = getattr(self.model, "encode", None)
+        model = self._ensure_model()
+        encoder = getattr(model, "encode", None)
         if not callable(encoder):
             raise EmbeddingBackendError("Configured text2vec model has no encode method.")
         try:

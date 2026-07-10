@@ -3,6 +3,7 @@ from __future__ import annotations
 """E-KELL-native vector retriever (independent of dense/hybrid RAG)."""
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from external_baselines.common.schema import RetrievedContext
@@ -34,7 +35,10 @@ class VectorRetriever:
             raise EmbeddingBackendError("A smoke-built vector index is forbidden for this run.")
         if index.metadata.get("embedding_model") != backend.model_name:
             raise ValueError("Index and query embedding model names differ.")
-        if int(index.metadata.get("dimension") or 0) != int(backend.dimension):
+        index_dim = int(index.metadata.get("dimension") or 0)
+        if backend.dimension in (0, None):
+            backend.dimension = index_dim
+        elif int(backend.dimension) != index_dim:
             raise ValueError("Index and query embedding dimensions differ.")
         self.index = index
         self.backend = backend
@@ -58,6 +62,40 @@ class VectorRetriever:
             reject_smoke=reject_smoke,
             **index_kwargs,
         )
+        return cls(
+            index,
+            backend,
+            max_context_chars=max_context_chars,
+            paper_final=paper_final,
+            reject_smoke=reject_smoke,
+        )
+
+    @classmethod
+    def from_index_directory(
+        cls,
+        index_dir: str | Path,
+        backend: EmbeddingBackend,
+        *,
+        paper_final: bool = False,
+        reject_smoke: bool = False,
+        max_context_chars: int = 1200,
+        expected_kg_checksum: str | None = None,
+        expected_corpus_checksum: str | None = None,
+        expected_dimension: int | None = None,
+    ) -> "VectorRetriever":
+        index = VectorIndex.load_directory(
+            index_dir,
+            expected_backend=backend.backend,
+            expected_model_name=backend.model_name,
+            expected_model_version=backend.model_version,
+            expected_dimension=expected_dimension or (backend.dimension or None),
+            expected_kg_checksum=expected_kg_checksum,
+            expected_corpus_checksum=expected_corpus_checksum,
+            require_real_embedding=bool(paper_final or reject_smoke),
+        )
+        # Align backend dimension with loaded index when backend was lazy (dim=0).
+        if backend.dimension in (0, None):
+            backend.dimension = int(index.metadata.get("dimension") or 0)
         return cls(
             index,
             backend,

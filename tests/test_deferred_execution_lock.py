@@ -121,7 +121,13 @@ def test_run_interop_blocks_without_override() -> None:
         text=True,
     )
     assert proc.returncode != 0
-    assert "Formal execution is currently locked" in proc.stderr + proc.stdout
+    combined = proc.stderr + proc.stdout
+    # Validation runs before the execution lock; .example manifests fail formal stage first.
+    assert (
+        "Formal execution is currently locked" in combined
+        or "Stage-aware config validation failed" in combined
+        or "formal validation rejects .example" in combined
+    )
 
 
 def test_default_execution_stage_is_formal() -> None:

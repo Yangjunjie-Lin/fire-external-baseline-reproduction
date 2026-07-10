@@ -22,7 +22,6 @@ from external_baselines.retrieval.dense_index import (
 from external_baselines.retrieval.embedding_backends import (
     HashEmbeddingBackend,
     create_embedding_backend,
-    resolve_dimension,
     validate_embedding_backend,
 )
 
@@ -246,6 +245,9 @@ def build_dense_index(
                 directory_payload=payload,
             )
         except DenseIndexError:
+            if paper_final or reject_smoke:
+                raise
+            # Non-formal smoke/dev may rebuild below.
             pass
 
     manifest = build_directory_index(
@@ -330,50 +332,35 @@ class DenseRetriever:
         return contexts
 
 
-def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = None, llm=None) -> dict[str, Any]:
+def run_scenario(
+    scenario: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    llm=None,
+    runtime=None,
+) -> dict[str, Any]:
     from external_baselines.common.llm_client import build_llm_client, llm_config_summary, llm_runtime_snapshot
+    from external_baselines.common.method_runtime import prepare_dense_runtime
 
     config = config or {}
     llm = llm or build_llm_client(config)
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     dense_cfg = config.get("dense_rag", {})
     top_k = int(config.get("retrieval", {}).get("top_k", dense_cfg.get("top_k", 5)))
-    backend = str(dense_cfg.get("backend", "smoke_hash_embedding"))
-    model_name = str(dense_cfg.get("model_name", "smoke-hash-embedding"))
-    model_version = str(dense_cfg.get("model_version", "v0-smoke"))
-    dim = resolve_dimension(dense_cfg, 64)
-    reject_smoke = bool(dense_cfg.get("reject_smoke", False) or config.get("paper_final", False))
     paper_final = bool(config.get("paper_final", False))
-    cache_path = dense_cfg.get("index_path") or str(
-        Path(config.get("paths", {}).get("output_dir", "outputs")) / "dense_index_smoke.json"
-    )
+    reject_smoke = bool(dense_cfg.get("reject_smoke", False) or paper_final)
     start = time.perf_counter()
-    evidence_path = corpus_dir / "evidence_chunks.jsonl"
 
-    emb = create_embedding_backend(
-        backend,
-        model_name=model_name,
-        model_version=model_version,
-        dimension=dim,
-        paper_final=paper_final,
-        reject_smoke=reject_smoke,
-        model=dense_cfg.get("injected_model"),
-    )
-    index = build_dense_index(
-        evidence_path,
-        model_name=model_name,
-        model_version=model_version,
-        backend=backend,
-        dim=dim,
-        cache_path=cache_path,
-        embedding_model=dense_cfg.get("injected_model"),
-        batch_size=int(dense_cfg.get("batch_size", 16)),
-        normalize_embeddings=bool(dense_cfg.get("normalize_embeddings", True)),
-        paper_final=paper_final,
-        reject_smoke=reject_smoke,
-        corpus_checksum=config.get("corpus_checksum") or (config.get("paths") or {}).get("corpus_checksum"),
-    )
-    retriever = DenseRetriever(index, embedding_backend=emb)
+    if runtime is None:
+        if paper_final or reject_smoke:
+            # Still allow prepare once for standalone calls; runner should pass runtime.
+            runtime = prepare_dense_runtime(config)
+        else:
+            runtime = prepare_dense_runtime(config)
+    if getattr(runtime, "audit", None) is not None:
+        runtime.audit.case_count += 1
+
+    index = runtime.dense_index
+    retriever = runtime.retriever
     contexts = [retrieved_context_to_dict(c) for c in retriever.retrieve(scenario["scenario_text"], top_k=top_k)]
 
     system = (
@@ -427,11 +414,7 @@ Return JSON with:
         "index_checksum": index.checksum,
         "corpus_checksum": index.build_manifest.get("corpus_checksum") or index.build_manifest.get("evidence_sha256"),
         "index_build_manifest": index.build_manifest,
-        "dense_index_built": True,
-        "actual_embedding_used": real_dense,
-        "smoke_fallback_used": not real_dense,
-        "method_status": "ready" if real_dense else "smoke_fixture_only",
-        "no_result": len(contexts) == 0,
+        "runtime_reuse": runtime.audit.to_dict() if getattr(runtime, "audit", None) else None,
         "runtime": llm_runtime_snapshot(llm),
         "parsing_failure": parsing_failure,
         "parsing_status": "failed" if parsing_failure else "ok",

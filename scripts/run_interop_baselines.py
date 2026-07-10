@@ -7,6 +7,9 @@ Formal entrypoint uses a single --experiment-manifest that references:
   - main-table vs supplemental method roles
 
 Do not pass Evaluator Bundles. Do not auto-call paid APIs from CI/agents.
+
+Order: CLI → stage-aware validation → execution lock → bundle → fairness →
+prepare runtime (via generate_predictions) → LLM.
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
     load_experiment_manifest,
 )
 from external_baselines.common.fairness import validate_cross_method_fairness  # noqa: E402
+from external_baselines.common.formal_config_validator import (  # noqa: E402
+    FormalConfigError,
+    validate_experiment_manifest,
+)
 from external_baselines.common.guards import assert_paper_final_allowed  # noqa: E402
 from external_baselines.common.io import load_scenarios, read_json, write_json, write_jsonl  # noqa: E402
 from external_baselines.common.llm_client import llm_config_summary  # noqa: E402
@@ -78,6 +85,7 @@ def _shared_embedding_snapshot(method_configs: dict[str, dict]) -> dict[str, Any
             block.setdefault("model_name", hybrid.get("dense_model_name"))
             block.setdefault("model_version", hybrid.get("dense_model_version"))
             block.setdefault("dimension", hybrid.get("dimension"))
+            block.setdefault("normalize_embeddings", hybrid.get("normalize_embeddings"))
         else:
             block = cfg.get("ekell_vector") or {}
         if block:
@@ -86,11 +94,22 @@ def _shared_embedding_snapshot(method_configs: dict[str, dict]) -> dict[str, Any
                 "model_name": block.get("model_name"),
                 "model_version": block.get("model_version"),
                 "dimension": resolve_dimension(block),
+                "normalize_embeddings": bool(block.get("normalize_embeddings", True)),
             }
-    return {"backend": None, "model_name": None, "model_version": None, "dimension": 0}
+    return {
+        "backend": None,
+        "model_name": None,
+        "model_version": None,
+        "dimension": 0,
+        "normalize_embeddings": None,
+    }
 
 
-def _index_checksum_snapshot(method_configs: dict[str, dict]) -> dict[str, Any]:
+def _index_checksum_snapshot(
+    method_configs: dict[str, dict],
+    *,
+    runtime_reuse_by_method: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     dense = method_configs.get("dense_rag") or {}
     hybrid = method_configs.get("hybrid_rag") or {}
     ekell = method_configs.get("ekell_style_controlled_shared_llm") or {}
@@ -101,6 +120,18 @@ def _index_checksum_snapshot(method_configs: dict[str, dict]) -> dict[str, Any]:
         or (hybrid.get("hybrid_rag") or {}).get("dense_index_checksum")
     )
     ekell_checksum = ekell.get("ekell_index_checksum") or (ekell.get("ekell_vector") or {}).get("index_checksum")
+
+    runtime = runtime_reuse_by_method or {}
+    dense_rt = runtime.get("dense_rag") or {}
+    hybrid_rt = runtime.get("hybrid_rag") or {}
+    ekell_rt = runtime.get("ekell_style_controlled_shared_llm") or {}
+    if dense_rt.get("index_checksum"):
+        dense_checksum = dense_rt.get("index_checksum")
+    if hybrid_rt.get("index_checksum"):
+        hybrid_checksum = hybrid_rt.get("index_checksum")
+    if ekell_rt.get("index_checksum"):
+        ekell_checksum = ekell_rt.get("index_checksum")
+
     return {
         "dense": {"checksum": dense_checksum},
         "hybrid_dense_dependency": {"checksum": hybrid_checksum or dense_checksum},
@@ -181,19 +212,30 @@ def main(argv: list[str] | None = None) -> None:
             "Use a single --experiment-manifest."
         )
 
-    experiment = load_experiment_manifest(args.experiment_manifest)
-    bundle_path = args.bundle or experiment.get("bundle")
-    output = args.output or experiment.get("output")
-    limit = args.limit if args.limit is not None else experiment.get("limit")
-
-    from external_baselines.common.execution_lock import assert_execution_allowed  # noqa: E402
-
     if args.include_supplemental and args.method_set == "main_table":
         print(
             "WARNING: --include-supplemental is deprecated; using method_set=comparison_suite",
             file=sys.stderr,
         )
         args.method_set = "comparison_suite"
+
+    experiment = load_experiment_manifest(args.experiment_manifest)
+    bundle_path = args.bundle or experiment.get("bundle")
+    output = args.output or experiment.get("output")
+    limit = args.limit if args.limit is not None else experiment.get("limit")
+
+    validation_stage = "dry_run" if args.execution_stage == "dry_run" else "formal"
+    try:
+        validate_experiment_manifest(
+            args.experiment_manifest,
+            validation_stage=validation_stage,
+            method_set=args.method_set,
+            runtime_bundle_path=bundle_path,
+        )
+    except FormalConfigError as exc:
+        raise SystemExit(f"Stage-aware config validation failed ({validation_stage}): {exc}") from exc
+
+    from external_baselines.common.execution_lock import assert_execution_allowed  # noqa: E402
 
     lock_audit = assert_execution_allowed(
         experiment_manifest=experiment,
@@ -250,6 +292,31 @@ def main(argv: list[str] | None = None) -> None:
         methods.append(mid)
     fairness_report = validate_cross_method_fairness(method_configs)
 
+    freeze_path = experiment.get("freeze_manifest")
+    if args.execution_stage == "formal" and freeze_path:
+        from external_baselines.common.freeze_manifest import (  # noqa: E402
+            validate_freeze_manifest,
+            validate_frozen_runtime_inputs,
+        )
+
+        validate_freeze_manifest(
+            freeze_path,
+            experiment_manifest_path=args.experiment_manifest,
+            experiment_raw=experiment.get("raw") or {},
+            require_complete=(args.method_set == "comparison_suite"),
+            expected_runner_bundle_checksum=bundle.get("producer_declared_checksum")
+            or bundle.get("consumer_computed_bundle_hash"),
+            expected_corpus_checksum=(bundle.get("corpus_manifest") or {}).get("aggregate_sha256")
+            if isinstance(bundle.get("corpus_manifest"), dict)
+            else None,
+            expected_prediction_schema_checksum=bundle.get("prediction_schema_sha256"),
+        )
+        validate_frozen_runtime_inputs(
+            freeze_path,
+            bundle=bundle,
+            method_configs=method_configs,
+        )
+
     legacy_output = args.legacy_output or experiment.get("legacy_output")
     run_manifest = args.manifest or experiment.get("run_manifest")
 
@@ -266,6 +333,12 @@ def main(argv: list[str] | None = None) -> None:
         config=shared_snapshot,
         method_configs=method_configs,
     )
+
+    runtime_reuse: dict[str, Any] = {}
+    if run_manifest and Path(run_manifest).is_file():
+        existing_run = read_json(run_manifest)
+        if isinstance(existing_run, dict):
+            runtime_reuse = existing_run.get("runtime_reuse_by_method") or {}
 
     interop_rows = [
         baseline_row_to_interop(
@@ -303,6 +376,13 @@ def main(argv: list[str] | None = None) -> None:
     write_jsonl(output, interop_rows)
     hash_report = _verify_bundle_hashes(bundle)
     llm_summary = llm_config_summary(shared_snapshot)
+    indexes_snapshot = _index_checksum_snapshot(method_configs, runtime_reuse_by_method=runtime_reuse)
+    dense_cs = (indexes_snapshot.get("dense") or {}).get("checksum")
+    hybrid_cs = (indexes_snapshot.get("hybrid_dense_dependency") or {}).get("checksum")
+    if dense_cs and hybrid_cs and str(dense_cs) != str(hybrid_cs):
+        raise SystemExit(
+            f"Hybrid dense dependency checksum must match dense: dense={dense_cs} hybrid={hybrid_cs}"
+        )
     paper_valid = (
         args.execution_stage == "formal"
         and bool(lock_audit.get("paper_valid"))
@@ -332,12 +412,13 @@ def main(argv: list[str] | None = None) -> None:
             "model_source": llm_summary.get("model_source") or "yaml_config",
         },
         "embedding": _shared_embedding_snapshot(method_configs),
-        "indexes": _index_checksum_snapshot(method_configs),
+        "indexes": indexes_snapshot,
         "fairness": fairness_report,
         "coverage": coverage,
         "execution_lock_overridden": bool(lock_audit.get("execution_lock_overridden")),
         "paper_valid": paper_valid,
         "cross_method_fairness": fairness_report,
+        "runtime_reuse_by_method": runtime_reuse,
     }
     if run_manifest and Path(run_manifest).is_file():
         existing = read_json(run_manifest)

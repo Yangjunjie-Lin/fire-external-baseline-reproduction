@@ -230,14 +230,56 @@ def test_complete_fixture_is_comparison_ready(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setenv("SILICONFLOW_API_KEY", "test-not-a-real-key")
     corpus = tmp_path / "corpus"
     corpus.mkdir()
-    (corpus / "evidence_chunks.jsonl").write_text('{"chunk_id":"c1","text":"hose"}\n', encoding="utf-8")
+    evidence = corpus / "evidence_chunks.jsonl"
+    evidence.write_text(
+        '{"chunk_id":"c1","text":"hose","source_id":"s1"}\n'
+        '{"chunk_id":"c2","text":"smoke","source_id":"s2"}\n',
+        encoding="utf-8",
+    )
     for name in ("entities.jsonl", "relations.jsonl", "triples.jsonl"):
         (corpus / name).write_text("{}\n", encoding="utf-8")
+
+    from external_baselines.dense_rag.pipeline import build_dense_index
+    from external_baselines.ekell_style.kg_loader import load_kg
+    from external_baselines.ekell_style.vector_index import VectorIndex
+    from external_baselines.retrieval.embedding_backends import create_embedding_backend
+
+    class FakeEmbeddingModel:
+        def __init__(self, dim: int = 8) -> None:
+            self.dim = dim
+
+        def encode(self, texts, show_progress_bar=False):  # noqa: ARG002
+            out = []
+            for text in texts:
+                vec = [0.0] * self.dim
+                for i, ch in enumerate(str(text).encode("utf-8")):
+                    vec[i % self.dim] += (ch % 13) / 13.0
+                out.append(vec)
+            return out
+
     dense_idx = tmp_path / "dense_idx"
-    dense_idx.mkdir()
-    (dense_idx / "index_manifest.json").write_text("{}", encoding="utf-8")
+    build_dense_index(
+        evidence,
+        model_name="BAAI/bge-m3",
+        model_version="rev1",
+        backend="text2vec",
+        dim=8,
+        cache_path=dense_idx,
+        embedding_model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+    )
     ekell_idx = tmp_path / "ekell_idx"
-    ekell_idx.mkdir()
+    kg = load_kg(corpus)
+    backend = create_embedding_backend(
+        "text2vec",
+        model_name="BAAI/bge-m3",
+        model_version="rev1",
+        dimension=8,
+        model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+    )
+    VectorIndex.from_kg(kg, backend, reject_smoke=True).save_directory(ekell_idx)
+
     shared = tmp_path / "shared.yaml"
     shared.write_text(
         "llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n  api_key_env: SILICONFLOW_API_KEY\n"
@@ -252,11 +294,19 @@ def test_complete_fixture_is_comparison_ready(tmp_path: Path, monkeypatch: pytes
         "dense_rag": (
             "dense_rag:\n  backend: text2vec\n  model_name: BAAI/bge-m3\n"
             f"  model_version: rev1\n  dimension: 8\n  index_path: {dense_idx.as_posix()}\n"
+            "  normalize_embeddings: true\n  reject_smoke: true\n"
         ),
-        "hybrid_rag": "hybrid_rag:\n  rrf_k: 60\n  lexical_weight: 1.0\n  dense_weight: 1.0\n  top_k: 5\n  candidate_pool: 20\n",
+        "hybrid_rag": (
+            "hybrid_rag:\n  lexical_method: bm25\n  rrf_k: 60\n  lexical_weight: 1.0\n"
+            "  dense_weight: 1.0\n  top_k: 5\n  candidate_pool: 20\n  reject_smoke: true\n"
+            "dense_rag:\n  backend: text2vec\n  model_name: BAAI/bge-m3\n"
+            f"  model_version: rev1\n  dimension: 8\n  index_path: {dense_idx.as_posix()}\n"
+            "  normalize_embeddings: true\n  reject_smoke: true\n"
+        ),
         "ekell_style_controlled_shared_llm": (
             "ekell_vector:\n  backend: text2vec\n  model_name: BAAI/bge-m3\n"
-            f"  model_version: rev1\n  index_path: {ekell_idx.as_posix()}\n"
+            f"  model_version: rev1\n  dimension: 8\n  index_path: {ekell_idx.as_posix()}\n"
+            "  normalize_embeddings: true\n  reject_smoke: true\n"
             "ekell_style:\n  prompt_dir: configs/prompts/controlled\n"
         ),
     }
@@ -305,8 +355,9 @@ def test_complete_fixture_is_comparison_ready(tmp_path: Path, monkeypatch: pytes
     )
     not_ready = {mid: m for mid, m in report["methods"].items() if not m.get("ready")}
     assert not not_ready, not_ready
-    # overall comparison_ready still false without main_project_v1_ready
+    # overall comparison_ready still false without main_project_v1_ready / real bundle
     assert report["comparison_ready"] is False
+    assert "bundle" in report
 
 
 def test_dry_run_accepts_frozen(tmp_path: Path) -> None:

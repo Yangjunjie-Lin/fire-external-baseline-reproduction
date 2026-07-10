@@ -116,10 +116,21 @@ Requirements before TEST:
 
 - DEV selection complete
 - manifest + method configs updated to `freeze_status: frozen` (human decision)
+- `freeze_manifest` path set on the experiment manifest **before** creating the freeze file
 - config checksums recorded
 - prompt hash fixed
 - LLM `model` / `model_version` frozen in YAML (`model_source=yaml_config`)
 - embedding `model_version` fixed (replace `REQUIRED_BEFORE_REAL_INDEX_BUILD`)
+
+Freeze order (do not reverse — avoids self-referential checksum drift):
+
+1. Finish DEV selection
+2. Set `freeze_status: frozen` and `freeze_manifest:` path in the experiment manifest
+3. Save the experiment manifest
+4. Run `create_freeze_manifest.py` (hashes the saved manifest + indexes + bundle)
+5. Do not edit the experiment manifest again after freeze creation
+
+Install for real Dense/Hybrid/E-KELL embeddings: `pip install -e ".[llm,embeddings]"` (or `requirements-optional-embeddings.txt`). First `text2vec` encode may download the model; pre-cache before formal runs.
 
 ```bash
 python scripts/create_freeze_manifest.py \
@@ -128,10 +139,9 @@ python scripts/create_freeze_manifest.py \
   --bundle <runner_bundle> \
   --output configs/freeze/comparison_freeze_manifest_v1.json
 
-# Human: set freeze_status=frozen and freeze_manifest path in experiment manifest.
-
 python scripts/validate_formal_config.py \
   --validation-stage formal \
+  --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 ```
 

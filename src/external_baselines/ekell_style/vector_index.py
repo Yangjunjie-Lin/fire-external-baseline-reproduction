@@ -286,3 +286,179 @@ class VectorIndex:
             if not expected or actual != expected:
                 raise VectorIndexError("Vector index checksum verification failed.")
         return cls(documents, vectors, metadata)
+
+    def save_directory(self, index_dir: str | Path) -> dict[str, Any]:
+        """Persist as documents.jsonl + embeddings.npy + index_manifest.json."""
+        import os
+        import tempfile
+
+        from external_baselines.common.checksums import sha256_file
+        from external_baselines.common.io import ensure_dir, write_jsonl
+
+        index_dir = Path(index_dir)
+        ensure_dir(index_dir)
+        docs_path = index_dir / "documents.jsonl"
+        emb_path = index_dir / "embeddings.npy"
+        manifest_path = index_dir / "index_manifest.json"
+
+        documents_payload = [document.to_dict() for document in self.documents]
+        write_jsonl(docs_path, documents_payload)
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover
+            raise VectorIndexError("numpy is required to persist E-KELL embeddings (.npy).") from exc
+        np.save(emb_path, np.asarray(self.vectors, dtype="float32"))
+
+        docs_file_checksum = sha256_file(docs_path)
+        embeddings_checksum = sha256_file(emb_path)
+        documents_checksum = sha256_json(documents_payload)
+        meta = dict(self.metadata)
+        dimension = int(meta.get("dimension") or (len(self.vectors[0]) if self.vectors else 0))
+        index_checksum = sha256_json(
+            {
+                "backend": meta.get("backend"),
+                "model_name": meta.get("embedding_model") or meta.get("model_name"),
+                "model_version": meta.get("model_version"),
+                "dimension": dimension,
+                "document_count": len(self.documents),
+                "documents_checksum": documents_checksum,
+                "embeddings_checksum": embeddings_checksum,
+                "kg_checksum": meta.get("kg_checksum"),
+                "corpus_checksum": meta.get("corpus_checksum"),
+            }
+        )
+        manifest = {
+            "index_type": "ekell_kg_vector_index",
+            "backend": meta.get("backend"),
+            "model_name": meta.get("embedding_model") or meta.get("model_name"),
+            "model_version": meta.get("model_version"),
+            "dimension": dimension,
+            "normalize_embeddings": bool(meta.get("normalize_embeddings", True)),
+            "document_count": len(self.documents),
+            "kg_checksum": meta.get("kg_checksum"),
+            "corpus_checksum": meta.get("corpus_checksum"),
+            "documents_checksum": documents_checksum,
+            "documents_file_checksum": docs_file_checksum,
+            "embeddings_checksum": embeddings_checksum,
+            "index_checksum": index_checksum,
+            "actual_embedding_used": bool(meta.get("actual_embedding_used")),
+            "smoke_fallback_used": bool(meta.get("smoke_fallback_used")),
+            "package_versions": meta.get("package_versions") or {},
+            "index_dir": str(index_dir).replace("\\", "/"),
+        }
+        fd, tmp_name = tempfile.mkstemp(prefix=manifest_path.name, dir=str(index_dir))
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.replace(manifest_path)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+        self.metadata = {**meta, **manifest}
+        return manifest
+
+    @classmethod
+    def load_directory(
+        cls,
+        index_dir: str | Path,
+        *,
+        expected_backend: str | None = None,
+        expected_model_name: str | None = None,
+        expected_model_version: str | None = None,
+        expected_dimension: int | None = None,
+        expected_kg_checksum: str | None = None,
+        expected_corpus_checksum: str | None = None,
+        require_real_embedding: bool = False,
+    ) -> "VectorIndex":
+        from external_baselines.common.checksums import sha256_file
+        from external_baselines.common.io import read_json, read_jsonl
+
+        index_dir = Path(index_dir)
+        docs_path = index_dir / "documents.jsonl"
+        emb_path = index_dir / "embeddings.npy"
+        manifest_path = index_dir / "index_manifest.json"
+        for path in (docs_path, emb_path, manifest_path):
+            if not path.is_file():
+                raise VectorIndexError(f"E-KELL index missing required file: {path}")
+
+        manifest = read_json(manifest_path)
+        if not isinstance(manifest, dict):
+            raise VectorIndexError("index_manifest.json must be an object.")
+        documents_raw = read_jsonl(docs_path)
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover
+            raise VectorIndexError("numpy is required to load E-KELL embeddings (.npy).") from exc
+        vectors = [[float(x) for x in row] for row in np.load(emb_path)]
+        documents = [VectorDocument(**doc) if isinstance(doc, dict) else doc for doc in documents_raw]
+
+        if int(manifest.get("document_count") or 0) != len(documents):
+            raise VectorIndexError("document_count does not match documents.jsonl length.")
+        if len(vectors) != len(documents):
+            raise VectorIndexError("embeddings.npy row count does not match documents.")
+        if not vectors:
+            raise VectorIndexError("E-KELL index has zero embeddings.")
+        dim = len(vectors[0])
+        if any(len(row) != dim for row in vectors):
+            raise VectorIndexError("Inconsistent embedding row dimensions.")
+        if int(manifest.get("dimension") or 0) != dim:
+            raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
+
+        documents_checksum = sha256_json([document.to_dict() for document in documents])
+        if documents_checksum != manifest.get("documents_checksum"):
+            raise VectorIndexError("documents_checksum mismatch.")
+        if manifest.get("documents_file_checksum") and sha256_file(docs_path) != manifest.get(
+            "documents_file_checksum"
+        ):
+            raise VectorIndexError("documents_file_checksum mismatch.")
+        if sha256_file(emb_path) != manifest.get("embeddings_checksum"):
+            raise VectorIndexError("embeddings_checksum mismatch.")
+
+        recomputed = sha256_json(
+            {
+                "backend": manifest.get("backend"),
+                "model_name": manifest.get("model_name"),
+                "model_version": manifest.get("model_version"),
+                "dimension": dim,
+                "document_count": len(documents),
+                "documents_checksum": documents_checksum,
+                "embeddings_checksum": manifest.get("embeddings_checksum"),
+                "kg_checksum": manifest.get("kg_checksum"),
+                "corpus_checksum": manifest.get("corpus_checksum"),
+            }
+        )
+        if manifest.get("index_checksum") and recomputed != manifest.get("index_checksum"):
+            raise VectorIndexError("index_checksum mismatch.")
+
+        if expected_backend and str(manifest.get("backend")) != str(expected_backend):
+            raise VectorIndexError(
+                f"backend mismatch: index={manifest.get('backend')!r} expected={expected_backend!r}"
+            )
+        if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
+            raise VectorIndexError(
+                f"model_name mismatch: index={manifest.get('model_name')!r} expected={expected_model_name!r}"
+            )
+        if expected_model_version and str(manifest.get("model_version")) != str(expected_model_version):
+            raise VectorIndexError(
+                f"model_version mismatch: index={manifest.get('model_version')!r} "
+                f"expected={expected_model_version!r}"
+            )
+        if expected_dimension is not None and int(manifest.get("dimension") or 0) != int(expected_dimension):
+            raise VectorIndexError("dimension mismatch.")
+        if expected_kg_checksum and str(manifest.get("kg_checksum")) != str(expected_kg_checksum):
+            raise VectorIndexError("kg_checksum mismatch.")
+        if expected_corpus_checksum and str(manifest.get("corpus_checksum")) != str(expected_corpus_checksum):
+            raise VectorIndexError("corpus_checksum mismatch.")
+        if require_real_embedding:
+            if bool(manifest.get("smoke_fallback_used")):
+                raise VectorIndexError("smoke_fallback_used=true is forbidden for real E-KELL indexes.")
+            if not bool(manifest.get("actual_embedding_used", False)):
+                raise VectorIndexError("actual_embedding_used must be true for real E-KELL indexes.")
+
+        metadata = {
+            **manifest,
+            "embedding_model": manifest.get("model_name"),
+            "index_checksum": manifest.get("index_checksum"),
+        }
+        return cls(documents, vectors, metadata)

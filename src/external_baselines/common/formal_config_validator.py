@@ -17,6 +17,7 @@ from external_baselines.common.experiment_manifest import build_method_config, l
 from external_baselines.common.io import read_yaml
 from external_baselines.method_registry import (
     canonicalize_method_id,
+    comparison_suite_methods,
     fallback_methods,
     legacy_methods,
     main_table_methods,
@@ -59,6 +60,8 @@ FORMAL_EKELL_METHODS = frozenset(
 )
 
 FORMAL_METHOD_IDS = frozenset(main_table_methods()) | frozenset(paper_fidelity_methods())
+COMPARISON_FORMAL_METHOD_IDS = frozenset(comparison_suite_methods())
+COMPARISON_SUITE_EXACT = list(comparison_suite_methods())
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", ""})
 SMOKE_EMBEDDING_BACKENDS = frozenset(
@@ -172,6 +175,116 @@ def validate_llm_for_formal(config: dict[str, Any], *, allow_placeholders: bool 
             "formal model identity must come from YAML."
         )
 
+def validate_dense_config_for_real_run(
+    config: dict[str, Any],
+    *,
+    allow_placeholders: bool = False,
+    validation_stage: str = "formal",
+) -> None:
+    dense = config.get("dense_rag") or {}
+    if not isinstance(dense, dict) or not dense:
+        raise FormalConfigError("Formal Dense RAG requires explicit dense_rag block.")
+    backend = str(dense.get("backend", "smoke")).casefold().replace("-", "_")
+    if backend in SMOKE_EMBEDDING_BACKENDS:
+        raise FormalConfigError(f"Formal Dense RAG rejects smoke/hash backend: {backend!r}")
+    if not bool(dense.get("reject_smoke", False)):
+        raise FormalConfigError("Formal Dense RAG requires dense_rag.reject_smoke=true.")
+    for field in ("model_name", "model_version"):
+        value = dense.get(field)
+        if _is_placeholder(value) and not allow_placeholders:
+            raise FormalConfigError(f"Formal Dense RAG requires dense_rag.{field} (non-placeholder).")
+    dim = dense.get("dimension", dense.get("dim"))
+    if allow_placeholders and _is_placeholder(dim):
+        pass
+    else:
+        try:
+            if int(dim) <= 0:
+                raise FormalConfigError(f"dense_rag.dimension must be > 0 (got {dim}).")
+        except (TypeError, ValueError) as exc:
+            raise FormalConfigError(f"dense_rag.dimension must be a positive integer (got {dim!r}).") from exc
+    if "normalize_embeddings" not in dense and not allow_placeholders:
+        raise FormalConfigError("Formal Dense RAG requires dense_rag.normalize_embeddings to be set.")
+    index_path = dense.get("index_path")
+    if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
+        raise FormalConfigError("Formal Dense RAG requires non-placeholder dense_rag.index_path.")
+    if validation_stage != "template" and not allow_placeholders:
+        path = _resolve_repo_path(str(index_path))
+        if not path.exists():
+            raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
+
+
+def validate_hybrid_config_for_real_run(
+    config: dict[str, Any],
+    *,
+    allow_placeholders: bool = False,
+    validation_stage: str = "formal",
+    dense_config: dict[str, Any] | None = None,
+) -> None:
+    hybrid = config.get("hybrid_rag") or {}
+    dense = config.get("dense_rag") or {}
+    if not isinstance(hybrid, dict) or not hybrid:
+        raise FormalConfigError("Formal Hybrid RAG requires explicit hybrid_rag block.")
+    lexical = str(hybrid.get("lexical_method") or "bm25").lower()
+    if lexical != "bm25":
+        raise FormalConfigError(f"Formal Hybrid RAG requires lexical_method=bm25 (got {lexical!r}).")
+    backend = str(
+        dense.get("backend") or hybrid.get("dense_method") or "smoke"
+    ).casefold().replace("-", "_")
+    if backend in SMOKE_EMBEDDING_BACKENDS:
+        raise FormalConfigError(f"Formal Hybrid RAG rejects smoke/hash dense backend: {backend!r}")
+    if not bool(hybrid.get("reject_smoke", dense.get("reject_smoke", False))):
+        raise FormalConfigError("Formal Hybrid RAG requires reject_smoke=true.")
+    model_name = dense.get("model_name") or hybrid.get("dense_model_name")
+    model_version = dense.get("model_version") or hybrid.get("dense_model_version")
+    for field, value in (("model_name", model_name), ("model_version", model_version)):
+        if _is_placeholder(value) and not allow_placeholders:
+            raise FormalConfigError(f"Formal Hybrid RAG requires dense {field} (non-placeholder).")
+    dim = dense.get("dimension", hybrid.get("dimension"))
+    if not (allow_placeholders and _is_placeholder(dim)):
+        try:
+            if int(dim) <= 0:
+                raise FormalConfigError(f"hybrid dense dimension must be > 0 (got {dim}).")
+        except (TypeError, ValueError) as exc:
+            raise FormalConfigError(f"hybrid dense dimension must be a positive integer (got {dim!r}).") from exc
+    try:
+        top_k = int(hybrid.get("top_k", (config.get("retrieval") or {}).get("top_k", 5)))
+        candidate_pool = int(hybrid.get("candidate_pool", top_k))
+        rrf_k = float(hybrid.get("rrf_k", 0))
+        lexical_weight = float(hybrid.get("lexical_weight", 0))
+        dense_weight = float(hybrid.get("dense_weight", 0))
+    except (TypeError, ValueError) as exc:
+        raise FormalConfigError(f"Formal Hybrid RAG has invalid RRF parameters: {exc}") from exc
+    if top_k <= 0:
+        raise FormalConfigError("Formal Hybrid RAG requires top_k > 0.")
+    if candidate_pool < top_k:
+        raise FormalConfigError("Formal Hybrid RAG requires candidate_pool >= top_k.")
+    if rrf_k <= 0:
+        raise FormalConfigError("Formal Hybrid RAG requires rrf_k > 0.")
+    if lexical_weight <= 0 or dense_weight <= 0:
+        raise FormalConfigError("Formal Hybrid RAG requires lexical_weight > 0 and dense_weight > 0.")
+    index_path = dense.get("index_path") or hybrid.get("index_path")
+    if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
+        raise FormalConfigError("Formal Hybrid RAG requires non-placeholder dense index_path.")
+    if validation_stage != "template" and not allow_placeholders:
+        path = _resolve_repo_path(str(index_path))
+        if not path.exists():
+            raise FormalConfigError(f"Formal Hybrid RAG index_path does not exist: {index_path}")
+    if dense_config is not None:
+        other = dense_config.get("dense_rag") or {}
+        other_path = other.get("index_path")
+        if other_path and index_path and str(Path(str(other_path))) != str(Path(str(index_path))):
+            raise FormalConfigError("Hybrid and Dense must share the same dense index_path.")
+        for field in ("backend", "model_name", "model_version"):
+            left = dense.get(field) or hybrid.get(f"dense_{field}" if field != "backend" else "dense_method")
+            right = other.get(field)
+            if left and right and str(left) != str(right):
+                raise FormalConfigError(f"Hybrid/Dense embedding {field} mismatch.")
+        left_cs = dense.get("index_checksum") or config.get("dense_index_checksum")
+        right_cs = other.get("index_checksum") or dense_config.get("dense_index_checksum")
+        if validation_stage == "formal" and left_cs and right_cs and str(left_cs) != str(right_cs):
+            raise FormalConfigError("Hybrid/Dense index_checksum mismatch.")
+
+
 def validate_ekell_vector_for_formal(
     config: dict[str, Any], *, allow_placeholders: bool = False
 ) -> None:
@@ -238,6 +351,8 @@ def validate_method_config(
     method_id: str | None = None,
     allow_placeholders: bool = False,
     require_formal: bool = True,
+    validation_stage: str = "formal",
+    dense_config: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return warnings; raise FormalConfigError on hard violations."""
     warnings: list[str] = []
@@ -251,15 +366,29 @@ def validate_method_config(
         warnings.append(f"method_id canonicalized {config.get('method_id')!r} → {mid!r}")
 
     paper_final = bool(config.get("paper_final", False))
+    formal_ids = FORMAL_METHOD_IDS | COMPARISON_FORMAL_METHOD_IDS
     if require_formal or paper_final:
         if "llm" in config and _llm_block(config):
             validate_llm_for_formal(config, allow_placeholders=allow_placeholders)
-        elif mid in FORMAL_METHOD_IDS and not allow_placeholders:
+        elif mid in formal_ids and not allow_placeholders:
             raise FormalConfigError(
                 f"Formal method {mid!r} requires llm block in merged config (from shared_model_config)."
             )
         if mid in FORMAL_EKELL_METHODS:
             validate_ekell_vector_for_formal(config, allow_placeholders=allow_placeholders)
+        if mid == "dense_rag":
+            validate_dense_config_for_real_run(
+                config,
+                allow_placeholders=allow_placeholders,
+                validation_stage=validation_stage,
+            )
+        if mid == "hybrid_rag":
+            validate_hybrid_config_for_real_run(
+                config,
+                allow_placeholders=allow_placeholders,
+                validation_stage=validation_stage,
+                dense_config=dense_config,
+            )
         if mid == "ekell_style_paper_fidelity":
             validate_paper_fidelity_method_config(config, allow_placeholders=allow_placeholders)
         enhanced = config.get("ekell_style") or {}
@@ -298,6 +427,8 @@ def validate_experiment_manifest(
     *,
     allow_placeholders: bool = False,
     validation_stage: str | None = None,
+    method_set: str | None = None,
+    runtime_bundle_path: str | Path | None = None,
 ) -> dict[str, Any]:
     path = Path(path)
     stage = str(validation_stage or ("template" if allow_placeholders else "formal")).strip().lower()
@@ -311,6 +442,10 @@ def validate_experiment_manifest(
     raw = manifest.get("raw") or read_yaml(path)
     if not isinstance(raw, dict):
         raise FormalConfigError(f"Experiment manifest must be a mapping: {path}")
+
+    method_set_name = str(method_set or "main_table").strip().lower()
+    if method_set_name not in {"main_table", "comparison_suite"}:
+        raise FormalConfigError(f"Unknown method_set={method_set!r}")
 
     manifest_for_merge = dict(manifest)
     if allow_placeholders:
@@ -375,6 +510,7 @@ def validate_experiment_manifest(
                         freeze_file,
                         experiment_manifest_path=path,
                         experiment_raw=raw,
+                        require_complete=(method_set_name == "comparison_suite"),
                     )
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"freeze_manifest validation failed: {exc}")
@@ -402,6 +538,29 @@ def validate_experiment_manifest(
     declared_main = [canonicalize_method_id(str(m)) for m in (raw.get("main_table_methods") or [])]
     declared_pf = [canonicalize_method_id(str(m)) for m in (raw.get("paper_fidelity_methods") or [])]
     declared_supp = [canonicalize_method_id(str(m)) for m in (raw.get("supplemental_methods") or [])]
+    declared_comparison = [
+        canonicalize_method_id(str(m)) for m in (raw.get("comparison_suite_methods") or [])
+    ]
+
+    if method_set_name == "comparison_suite":
+        if declared_comparison:
+            if declared_comparison != COMPARISON_SUITE_EXACT:
+                errors.append(
+                    "comparison_suite_methods must be exactly "
+                    f"{COMPARISON_SUITE_EXACT} (got {declared_comparison})"
+                )
+            forbidden = set(paper_fidelity_methods()) | {
+                "ekell_style_enhanced",
+                "lightrag",
+                "microsoft_graphrag",
+                "fallback_graph_retrieval",
+            }
+            extras = [m for m in declared_comparison if m in forbidden]
+            if extras:
+                errors.append(f"comparison_suite_methods must not include {extras}.")
+            missing = [m for m in COMPARISON_SUITE_EXACT if m not in declared_comparison]
+            if missing:
+                errors.append(f"comparison_suite_methods missing required methods: {missing}.")
 
     for mid in declared_pf:
         if mid in declared_main:
@@ -409,7 +568,14 @@ def validate_experiment_manifest(
         if mid in declared_supp:
             errors.append(f"paper-fidelity method {mid!r} must not appear in supplemental_methods.")
 
+    # Which method IDs must be formally validated for this method_set
+    if method_set_name == "comparison_suite":
+        required_formal_ids = set(COMPARISON_FORMAL_METHOD_IDS)
+    else:
+        required_formal_ids = set(FORMAL_METHOD_IDS)
+
     seen_ids: set[str] = set()
+    merged_by_id: dict[str, dict[str, Any]] = {}
     for entry in methods:
         if isinstance(entry, str):
             entry = {"method_id": entry}
@@ -427,7 +593,10 @@ def validate_experiment_manifest(
         if mid in pf_expected and mid in declared_supp:
             errors.append(f"paper-fidelity method {mid!r} listed in supplemental_methods.")
 
-        if bool(entry.get("enabled", True)) and mid in FORMAL_METHOD_IDS:
+        should_validate = bool(entry.get("enabled", True)) and mid in required_formal_ids
+        if method_set_name == "comparison_suite" and mid in COMPARISON_FORMAL_METHOD_IDS:
+            should_validate = True
+        if should_validate:
             cfg_path = str(entry.get("config") or entry.get("method_config") or "")
             if not cfg_path:
                 errors.append(f"Formal method {mid} missing config path.")
@@ -445,16 +614,31 @@ def validate_experiment_manifest(
                 )
                 merged = build_method_config(manifest_for_merge, entry_for_merge)
                 merged["paper_final"] = True
+                merged_by_id[mid] = merged
                 validate_method_config(
                     merged,
                     method_id=mid,
                     allow_placeholders=allow_placeholders,
                     require_formal=True,
+                    validation_stage=stage,
+                    dense_config=merged_by_id.get("dense_rag"),
                 )
             except FormalConfigError as exc:
                 errors.append(f"{mid} merged config: {exc}")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{mid} config merge failed: {exc}")
+
+    # Second pass: hybrid vs dense identity once both merged
+    if "hybrid_rag" in merged_by_id and "dense_rag" in merged_by_id:
+        try:
+            validate_hybrid_config_for_real_run(
+                merged_by_id["hybrid_rag"],
+                allow_placeholders=allow_placeholders,
+                validation_stage=stage,
+                dense_config=merged_by_id["dense_rag"],
+            )
+        except FormalConfigError as exc:
+            errors.append(f"hybrid_rag/dense_rag identity: {exc}")
 
     enabled_main = [
         canonicalize_method_id(str(e.get("method_id")))
@@ -486,5 +670,7 @@ def validate_experiment_manifest(
         "valid": True,
         "allow_placeholders": allow_placeholders,
         "validation_stage": stage,
+        "method_set": method_set_name,
+        "runtime_bundle_path": str(runtime_bundle_path) if runtime_bundle_path else None,
         "mode": stage,
     }

@@ -10,6 +10,9 @@
 cp .env.example .env
 # edit .env → set SILICONFLOW_API_KEY=...
 
+pip install -e ".[llm,embeddings]"
+# First text2vec encode may download BAAI/bge-m3; pre-cache or mount the model before formal runs.
+
 cp configs/models/shared_real_model.yaml.example configs/models/shared_real_model.yaml
 cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments/controlled_main_table_v1.yaml
 # edit controlled_main_table_v1.yaml → set bundle + embedding model_version
@@ -18,6 +21,7 @@ cp configs/experiments/controlled_main_table_v1.yaml.example configs/experiments
 python scripts/check_comparison_readiness.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --resources configs/local/experiment_resources.yaml \
+  --bundle <runner_bundle> \
   --method-set comparison_suite
 
 # 2) Index build (after embedding model is available)
@@ -36,6 +40,7 @@ python scripts/build_comparison_indexes.py \
 # 3) Dry-run validation (provisional freeze OK)
 python scripts/validate_formal_config.py \
   --validation-stage dry_run \
+  --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 # 4) Five-method dry run
@@ -48,16 +53,21 @@ python scripts/run_interop_baselines.py \
   --output outputs/dry_run/comparison_suite_v1/predictions.jsonl \
   --manifest outputs/dry_run/comparison_suite_v1/run_manifest.json
 
-# 5) After DEV selection — create freeze manifest (human confirms freeze_status)
+# 5) After DEV selection — freeze order (do not reverse):
+#    a) set freeze_status=frozen and freeze_manifest path in the experiment manifest
+#    b) save the manifest (checksum includes freeze_manifest path)
+#    c) create freeze manifest (hashes the saved manifest)
 python scripts/create_freeze_manifest.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
   --bundle <runner_bundle> \
   --output configs/freeze/comparison_freeze_manifest_v1.json
+# Use --draft only while fields are incomplete; non-draft requires complete checksums.
 
 # 6) Formal validation (requires freeze_status=frozen + freeze_manifest)
 python scripts/validate_formal_config.py \
   --validation-stage formal \
+  --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 # 7) Formal comparison

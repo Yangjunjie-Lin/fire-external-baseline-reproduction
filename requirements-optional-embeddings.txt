@@ -1,2 +1,2 @@
-# Optional real embedding backend for formal E-KELL / dense RAG runs.
+numpy>=1.24.0
 text2vec>=1.2.0
