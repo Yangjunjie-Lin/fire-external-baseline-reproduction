@@ -1,0 +1,13 @@
+TASK: Validate a decomposed logical expression.
+
+Check that every node is one of projection, intersection, union, or negation; projection
+has one relation and exactly one entity/operand; intersection and union have at least
+two operands; negation has one operand. Labels must occur in the supplied KG vocabulary.
+Return JSON only:
+{"valid":true,"errors":[],"validated_ast":{}}
+
+AST:
+{logical_ast}
+
+AVAILABLE KG VOCABULARY:
+{kg_vocabulary}

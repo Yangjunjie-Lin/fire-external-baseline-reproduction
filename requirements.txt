@@ -5,5 +5,7 @@ openai>=1.0.0
 python-dotenv>=1.0.0
 # External schema validation for firebench-interop
 jsonschema>=4.0.0
+# Dense/Hybrid real index persistence (optional for smoke-hash path)
+numpy>=1.24.0
 # Development / smoke tests
 pytest>=8.0.0

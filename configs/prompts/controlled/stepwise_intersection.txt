@@ -1,0 +1,12 @@
+TASK: Intersection.
+
+Return only entities present in every supplied operand result (Table 3 logical
+intersection structure). Ground the result solely in provided dependencies and KG
+evidence. Return JSON only:
+{"operation":"intersection","result_entities":[],"evidence_ids":[]}
+
+OPERAND RESULTS:
+{dependency_results}
+
+PROVIDED KG TRIPLES/PATHS:
+{kg_context}

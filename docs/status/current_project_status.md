@@ -3,11 +3,14 @@
 ## Current phase
 
 ```text
-Configuration prepared — execution safely deferred
-waiting for main project first_model_v1_ready + formal Runner Bundle
+five-method comparison implementation ready
+real resources not yet installed
+real indexes not yet built
+real dry run not yet executed
+formal experiment not yet executed
 ```
 
-Baseline engineering and formal configuration are prepared. Real cross-repository dry runs and formal experiments remain **locked** until the main project publishes its first stable model version.
+Five-method controlled comparison code and resource interfaces are complete. Real indexes, paid API dry runs, DEV freeze, and formal TEST remain deferred until main-project Runner Bundle + embedding model revision are installed.
 
 Manual `status.main_project_v1_ready: true` is an approval signal only and cannot bypass branch/bundle/schema/checksum validation.
 
@@ -15,74 +18,50 @@ Formal model identity is frozen in YAML. Environment variables provide credentia
 
 ## Valid claim
 
-The repository is an **engineering-complete external baseline scaffold** with formal configs, readiness gates, and deferred execution locks. **No formal experiment has been started.**
+The repository is **five-method controlled comparison code complete** with stage-aware freeze validation. **No formal experiment has been started.**
 
-It is **not** paper-ready, **not** experiment-ready, and **not** empirically validated on shared real LLMs in a cross-repo setting.
+It is **not** paper-ready, **not** empirically validated, and **not** an official E-KELL reproduction.
 
 ## Preparation complete (this phase)
 
 | Item | Status |
 |---|---|
-| Shared real LLM config (`configs/models/shared_real_model.yaml`) | prepared (env vars only; gitignored) |
-| Controlled main-table manifest | prepared (`bundle` placeholder) |
-| E-KELL vector embedding config (`text2vec` + BAAI/bge-m3 candidate) | prepared; index not built |
-| Dense/Hybrid supplemental configs | prepared; disabled for main table |
-| Main-project readiness checker | `scripts/check_main_project_readiness.py` |
-| Experiment state + execution lock | `configs/local/experiment_state.yaml` + `run_interop_baselines.py` |
+| Shared real LLM config | prepared (env vars only; gitignored) |
+| `main_table` + `comparison_suite` method sets | implemented |
+| Dense real text2vec index build/load/query | implemented (fake-model tests only) |
+| Hybrid BM25 + Dense + RRF | implemented; reuses Dense index |
+| Shared embedding backend factory | `src/external_baselines/retrieval/embedding_backends.py` |
+| Comparison readiness checker | `scripts/check_comparison_readiness.py` |
+| Index build entry (`--validate-only`) | `scripts/build_comparison_indexes.py` |
+| Stage-aware formal validator | template / dry_run / formal |
+| Freeze manifest helper | `scripts/create_freeze_manifest.py` |
 | Staged execution plan | `docs/experiments/staged_execution_plan.md` |
 
 ## Still pending (deferred)
 
-- Shared real SiliconFlow LLM **runs** (no API calls in this phase)
-- Real embedding index build / download
-- Cross-repository real dry run (1–3 cases)
-- DEV tuning and config freeze
-- Formal TEST run and main-project evaluator scoring
-
-## Implemented (code)
-
-| Area | Status |
-|---|---|
-| Method registry (single source of truth) | implemented |
-| `direct_llm` | implemented; heuristic smoke only |
-| `bm25_rag` | implemented; deterministic sparse retrieval |
-| E-KELL controlled full pipeline | Level 3 data-compatible pipeline-level reimplementation |
-| E-KELL paper-fidelity interface | ChatGLM-6B config/adapter ready; no empirical run |
-| Supplemental dense/hybrid/enhanced | implemented; smoke dense ≠ formal |
-| Runner Bundle input (`input_cases.jsonl`) | implemented |
-| Canonical firebench-interop-v1 JSONL output | implemented |
-| Formal config validator (template + formal modes) | implemented |
-| Paper-fidelity formal validation (same LLM/vector guards as controlled) | implemented |
-| Gold isolation / schema / checksum validation | implemented |
-
-Formal runs must use copied configs (not `.example`). Template validation (`--allow-placeholders`) does not authorize a paper run.
-
-- Shared real SiliconFlow LLM runs
-- ChatGLM-6B paper-fidelity run
-- Real dense embedding evaluation
-- Actual LightRAG indexing + query
-- Actual Microsoft GraphRAG workspace + indexing + query
-- Expert evaluation / IAA
-- Formal statistics / paper tables
+- Main-project v1 Runner Bundle + scenarios/corpus
+- Embedding model revision mount / download
+- Real Dense + E-KELL index builds
+- 1–3 case dry run
+- DEV parameter selection + human freeze
+- Formal TEST + main-project evaluator
 
 ## Method layers
 
 | Layer | Methods |
 |---|---|
 | Formal main table | `direct_llm`, `bm25_rag`, `ekell_style_controlled_shared_llm` |
+| Comparison suite | main table + `dense_rag` + `hybrid_rag` |
 | Paper-fidelity (separate) | `ekell_style_paper_fidelity` |
-| Supplemental | `dense_rag`, `hybrid_rag`, `ekell_style_enhanced` |
+| Supplemental ablation | `ekell_style_enhanced` |
 | Fallback / legacy | `lightrag`, `microsoft_graphrag`, `fallback_graph_retrieval`, `ekell_style_legacy_bm25` |
+
+Dense/Hybrid never modify E-KELL controlled paper structure (`dense_entity_retrieval` / hybrid subgraph / reranker / self-consistency / structured verification remain false).
 
 ## Authority split
 
 | Authority | Owner |
 |---|---|
-| Prediction generation | this repository |
-| Benchmark / scoring | `fire-agent-demo` shared evaluator |
-
-Local proxy metrics are **diagnostic only**.
-
-## Forbidden upgrades of this status
-
-Do not claim: fully completed · experimentally proven · official reproduction · paper-final · top-tier ready results.
+| Scenarios / gold / evaluator | main project (`fire-agent-demo`) |
+| External baselines / predictions | this repository |
+| Formal freeze | human after DEV evidence |

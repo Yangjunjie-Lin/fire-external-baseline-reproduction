@@ -355,5 +355,6 @@ def test_formal_validation_accepts_complete_real_config(tmp_path):
         ),
         encoding="utf-8",
     )
-    result = validate_experiment_manifest(manifest, allow_placeholders=False)
+    result = validate_experiment_manifest(manifest, allow_placeholders=False, validation_stage="dry_run")
     assert result["valid"] is True
+    assert result["validation_stage"] == "dry_run"

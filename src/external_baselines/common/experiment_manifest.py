@@ -14,6 +14,7 @@ from typing import Any
 from external_baselines.common.io import deep_merge, load_config, read_json, read_yaml
 from external_baselines.method_registry import (
     canonicalize_method_id,
+    comparison_suite_methods,
     main_table_methods,
     paper_fidelity_methods,
     supplemental_methods,
@@ -22,6 +23,11 @@ from external_baselines.method_registry import (
 MAIN_TABLE_METHODS = main_table_methods()
 SUPPLEMENTAL_METHODS = supplemental_methods()
 PAPER_FIDELITY_METHODS = paper_fidelity_methods()
+COMPARISON_SUITE_METHODS = comparison_suite_methods()
+METHOD_SETS = {
+    "main_table": MAIN_TABLE_METHODS,
+    "comparison_suite": COMPARISON_SUITE_METHODS,
+}
 
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)
@@ -75,8 +81,10 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         "base_config": raw.get("base_config") or "configs/default.yaml",
         "methods": resolved,
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
+        "comparison_suite_methods": list(raw.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS),
         "supplemental_methods": list(raw.get("supplemental_methods") or SUPPLEMENTAL_METHODS),
         "bundle": raw.get("bundle"),
+        "freeze_manifest": raw.get("freeze_manifest"),
         "expected_bundle_checksum": raw.get("expected_bundle_checksum"),
         "output": raw.get("output") or "outputs/firebench_interop_v1_predictions.jsonl",
         "legacy_output": raw.get("legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
@@ -107,8 +115,59 @@ def build_method_config(manifest: dict[str, Any], method_entry: dict[str, Any]) 
     return config
 
 
-def enabled_methods(manifest: dict[str, Any], *, include_supplemental: bool = False) -> list[dict[str, Any]]:
+def resolve_method_set(
+    manifest: dict[str, Any],
+    *,
+    method_set: str = "main_table",
+    include_supplemental: bool = False,
+) -> list[str]:
+    """Resolve ordered method IDs for a named method set."""
+    name = str(method_set or "main_table").strip().lower()
+    if include_supplemental and name == "main_table":
+        # Deprecated path: main + supplemental_extended entries.
+        name = "comparison_suite"
+    if name == "main_table":
+        declared = [canonicalize_method_id(str(m)) for m in (manifest.get("main_table_methods") or MAIN_TABLE_METHODS)]
+        return declared
+    if name == "comparison_suite":
+        declared = [
+            canonicalize_method_id(str(m))
+            for m in (manifest.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS)
+        ]
+        forbidden = set(paper_fidelity_methods()) | {"ekell_style_enhanced", "lightrag", "microsoft_graphrag", "fallback_graph_retrieval"}
+        cleaned = [m for m in declared if m not in forbidden]
+        if cleaned != list(COMPARISON_SUITE_METHODS) and not manifest.get("comparison_suite_methods"):
+            return list(COMPARISON_SUITE_METHODS)
+        return cleaned
+    raise ValueError(f"Unknown method_set={method_set!r}; use main_table or comparison_suite.")
+
+
+def enabled_methods(
+    manifest: dict[str, Any],
+    *,
+    include_supplemental: bool = False,
+    method_set: str | None = None,
+) -> list[dict[str, Any]]:
+    selected_ids = None
+    if method_set:
+        selected_ids = set(resolve_method_set(manifest, method_set=method_set, include_supplemental=include_supplemental))
+    elif include_supplemental:
+        selected_ids = set(resolve_method_set(manifest, method_set="comparison_suite"))
+
     out: list[dict[str, Any]] = []
+    by_id = {entry["method_id"]: entry for entry in manifest["methods"]}
+    if selected_ids is not None:
+        for mid in resolve_method_set(
+            manifest,
+            method_set=method_set or ("comparison_suite" if include_supplemental else "main_table"),
+        ):
+            entry = by_id.get(mid)
+            if entry is None:
+                raise ValueError(f"method_set references missing method entry: {mid}")
+            # comparison_suite may enable dense/hybrid even if enabled=false in template.
+            out.append({**entry, "enabled": True})
+        return out
+
     for entry in manifest["methods"]:
         if not entry.get("enabled", True):
             continue

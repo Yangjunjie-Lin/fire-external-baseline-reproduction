@@ -15,23 +15,28 @@ Provide **external** baselines (Direct LLM, BM25-RAG, E-KELL-style, optional Gra
 ## 2. Current status
 
 ```text
-Baseline engineering and formal configuration are prepared.
-Execution is intentionally deferred until the main project produces its
-first stable model version and formal Runner Bundle.
-
-engineering complete
-configuration prepared
-execution safely deferred
-waiting for main project v1
+five-method comparison implementation ready
+real resources not yet installed
+real indexes not yet built
+real dry run not yet executed
+formal experiment not yet executed
 ```
 
-Baseline 工程和正式配置已准备完成。真实联调被主动推迟，直到主项目形成第一版稳定模型和正式 Runner Bundle。
+Controlled comparison code is complete for:
+
+- `main_table` (3 methods)
+- `comparison_suite` (5 methods: Direct / BM25 / Dense / Hybrid / E-KELL controlled)
+
+Dense and Hybrid are **controlled supplemental** baselines. They do **not** enter E-KELL paper-fidelity and do **not** change E-KELL controlled paper structure.
+
+Formal freeze happens only after DEV selection. Do not claim experiment complete / paper ready / empirically validated.
 
 Readiness gates:
 
 | Flag | Value |
 |---|---|
 | configuration_prepared | true |
+| comparison_suite_code_ready | true |
 | api_environment_available | present_or_unknown |
 | real_model_calls_executed | false |
 | embedding_index_built | false |
@@ -52,10 +57,21 @@ Details: [`docs/status/current_project_status.md`](docs/status/current_project_s
 | `direct_llm` | formal main table | implemented | heuristic smoke only |
 | `bm25_rag` | formal main table | implemented (package: `vanilla_rag/`) | deterministic sparse OK; shared-LLM pending |
 | `ekell_style_controlled_shared_llm` | formal main table | Level 3 pipeline-level reimplementation | shared-LLM pending |
+| `dense_rag` | comparison_suite supplemental | real text2vec index build/load/query | real index not built |
+| `hybrid_rag` | comparison_suite supplemental | BM25 + Dense + RRF (reuses Dense index) | real index not built |
 | `ekell_style_paper_fidelity` | paper-fidelity track | interface ready | ChatGLM-6B pending |
-| `dense_rag` / `hybrid_rag` / `ekell_style_enhanced` | supplemental | implemented | formal only with real dense / as extension |
+| `ekell_style_enhanced` | supplemental ablation | implemented | not in comparison_suite |
 | `lightrag` / `microsoft_graphrag` / `fallback_graph_retrieval` | fallback_only | adapters + local fallback | actual indexing pending |
 | `ekell_style_legacy_bm25` | legacy diagnostic | BM25+3-stage scaffold | not main table |
+
+**Method sets:**
+
+```bash
+--method-set main_table          # default: direct_llm, bm25_rag, ekell_style_controlled_shared_llm
+--method-set comparison_suite    # five-method fair comparison (recommended for system contrast)
+```
+
+`--include-supplemental` is deprecated; prefer `--method-set comparison_suite`.
 
 **Single registry:** `src/external_baselines/method_registry.py`  
 Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlled) are derived from that registry only.
@@ -74,29 +90,46 @@ cp configs/models/shared_real_model.yaml.example configs/models/shared_real_mode
 
 # Preparation checks (no API calls):
 python scripts/check_main_project_readiness.py --resources configs/local/experiment_resources.yaml
+python scripts/check_comparison_readiness.py \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --resources configs/local/experiment_resources.yaml \
+  --method-set comparison_suite
 python scripts/show_experiment_state.py
 
 python scripts/validate_formal_config.py \
+  --validation-stage dry_run \
+  --config configs/experiments/controlled_main_table_v1.yaml
+
+python scripts/run_interop_baselines.py \
+  --execution-stage dry_run \
+  --method-set comparison_suite \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle path/to/runner_bundle \
+  --limit 3 \
+  --output outputs/dry_run/comparison_suite_v1/predictions.jsonl \
+  --manifest outputs/dry_run/comparison_suite_v1/run_manifest.json
+```
+
+After DEV freeze:
+
+```bash
+python scripts/create_freeze_manifest.py \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --selected-dev-run outputs/tuning/selected_dev_run.json \
+  --bundle path/to/runner_bundle \
+  --output configs/freeze/comparison_freeze_manifest_v1.json
+
+python scripts/validate_formal_config.py \
+  --validation-stage formal \
   --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/run_interop_baselines.py \
   --execution-stage formal \
+  --method-set comparison_suite \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
-  --bundle path/to/runner_bundle \
-  --output outputs/interop/predictions.jsonl \
-  --manifest outputs/interop/run_manifest.json
-```
-
-Dry-run (after main project v1; not paper results):
-
-```bash
-python scripts/run_interop_baselines.py \
-  --execution-stage dry_run \
-  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
-  --bundle path/to/runner_bundle \
-  --limit 3 \
-  --output outputs/dry_run/controlled_v1/predictions.jsonl \
-  --manifest outputs/dry_run/controlled_v1/run_manifest.json
+  --bundle path/to/frozen_runner_bundle \
+  --output outputs/interop/comparison_suite_v1/predictions.jsonl \
+  --manifest outputs/interop/comparison_suite_v1/run_manifest.json
 ```
 
 Paper-fidelity track (separate experiment):

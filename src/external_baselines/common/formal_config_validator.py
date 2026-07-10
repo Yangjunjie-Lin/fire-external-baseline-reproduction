@@ -297,8 +297,16 @@ def validate_experiment_manifest(
     path: str | Path,
     *,
     allow_placeholders: bool = False,
+    validation_stage: str | None = None,
 ) -> dict[str, Any]:
     path = Path(path)
+    stage = str(validation_stage or ("template" if allow_placeholders else "formal")).strip().lower()
+    if stage not in {"template", "dry_run", "formal"}:
+        raise FormalConfigError(f"Unknown validation_stage={validation_stage!r}")
+    allow_placeholders = stage == "template" or allow_placeholders
+    if stage == "template":
+        allow_placeholders = True
+
     manifest = load_experiment_manifest(path)
     raw = manifest.get("raw") or read_yaml(path)
     if not isinstance(raw, dict):
@@ -312,10 +320,10 @@ def validate_experiment_manifest(
         )
 
     errors: list[str] = []
-    if not allow_placeholders and _is_example_path(str(path)):
+    if stage != "template" and _is_example_path(str(path)):
         errors.append(
-            "Formal validation rejects .example manifest paths; "
-            "copy to a non-.example file before formal runs."
+            f"{stage} validation rejects .example manifest paths; "
+            "copy the template to a non-.example file first."
         )
 
     run_mode = str(raw.get("run_mode", "formal")).lower()
@@ -338,8 +346,38 @@ def validate_experiment_manifest(
             errors.append(f"{key} must be true for formal manifest.")
 
     freeze_status = str(raw.get("freeze_status", "")).lower()
-    if freeze_status in {"frozen", "paper_ready", "empirically_validated"}:
-        errors.append(f"freeze_status must remain provisional (got {freeze_status!r}).")
+    if freeze_status in {"paper_ready", "empirically_validated"}:
+        errors.append(
+            f"freeze_status {freeze_status!r} is not a valid config freeze state; "
+            "use provisional or frozen."
+        )
+    if stage == "template":
+        if freeze_status != "provisional":
+            errors.append(f"template validation requires freeze_status=provisional (got {freeze_status!r}).")
+    elif stage == "dry_run":
+        if freeze_status not in {"provisional", "frozen"}:
+            errors.append(f"dry_run validation requires freeze_status provisional|frozen (got {freeze_status!r}).")
+    else:  # formal
+        if freeze_status != "frozen":
+            errors.append(f"formal validation requires freeze_status=frozen (got {freeze_status!r}).")
+        freeze_path = raw.get("freeze_manifest")
+        if not freeze_path or _is_placeholder(freeze_path):
+            errors.append("formal validation requires freeze_manifest path.")
+        else:
+            freeze_file = _resolve_repo_path(str(freeze_path))
+            if not freeze_file.is_file():
+                errors.append(f"freeze_manifest file not found: {freeze_path}")
+            else:
+                try:
+                    from external_baselines.common.freeze_manifest import validate_freeze_manifest
+
+                    validate_freeze_manifest(
+                        freeze_file,
+                        experiment_manifest_path=path,
+                        experiment_raw=raw,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"freeze_manifest validation failed: {exc}")
 
     shared = str(raw.get("shared_model_config") or "")
     if not shared:
@@ -447,5 +485,6 @@ def validate_experiment_manifest(
         "experiment_id": raw.get("experiment_id"),
         "valid": True,
         "allow_placeholders": allow_placeholders,
-        "mode": "template" if allow_placeholders else "formal",
+        "validation_stage": stage,
+        "mode": stage,
     }

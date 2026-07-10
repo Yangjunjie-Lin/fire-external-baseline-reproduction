@@ -1,8 +1,8 @@
-# Frozen Hybrid RAG config (RRF; supplemental; not enabled for main table).
+# Frozen Hybrid RAG config (BM25 + Dense RRF; controlled supplemental).
 method_id: hybrid_rag
 freeze_id: hybrid_rag_v1
 freeze_status: provisional
-provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
+provisional_reason: Waiting for Dense index + DEV RRF selection evidence.
 split_policy: tuned_on_dev_only_test_frozen
 enabled_for_main_table: false
 paper_table_role: supplemental
@@ -53,4 +53,4 @@ tuning_search_space:
 
 selection_criterion: "dev: Safety-Gated + Critical Failure Rate + Risk/Action F1 + blocked recall; freeze after selection"
 formal_leaderboard_ready: false
-blocker: "Requires real dense embeddings for formal hybrid paper runs."
+blocker: "Requires real dense index shared with dense_rag; no BM25-only fallback in formal mode."

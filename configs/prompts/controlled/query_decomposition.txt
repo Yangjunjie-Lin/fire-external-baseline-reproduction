@@ -1,0 +1,16 @@
+TASK: Query decomposition (paper Appendix A structure, independently paraphrased).
+
+Convert the request into exactly one JSON AST and output no prose or Markdown.
+Allowed nodes:
+{"operation":"projection","entity":"...","relation":"..."}
+{"operation":"projection","relation":"...","operands":[NODE]}
+{"operation":"intersection","operands":[NODE,NODE,...]}
+{"operation":"union","operands":[NODE,NODE,...]}
+{"operation":"negation","operands":[NODE]}
+
+Use only operation, entity, relation, and operands. Preserve KG labels exactly.
+REQUEST:
+{query}
+
+AVAILABLE KG VOCABULARY:
+{kg_vocabulary}

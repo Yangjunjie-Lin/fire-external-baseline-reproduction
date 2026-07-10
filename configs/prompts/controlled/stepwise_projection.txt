@@ -1,0 +1,12 @@
+TASK: Projection.
+
+Find entities connected to {entity} by {relation}. Use only PROVIDED KG
+TRIPLES/PATHS. Do not infer edges, rename IDs, or cite evidence not supplied.
+Return JSON only:
+{"operation":"projection","result_entities":[],"evidence_ids":[]}
+
+DEPENDENCY RESULTS:
+{dependency_results}
+
+PROVIDED KG TRIPLES/PATHS:
+{kg_context}

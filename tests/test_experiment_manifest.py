@@ -32,7 +32,14 @@ def test_load_controlled_main_table_manifest_example(tmp_path):
     main = enabled_methods(manifest, include_supplemental=False)
     assert [m["method_id"] for m in main] == list(MAIN_TABLE_METHODS)
     supp = enabled_methods(manifest, include_supplemental=True)
-    assert len(supp) == 3
+    assert len(supp) == 5
+    assert [m["method_id"] for m in supp] == [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]
 
 
 def test_method_config_merge_order(tmp_path):

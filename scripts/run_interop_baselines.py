@@ -28,7 +28,8 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
 )
 from external_baselines.common.fairness import validate_cross_method_fairness  # noqa: E402
 from external_baselines.common.guards import assert_paper_final_allowed  # noqa: E402
-from external_baselines.common.io import load_scenarios, write_json, write_jsonl  # noqa: E402
+from external_baselines.common.io import load_scenarios, read_json, write_json, write_jsonl  # noqa: E402
+from external_baselines.common.llm_client import llm_config_summary  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
     assert_no_evaluator_bundle_access,
     load_runner_bundle,
@@ -39,6 +40,7 @@ from external_baselines.interop.schema import (  # noqa: E402
     baseline_row_to_interop,
     validate_interop_record,
 )
+from external_baselines.retrieval.embedding_backends import resolve_dimension  # noqa: E402
 from external_baselines.runner import generate_predictions  # noqa: E402
 
 
@@ -61,6 +63,48 @@ def _verify_bundle_hashes(bundle: dict) -> dict:
             "Set cross_repository_interop_verified=true only after main-project "
             "Runner Bundle + neutral evaluator are actually run."
         ),
+    }
+
+
+def _shared_embedding_snapshot(method_configs: dict[str, dict]) -> dict[str, Any]:
+    for mid in ("dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"):
+        cfg = method_configs.get(mid) or {}
+        if mid == "dense_rag":
+            block = cfg.get("dense_rag") or {}
+        elif mid == "hybrid_rag":
+            block = dict(cfg.get("dense_rag") or {})
+            hybrid = cfg.get("hybrid_rag") or {}
+            block.setdefault("backend", hybrid.get("dense_method"))
+            block.setdefault("model_name", hybrid.get("dense_model_name"))
+            block.setdefault("model_version", hybrid.get("dense_model_version"))
+            block.setdefault("dimension", hybrid.get("dimension"))
+        else:
+            block = cfg.get("ekell_vector") or {}
+        if block:
+            return {
+                "backend": block.get("backend"),
+                "model_name": block.get("model_name"),
+                "model_version": block.get("model_version"),
+                "dimension": resolve_dimension(block),
+            }
+    return {"backend": None, "model_name": None, "model_version": None, "dimension": 0}
+
+
+def _index_checksum_snapshot(method_configs: dict[str, dict]) -> dict[str, Any]:
+    dense = method_configs.get("dense_rag") or {}
+    hybrid = method_configs.get("hybrid_rag") or {}
+    ekell = method_configs.get("ekell_style_controlled_shared_llm") or {}
+    dense_checksum = dense.get("dense_index_checksum") or (dense.get("dense_rag") or {}).get("index_checksum")
+    hybrid_checksum = (
+        hybrid.get("dense_index_checksum")
+        or (hybrid.get("dense_rag") or {}).get("index_checksum")
+        or (hybrid.get("hybrid_rag") or {}).get("dense_index_checksum")
+    )
+    ekell_checksum = ekell.get("ekell_index_checksum") or (ekell.get("ekell_vector") or {}).get("index_checksum")
+    return {
+        "dense": {"checksum": dense_checksum},
+        "hybrid_dense_dependency": {"checksum": hybrid_checksum or dense_checksum},
+        "ekell": {"checksum": ekell_checksum},
     }
 
 
@@ -100,7 +144,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--experiment-manifest", required=True)
     parser.add_argument("--bundle", default=None)
-    parser.add_argument("--include-supplemental", action="store_true")
+    parser.add_argument("--include-supplemental", action="store_true", help="Deprecated; prefer --method-set comparison_suite")
+    parser.add_argument(
+        "--method-set",
+        choices=["main_table", "comparison_suite"],
+        default="main_table",
+        help="Which method set to run (default: main_table).",
+    )
     parser.add_argument("--output", default=None)
     parser.add_argument("--legacy-output", default=None)
     parser.add_argument("--manifest", default=None)
@@ -138,6 +188,13 @@ def main(argv: list[str] | None = None) -> None:
 
     from external_baselines.common.execution_lock import assert_execution_allowed  # noqa: E402
 
+    if args.include_supplemental and args.method_set == "main_table":
+        print(
+            "WARNING: --include-supplemental is deprecated; using method_set=comparison_suite",
+            file=sys.stderr,
+        )
+        args.method_set = "comparison_suite"
+
     lock_audit = assert_execution_allowed(
         experiment_manifest=experiment,
         bundle_path=bundle_path,
@@ -169,7 +226,11 @@ def main(argv: list[str] | None = None) -> None:
                 f"and local development schema: bundle={bundle_schema_sha} local={local_schema_sha}"
             )
 
-    method_entries = enabled_methods(experiment, include_supplemental=args.include_supplemental)
+    method_entries = enabled_methods(
+        experiment,
+        include_supplemental=bool(args.include_supplemental),
+        method_set=args.method_set,
+    )
     if not method_entries:
         raise SystemExit("No enabled methods in experiment manifest (main-table empty?).")
 
@@ -241,6 +302,53 @@ def main(argv: list[str] | None = None) -> None:
 
     write_jsonl(output, interop_rows)
     hash_report = _verify_bundle_hashes(bundle)
+    llm_summary = llm_config_summary(shared_snapshot)
+    paper_valid = (
+        args.execution_stage == "formal"
+        and bool(lock_audit.get("paper_valid"))
+        and not lock_audit.get("execution_lock_overridden")
+        and not errors
+        and not coverage.get("duplicate_case_ids")
+        and not coverage.get("missing_case_ids")
+        and not coverage.get("extra_case_ids")
+    )
+    enriched_manifest = {
+        "execution_stage": args.execution_stage,
+        "method_set": args.method_set,
+        "methods_run": methods,
+        "experiment_manifest_checksum": sha256_file(experiment.get("manifest_path")),
+        "runner_bundle_checksum": bundle.get("producer_declared_checksum")
+        or bundle.get("consumer_computed_bundle_hash"),
+        "corpus_checksum": (bundle.get("corpus_manifest") or {}).get("aggregate_sha256")
+        if isinstance(bundle.get("corpus_manifest"), dict)
+        else None,
+        "prediction_schema_checksum": bundle.get("prediction_schema_sha256") or sha256_file(SCHEMA_PATH),
+        "freeze_status": experiment.get("freeze_status"),
+        "freeze_manifest": experiment.get("freeze_manifest"),
+        "llm": {
+            "provider": llm_summary.get("provider"),
+            "model": llm_summary.get("model"),
+            "model_version": llm_summary.get("model_version"),
+            "model_source": llm_summary.get("model_source") or "yaml_config",
+        },
+        "embedding": _shared_embedding_snapshot(method_configs),
+        "indexes": _index_checksum_snapshot(method_configs),
+        "fairness": fairness_report,
+        "coverage": coverage,
+        "execution_lock_overridden": bool(lock_audit.get("execution_lock_overridden")),
+        "paper_valid": paper_valid,
+        "cross_method_fairness": fairness_report,
+    }
+    if run_manifest and Path(run_manifest).is_file():
+        existing = read_json(run_manifest)
+        if isinstance(existing, dict):
+            existing.update(enriched_manifest)
+            write_json(run_manifest, existing)
+        else:
+            write_json(run_manifest, enriched_manifest)
+    elif run_manifest:
+        write_json(run_manifest, enriched_manifest)
+
     write_json(
         Path(run_manifest).with_name("interop_bundle_report.json"),
         {
@@ -249,7 +357,17 @@ def main(argv: list[str] | None = None) -> None:
             "freeze_status": experiment.get("freeze_status"),
             "main_table_methods": list(MAIN_TABLE_METHODS),
             "methods_run": methods,
+            "method_set": args.method_set,
             "include_supplemental": bool(args.include_supplemental),
+            "execution_stage": args.execution_stage,
+            "execution_lock_overridden": bool(lock_audit.get("execution_lock_overridden")),
+            "paper_valid": paper_valid,
+            "cross_method_fairness": fairness_report,
+            "llm": enriched_manifest["llm"],
+            "embedding": enriched_manifest["embedding"],
+            "indexes": enriched_manifest["indexes"],
+            "fairness": fairness_report,
+            "coverage": coverage,
             "bundle": {
                 "root": bundle.get("bundle_root"),
                 "producer_declared_checksum": bundle.get("producer_declared_checksum"),
@@ -260,14 +378,9 @@ def main(argv: list[str] | None = None) -> None:
                 "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
             },
             "checksum_validation": checksum_report,
-            "cross_method_fairness": fairness_report,
             "hash_verification": hash_report,
-            "coverage": coverage,
             "n_predictions": len(interop_rows),
             "output": output,
-            "execution_stage": args.execution_stage,
-            "execution_lock_overridden": bool(lock_audit.get("execution_lock_overridden")),
-            "paper_valid": bool(lock_audit.get("paper_valid")) and not lock_audit.get("execution_lock_overridden"),
             "cross_repository_interop_verified": False,
         },
     )

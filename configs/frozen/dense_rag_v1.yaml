@@ -1,9 +1,8 @@
-# Frozen Dense RAG config (supplemental; not enabled for main table).
-# Real index build deferred until main-project v1 + DEV tuning.
+# Frozen Dense RAG config (controlled supplemental; comparison_suite).
 method_id: dense_rag
 freeze_id: dense_rag_v1
 freeze_status: provisional
-provisional_reason: No complete shared-LLM DEV trial / selection evidence yet.
+provisional_reason: Waiting for real index build + DEV selection evidence.
 split_policy: tuned_on_dev_only_test_frozen
 enabled_for_main_table: false
 paper_table_role: supplemental
@@ -36,4 +35,4 @@ normalization:
   infer_structured_safety_fields: false
 
 formal_leaderboard_ready: false
-blocker: "Dense pipeline real index build adapter pending; config prepared only."
+blocker: "Build real dense index before formal comparison_suite runs."

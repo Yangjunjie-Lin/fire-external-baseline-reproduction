@@ -1,4 +1,4 @@
-# Formal controlled main-table experiment manifest (single source of truth).
+# Formal controlled main-table / comparison-suite experiment manifest.
 # Copy to configs/experiments/controlled_main_table_v1.yaml before running.
 # Merge order per method: base_config → shared_model_config → method config.
 
@@ -9,7 +9,8 @@ run_mode: formal
 freeze_status: provisional
 paper_final: true
 
-bundle: path/to/runner_bundle
+bundle: REQUIRED_AFTER_MAIN_PROJECT_V1
+freeze_manifest: null
 
 base_config: configs/default.yaml
 shared_model_config: configs/models/shared_real_model.yaml
@@ -25,6 +26,13 @@ fail_on_extra_case: true
 main_table_methods:
   - direct_llm
   - bm25_rag
+  - ekell_style_controlled_shared_llm
+
+comparison_suite_methods:
+  - direct_llm
+  - bm25_rag
+  - dense_rag
+  - hybrid_rag
   - ekell_style_controlled_shared_llm
 
 supplemental_methods:
@@ -48,11 +56,11 @@ methods:
   - method_id: dense_rag
     paper_table_role: supplemental_extended
     config: configs/frozen/dense_rag_v1.yaml
-    enabled: false
+    enabled: true
   - method_id: hybrid_rag
     paper_table_role: supplemental_extended
     config: configs/frozen/hybrid_rag_v1.yaml
-    enabled: false
+    enabled: true
   - method_id: ekell_style_enhanced
     paper_table_role: supplemental_extended
     config: configs/frozen/ekell_style_enhanced_v1.yaml
@@ -63,7 +71,7 @@ legacy_output: outputs/legacy/baseline_outputs_legacy.jsonl
 run_manifest: outputs/interop/controlled_main_table_v1/run_manifest.json
 
 notes:
-  - Canonical main-table IDs only; ekell_style_faithful is a CLI alias only.
-  - Replace ekell_vector placeholders before formal run; validator hard-fails otherwise.
-  - freeze_status remains provisional until DEV evidence + real shared-LLM runs exist.
+  - Use --method-set main_table (default) or --method-set comparison_suite.
+  - Dense/Hybrid are controlled supplemental baselines; not E-KELL paper-fidelity.
+  - freeze_status remains provisional until DEV evidence + freeze_manifest exist.
   - Do not run paid APIs from CI.

@@ -246,6 +246,20 @@ def main_table_methods() -> tuple[str, ...]:
     )
 
 
+COMPARISON_SUITE_METHODS: tuple[str, ...] = (
+    "direct_llm",
+    "bm25_rag",
+    "dense_rag",
+    "hybrid_rag",
+    "ekell_style_controlled_shared_llm",
+)
+
+
+def comparison_suite_methods() -> tuple[str, ...]:
+    """Five-method controlled comparison set (main table + dense/hybrid)."""
+    return COMPARISON_SUITE_METHODS
+
+
 def supplemental_methods() -> tuple[str, ...]:
     return tuple(
         mid
