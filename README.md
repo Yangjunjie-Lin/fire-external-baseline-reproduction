@@ -218,11 +218,11 @@ python scripts/validate_formal_config.py \
 **Formal comparison suite compliance (offline-tested):**
 
 - Manifest method entries are resolved before config merge (`get_method_entry` → `build_method_config`).
-- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → transactional publish → `formal_result`.
-- **Formal failure always exits nonzero**; dry-run success may exit zero with `formal_result=false`.
-- Producer-declared and consumer-computed Runner Bundle checksums are frozen and validated separately.
-- Runner Bundle integrity is fail-closed; complete freeze includes `runner_bundle.input_cases_sha256`.
-- Predictions, decisions, and `suite_summary.json` publish as one rollback-safe transaction.
+- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → transactional publish commit → `formal_result` (cleanup warnings do not invalidate commit).
+- Formal temp artifacts are created **only after** static validation and five-method preflight pass.
+- Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename.
+- Publish phases: **PREPARE** (backup) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures are warnings only).
+- New freeze manifests use explicit `runner_bundle` identity fields; legacy `runner_bundle_checksum` is opt-in via `--include-legacy-compat-fields`.
 - Generated files under `outputs/` are never tracked.
 
 Heuristic smoke (no paid API):

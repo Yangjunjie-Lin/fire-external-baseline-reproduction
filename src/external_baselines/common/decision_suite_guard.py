@@ -44,6 +44,14 @@ class FormalConfigurationError(FormalConfigError):
     """Alias for formal configuration failures in the decision suite."""
 
 
+class FormalCoverageError(ValueError):
+    """Raised when formal per-method case coverage checks fail."""
+
+
+class FormalTaxonomyError(ValueError):
+    """Raised when formal taxonomy validation fails for a method."""
+
+
 class FormalRunFailed(RuntimeError):
     """Raised when a formal comparison suite run fails after diagnostics are written."""
 

@@ -50,6 +50,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN_REPO = ROOT.parent / "fire-agent-demo"
 
 
+def _formal_run_dirs(tmp_path: Path, *, name: str = "formal") -> tuple[Path, Path, Path]:
+    run_root = tmp_path / name
+    return run_root, run_root / "predictions", run_root / "decisions"
+
+
 def _valid_payload(**overrides) -> dict:
     base = {
         "decision": {
@@ -259,11 +264,12 @@ def test_formal_validation_occurs_before_llm_build(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _boom)
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    with pytest.raises(FormalSuiteExecutionError):
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    with pytest.raises(FormalRunFailed):
         run_decision_suite(
             runner_bundle=bundle,
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=None,
         )
@@ -577,11 +583,12 @@ def test_formal_rejects_limit():
 
 def test_formal_python_api_rejects_limit(tmp_path):
     bundle = _make_runner_bundle(tmp_path)
-    with pytest.raises(FormalSuiteExecutionError, match="forbids --limit"):
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    with pytest.raises(FormalRunFailed, match="forbids --limit"):
         run_decision_suite(
             runner_bundle=bundle,
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             limit=1,
             experiment_manifest=ROOT / "configs/experiments/controlled_main_table_v1.yaml.example",
@@ -816,11 +823,12 @@ def test_preflight_failure_prevents_any_llm_build(tmp_path, monkeypatch):
         lambda **kwargs: {"ok": False, "execution_stage": "formal", "methods": {}},
     )
     bundle = _make_runner_bundle(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     with pytest.raises(FormalRunFailed, match="preflight failed"):
         run_decision_suite(
             runner_bundle=bundle,
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "formal_manifest.yaml",
         )
@@ -830,7 +838,7 @@ def test_preflight_failure_prevents_any_llm_build(tmp_path, monkeypatch):
 def test_preflight_failure_prevents_prediction_writes(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
+    _, pred_dir, _ = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -1384,6 +1392,7 @@ def test_bundle_integrity_failure_prevents_llm_build(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
     called = {"llm": False}
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
 
     def _boom(*_args, **_kwargs):
         called["llm"] = True
@@ -1404,8 +1413,8 @@ def test_bundle_integrity_failure_prevents_llm_build(tmp_path, monkeypatch):
     with pytest.raises(FormalRunFailed, match="preflight failed"):
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path),
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "formal_manifest.yaml",
         )
@@ -1552,11 +1561,12 @@ def test_generation_mismatch_prevents_any_llm_build(tmp_path, monkeypatch):
 
     monkeypatch.setattr(suite, "preflight_decision_suite", _preflight)
     bundle = _make_runner_bundle(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     with pytest.raises(FormalRunFailed, match="preflight failed"):
         run_decision_suite(
             runner_bundle=bundle,
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "formal_manifest.yaml",
         )
@@ -2033,8 +2043,7 @@ def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
     bundle = _make_runner_bundle(tmp_path, n_cases=1)
-    pred_dir = tmp_path / "pred"
-    dec_dir = tmp_path / "dec"
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     run_decision_suite(
         runner_bundle=bundle,
         prediction_dir=pred_dir,
@@ -2042,13 +2051,13 @@ def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
         execution_stage="formal",
         experiment_manifest=tmp_path / "manifest.yaml",
     )
-    assert any(".formal_tmp_" in str(p) for p in captured_dirs)
+    assert any(".formal.tmp_" in str(p) for p in captured_dirs)
 
 
 def test_formal_preflight_failure_publishes_no_predictions(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
+    _, pred_dir, _ = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2071,7 +2080,7 @@ def test_formal_preflight_failure_publishes_no_predictions(tmp_path, monkeypatch
 def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
+    _, pred_dir, _ = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2101,7 +2110,7 @@ def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
 def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
+    _, pred_dir, _ = _formal_run_dirs(tmp_path)
     call_count = {"n": 0}
 
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
@@ -2161,8 +2170,7 @@ def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, mon
 def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
-    dec_dir = tmp_path / "dec"
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2290,7 +2298,7 @@ def test_formal_failure_marker_contains_no_secrets(tmp_path, monkeypatch):
 
 def test_dry_run_does_not_require_transactional_publish(tmp_path):
     bundle = _make_runner_bundle(tmp_path)
-    pred_dir = tmp_path / "pred"
+    _, pred_dir, _ = _formal_run_dirs(tmp_path)
     summary = run_decision_suite(
         runner_bundle=bundle,
         prediction_dir=pred_dir,
@@ -2536,21 +2544,20 @@ def test_integrity_summary_fields_are_independent():
 def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
-    dec_dir = tmp_path / "dec"
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    run_root.mkdir(parents=True)
     pred_dir.mkdir()
     dec_dir.mkdir()
     (pred_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
     (dec_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
-    calls = {"n": 0}
+    orig_rename = Path.rename
 
-    def _publish_temp(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("decisions publish failed")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dst))
+    def _fail_temp_commit(self, target):
+        if ".tmp_" in self.name:
+            raise OSError("run root commit failed")
+        return orig_rename(self, target)
 
+    monkeypatch.setattr(Path, "rename", _fail_temp_commit)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2569,7 +2576,6 @@ def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, 
             "methods": {},
         },
     )
-    monkeypatch.setattr(suite, "_publish_temp_directory", _publish_temp)
 
     def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
         from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
@@ -2622,12 +2628,12 @@ def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, 
         )
     assert (pred_dir / "old.jsonl").is_file()
     assert (dec_dir / "old.jsonl").is_file()
-    marker = json.loads((tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    marker = json.loads((run_root / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
     assert marker["rollback_succeeded"] is True
 
 
-def test_formal_decision_suite_end_to_end_with_real_manifest_fixture(tmp_path, monkeypatch):
-    """Offline formal E2E using a real non-.example manifest and freeze fixture."""
+def test_formal_orchestration_and_publish_with_injected_components(tmp_path, monkeypatch):
+    """Offline formal orchestration E2E with injected pipeline/runtime components."""
     from scripts import run_decision_comparison_suite as suite
 
     bundle_dir = _make_runner_bundle(tmp_path, n_cases=2)
@@ -2808,7 +2814,7 @@ def test_formal_decision_suite_end_to_end_with_real_manifest_fixture(tmp_path, m
     assert len(list(pred_dir.glob("*.jsonl"))) == 5
     assert len(summary["method_summaries"]) == 5
     assert not (tmp_path / "published" / "FORMAL_RUN_FAILED.json").exists()
-    assert not any(tmp_path.glob(".formal_tmp_*"))
+    assert not any(tmp_path.glob(".formal.tmp_*"))
     assert not any(tmp_path.rglob("*.bak"))
 
 
@@ -2861,10 +2867,11 @@ def test_formal_pre_publish_failure_raises_formal_run_failed(tmp_path, monkeypat
         lambda **kwargs: RuntimeEvidence(method_id=kwargs["method_id"], llm_is_smoke=True, llm_initialized=True),
     )
     with pytest.raises(FormalRunFailed, match="Pre-publish compliance"):
+        _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
@@ -3086,8 +3093,7 @@ def test_legacy_ambiguous_bundle_checksum_rejected_in_formal(tmp_path):
 def test_publish_success_includes_final_suite_summary(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    pred_dir = tmp_path / "pred"
-    dec_dir = tmp_path / "dec"
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -3145,8 +3151,8 @@ def test_publish_success_includes_final_suite_summary(tmp_path, monkeypatch):
         execution_stage="formal",
         experiment_manifest=tmp_path / "manifest.yaml",
     )
-    assert (dec_dir / "suite_summary.json").is_file()
-    published = json.loads((dec_dir / "suite_summary.json").read_text(encoding="utf-8"))
+    assert (run_root / "suite_summary.json").is_file()
+    published = json.loads((run_root / "suite_summary.json").read_text(encoding="utf-8"))
     assert published["formal_compliance"]["formal_result"] is True
 
 
@@ -3162,14 +3168,108 @@ def test_failure_cleanup_does_not_recreate_temp_directory(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: (_ for _ in ()).throw(RuntimeError("fail")))
-    dec_dir = tmp_path / "dec"
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     with pytest.raises(FormalRunFailed):
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
-            prediction_dir=tmp_path / "pred",
+            prediction_dir=pred_dir,
             decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
-    assert not any(tmp_path.glob(".formal_tmp_*"))
-    assert not (dec_dir / "suite_summary.json").exists()
+    assert not any(tmp_path.glob(".formal.tmp_*"))
+    assert not (dec_dir.parent / "suite_summary.json").exists()
+
+
+def test_backup_cleanup_failure_keeps_committed_new_results(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import publish_formal_run_root_transactionally
+
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    run_root.mkdir(parents=True)
+    pred_dir.mkdir()
+    dec_dir.mkdir()
+    (run_root / "old.txt").write_text("old\n", encoding="utf-8")
+    temp_root = tmp_path / ".formal.tmp_test"
+    temp_root.mkdir()
+    (temp_root / "predictions").mkdir()
+    (temp_root / "decisions").mkdir()
+    (temp_root / "suite_summary.json").write_text("{}\n", encoding="utf-8")
+
+    def _fail_backup_remove(path):
+        if str(path).endswith(".bak"):
+            raise OSError("backup cleanup failed")
+
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        _fail_backup_remove,
+    )
+    result = publish_formal_run_root_transactionally(
+        temp_run_root=temp_root,
+        final_run_root=run_root,
+    )
+    assert result.committed is True
+    assert result.cleanup_complete is False
+    assert result.cleanup_warnings
+    assert run_root.is_dir()
+    assert (run_root / "suite_summary.json").is_file()
+
+
+def test_formal_requires_shared_run_root(tmp_path):
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=tmp_path / "pred",
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=ROOT / "configs/experiments/controlled_main_table_v1.yaml.example",
+        )
+
+
+def test_formal_preflight_failure_creates_no_temp_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    assert not any(tmp_path.glob(".formal.tmp_*"))
+
+
+def test_new_freeze_does_not_require_runner_bundle_checksum():
+    from external_baselines.common.freeze_manifest import REQUIRED_COMPLETE_FIELDS
+
+    assert "runner_bundle_checksum" not in REQUIRED_COMPLETE_FIELDS
+    assert "corpus_checksum" not in REQUIRED_COMPLETE_FIELDS
+    assert "prediction_schema_checksum" not in REQUIRED_COMPLETE_FIELDS
+
+
+def test_legacy_only_freeze_rejected_in_formal(tmp_path):
+    from external_baselines.common.freeze_manifest import validate_freeze_manifest
+
+    freeze = {
+        "freeze_status": "frozen",
+        "selected_dev_run_evidence": (tmp_path / "dev.json").as_posix(),
+        "runner_bundle_checksum": "abc",
+        "corpus_checksum": "def",
+        "prediction_schema_checksum": "ghi",
+    }
+    (tmp_path / "dev.json").write_text('{"ok": true}\n', encoding="utf-8")
+    with pytest.raises(FormalConfigError, match="legacy_freeze_requires_regeneration"):
+        validate_freeze_manifest(
+            freeze,
+            experiment_manifest_path=tmp_path / "exp.yaml",
+            experiment_raw={},
+            require_complete=True,
+        )

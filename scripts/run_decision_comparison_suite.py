@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -28,13 +29,17 @@ from external_baselines.common.decision_output import (  # noqa: E402
 )
 from external_baselines.common.decision_suite_guard import (  # noqa: E402
     FORMAL_LIMIT_FORBIDDEN_MESSAGE,
+    FormalCoverageError,
     FormalRunFailed,
+    FormalSuiteExecutionError,
+    FormalTaxonomyError,
     assert_formal_smoke_config_forbidden,
     sanitize_error_message,
     validate_decision_suite_execution,
     validate_formal_method_configs,
 )
 from external_baselines.common.decision_suite_preflight import preflight_decision_suite  # noqa: E402
+from external_baselines.common.formal_config_validator import FormalConfigError  # noqa: E402
 from external_baselines.common.io import (  # noqa: E402
     assert_no_gold_in_prediction_input,
     ensure_dir,
@@ -186,7 +191,7 @@ def _assert_method_coverage(
         errors.append("mixed_or_wrong_method_id")
     report["errors"] = errors
     if formal and errors:
-        raise SystemExit(f"Coverage failure for {method_id}: {report}")
+        raise FormalCoverageError(f"Coverage failure for {method_id}: {report}")
     return report
 
 
@@ -211,6 +216,69 @@ def _integrity_flags_from_preflight(preflight: dict[str, Any]) -> dict[str, bool
 
 
 @dataclass
+class FormalRunLayout:
+    run_root: Path
+    prediction_dir: Path
+    decision_dir: Path
+
+
+def resolve_formal_run_layout(
+    *,
+    formal_run_root: Path | None,
+    prediction_dir: Path,
+    decision_dir: Path,
+) -> FormalRunLayout:
+    pred_res = prediction_dir.resolve()
+    dec_res = decision_dir.resolve()
+    if formal_run_root is not None:
+        root = formal_run_root.resolve()
+        expected_pred = root / "predictions"
+        expected_dec = root / "decisions"
+        if pred_res != expected_pred.resolve() or dec_res != expected_dec.resolve():
+            raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
+    else:
+        if pred_res.parent != dec_res.parent:
+            raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
+        if pred_res.name != "predictions" or dec_res.name != "decisions":
+            raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
+        root = dec_res.parent
+    return FormalRunLayout(
+        run_root=root,
+        prediction_dir=root / "predictions",
+        decision_dir=root / "decisions",
+    )
+
+
+def paths_same_filesystem(path_a: Path, path_b: Path) -> bool:
+    a = path_a.resolve()
+    b = path_b.resolve()
+    if os.name == "nt":
+        return a.drive.lower() == b.drive.lower()
+    return a.stat().st_dev == b.stat().st_dev
+
+
+def assert_same_filesystem(path_a: Path, path_b: Path) -> None:
+    if not paths_same_filesystem(path_a, path_b):
+        raise FormalSuiteExecutionError("formal_atomic_publish_cross_filesystem_forbidden")
+
+
+def create_formal_temp_run_root(final_run_root: Path, run_id: str) -> Path:
+    return final_run_root.parent / f".{final_run_root.name}.tmp_{run_id}"
+
+
+@dataclass
+class RunRootPublishState:
+    temp_run_root: Path
+    final_run_root: Path
+    backup_path: Path | None = None
+    original_existed: bool = False
+    backup_prepared: bool = False
+    committed: bool = False
+    restored: bool = False
+    rollback_error: str | None = None
+
+
+@dataclass
 class PublishTargetState:
     name: str
     temp_path: Path
@@ -226,8 +294,12 @@ class PublishTargetState:
 @dataclass
 class FormalPublishResult:
     success: bool
+    committed: bool
+    cleanup_complete: bool
+    cleanup_warnings: list[str]
     rollback_attempted: bool
     rollback_succeeded: bool
+    run_root_state: RunRootPublishState | None = None
     targets: list[PublishTargetState] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -305,6 +377,9 @@ def rollback_all_targets(states: list[PublishTargetState]) -> FormalPublishResul
     rollback_succeeded = rollback_attempted and not errors
     return FormalPublishResult(
         success=False,
+        committed=False,
+        cleanup_complete=False,
+        cleanup_warnings=[],
         rollback_attempted=rollback_attempted,
         rollback_succeeded=rollback_succeeded,
         targets=list(states),
@@ -312,45 +387,106 @@ def rollback_all_targets(states: list[PublishTargetState]) -> FormalPublishResul
     )
 
 
+def _rollback_run_root(state: RunRootPublishState) -> FormalPublishResult:
+    errors: list[str] = []
+    rollback_attempted = state.backup_prepared or state.committed
+    try:
+        if state.committed and state.final_run_root.exists():
+            _remove_path(state.final_run_root)
+        if state.original_existed:
+            if state.backup_path is None or not state.backup_path.exists():
+                raise FileNotFoundError("backup missing for formal run root")
+            state.backup_path.rename(state.final_run_root)
+        state.restored = True
+        state.rollback_error = None
+    except Exception as exc:  # noqa: BLE001
+        state.restored = False
+        state.rollback_error = sanitize_error_message(str(exc))
+        errors.append(f"restore_run_root_failed: {state.rollback_error}")
+    rollback_succeeded = rollback_attempted and not errors
+    return FormalPublishResult(
+        success=False,
+        committed=False,
+        cleanup_complete=False,
+        cleanup_warnings=[],
+        rollback_attempted=rollback_attempted,
+        rollback_succeeded=rollback_succeeded,
+        run_root_state=state,
+        errors=errors,
+    )
+
+
+def publish_formal_run_root_transactionally(
+    *,
+    temp_run_root: Path,
+    final_run_root: Path,
+) -> FormalPublishResult:
+    """Publish a formal run root with PREPARE / COMMIT / CLEANUP phases."""
+    assert_same_filesystem(temp_run_root.parent, final_run_root.parent)
+    state = RunRootPublishState(temp_run_root=temp_run_root, final_run_root=final_run_root)
+    cleanup_warnings: list[str] = []
+
+    # PREPARE
+    try:
+        state.original_existed = final_run_root.exists()
+        if state.original_existed:
+            backup = final_run_root.with_name(f"{final_run_root.name}.bak")
+            if backup.exists():
+                _remove_path(backup)
+            final_run_root.rename(backup)
+            state.backup_path = backup
+        state.backup_prepared = True
+    except Exception as exc:
+        result = _rollback_run_root(state)
+        raise FormalPublishError(sanitize_error_message(str(exc)), publish_result=result) from exc
+
+    # COMMIT
+    try:
+        if not temp_run_root.exists():
+            raise FileNotFoundError(f"Formal temp run root missing: {temp_run_root}")
+        temp_run_root.rename(final_run_root)
+        state.committed = True
+    except Exception as exc:
+        result = _rollback_run_root(state)
+        raise FormalPublishError(sanitize_error_message(str(exc)), publish_result=result) from exc
+
+    # CLEANUP
+    cleanup_complete = True
+    try:
+        _remove_directory_backup(state.backup_path)
+        state.backup_path = None
+    except Exception as exc:  # noqa: BLE001
+        cleanup_complete = False
+        cleanup_warnings.append(f"backup_cleanup_failed: {sanitize_error_message(str(exc))}")
+
+    return FormalPublishResult(
+        success=True,
+        committed=True,
+        cleanup_complete=cleanup_complete,
+        cleanup_warnings=cleanup_warnings,
+        rollback_attempted=False,
+        rollback_succeeded=True,
+        run_root_state=state,
+        errors=[],
+    )
+
+
 def publish_formal_artifacts_transactionally(
     *,
     temp_prediction_dir: Path,
-    final_prediction_dir: Path,
     temp_decision_dir: Path,
+    final_prediction_dir: Path,
     final_decision_dir: Path,
 ) -> FormalPublishResult:
-    """Publish predictions and decisions atomically with rollback on any failure."""
-    states = [
-        PublishTargetState(
-            name="predictions",
-            temp_path=temp_prediction_dir,
-            final_path=final_prediction_dir,
-        ),
-        PublishTargetState(
-            name="decisions",
-            temp_path=temp_decision_dir,
-            final_path=final_decision_dir,
-        ),
-    ]
-    try:
-        for state in states:
-            _prepare_target_backup(state)
-        for state in states:
-            _publish_temp_directory(state.temp_path, state.final_path)
-            state.published = True
-        for state in states:
-            _remove_directory_backup(state.backup_path)
-            state.backup_path = None
-        return FormalPublishResult(
-            success=True,
-            rollback_attempted=False,
-            rollback_succeeded=True,
-            targets=states,
-            errors=[],
-        )
-    except Exception as exc:
-        result = rollback_all_targets(states)
-        raise FormalPublishError(sanitize_error_message(str(exc)), publish_result=result) from exc
+    """Backward-compatible wrapper that publishes via a shared formal run root."""
+    temp_run_root = temp_prediction_dir.parent
+    final_run_root = final_prediction_dir.parent
+    if temp_decision_dir.parent != temp_run_root or final_decision_dir.parent != final_run_root:
+        raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
+    return publish_formal_run_root_transactionally(
+        temp_run_root=temp_run_root,
+        final_run_root=final_run_root,
+    )
 
 
 def _cleanup_formal_temp(temp_root: Path) -> None:
@@ -416,12 +552,31 @@ def _write_formal_failed_marker(
     write_json(decision_parent / "FORMAL_RUN_FAILED.json", marker)
 
 
+def _classify_formal_failure_stage(exc: Exception) -> str:
+    if isinstance(exc, FormalSuiteExecutionError):
+        message = str(exc)
+        if "manifest" in message or "freeze" in message:
+            return "manifest_validation"
+        if "coverage" in message or "bundle" in message:
+            return "coverage_validation"
+        if "run_root" in message or "filesystem" in message:
+            return "formal_run_root_validation"
+        return "manifest_validation"
+    if isinstance(exc, FormalConfigError):
+        return "method_config_validation"
+    if isinstance(exc, FormalCoverageError):
+        return "coverage_validation"
+    if isinstance(exc, FormalTaxonomyError):
+        return "taxonomy_validation"
+    return "formal"
+
+
 def _raise_formal_failure(
     *,
     message: str,
     stage: str,
     run_id: str,
-    decision_dir: Path,
+    marker_dir: Path,
     suite_summary: dict[str, Any],
     temp_root: Path | None,
     keep_failed_temp_artifacts: bool,
@@ -433,14 +588,14 @@ def _raise_formal_failure(
     published_targets: list[str] | None = None,
     targets: dict[str, Any] | None = None,
 ) -> None:
-    diagnostics_dir = ensure_dir(decision_dir.parent / "diagnostics")
+    diagnostics_dir = ensure_dir(marker_dir / "diagnostics")
     failure_summary_path = write_formal_failure_diagnostics(
         diagnostics_dir=diagnostics_dir,
         run_id=run_id,
         suite_summary=suite_summary,
     )
     _write_formal_failed_marker(
-        decision_parent=decision_dir.parent,
+        decision_parent=marker_dir,
         run_id=run_id,
         stage=stage,
         method_id=method_id,
@@ -452,11 +607,36 @@ def _raise_formal_failure(
         rollback_errors=rollback_errors,
         published_targets=published_targets,
         targets=targets,
-        failure_summary_path=str(failure_summary_path.relative_to(decision_dir.parent)),
+        failure_summary_path=str(failure_summary_path.relative_to(marker_dir)),
     )
     if temp_root and not keep_failed_temp_artifacts:
         _cleanup_formal_temp(temp_root)
     raise FormalRunFailed(message, stage=stage, summary=suite_summary)
+
+
+def _raise_formal_early_failure(
+    *,
+    exc: Exception,
+    run_id: str,
+    marker_dir: Path,
+    temp_root: Path | None,
+    keep_failed_temp_artifacts: bool,
+) -> None:
+    suite_summary = {
+        "execution_stage": "formal",
+        "formal": True,
+        "formal_compliance": {"pre_publish_compliance_passed": False, "formal_result": False},
+    }
+    _raise_formal_failure(
+        message=str(exc),
+        stage=_classify_formal_failure_stage(exc),
+        run_id=run_id,
+        marker_dir=marker_dir,
+        suite_summary=suite_summary,
+        temp_root=temp_root,
+        keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+        error_type=type(exc).__name__,
+    )
 
 
 def _write_decision_artifacts(
@@ -539,7 +719,7 @@ def _write_decision_artifacts(
     write_jsonl(method_dir / "unmapped_taxonomy.jsonl", unmapped_rows)
     taxonomy_valid = len(unmapped_rows) == 0 and parsing_failures == 0
     if formal and not taxonomy_valid:
-        raise SystemExit(
+        raise FormalTaxonomyError(
             f"Formal taxonomy validation failed for {method_id}: "
             f"unmapped={len(unmapped_rows)} parsing_failures={parsing_failures}"
         )
@@ -585,319 +765,169 @@ def run_decision_suite(
     methods: list[str] | None = None,
     dev_aliases_enabled: bool = False,
     keep_failed_temp_artifacts: bool = False,
+    formal_run_root: Path | None = None,
 ) -> dict[str, Any]:
     formal = execution_stage == "formal"
     run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
     temp_root: Path | None = None
     write_prediction_dir = prediction_dir
     write_decision_dir = decision_dir
-    if formal:
-        temp_root = decision_dir.parent / f".formal_tmp_{run_id}"
-        write_prediction_dir = ensure_dir(temp_root / "predictions")
-        write_decision_dir = ensure_dir(temp_root / "decisions")
-    assert_no_evaluator_bundle_access(runner_bundle)
-    method_ids = [canonicalize_method_id(m) for m in (methods or COMPARISON_METHODS)]
-    validate_decision_suite_execution(
-        execution_stage=execution_stage,
-        experiment_manifest=experiment_manifest,
-        method_ids=method_ids,
-        runner_bundle=runner_bundle,
-        limit=limit,
-    )
+    layout: FormalRunLayout | None = None
+    marker_dir = decision_dir.parent
+    try:
 
-    load_limit = None if formal else limit
-    coverage = inspect_runner_bundle_case_coverage(runner_bundle, limit=load_limit)
-    coverage_warning: str | None = None
-    if formal:
-        validate_formal_runner_bundle_coverage(coverage)
-    elif (
-        coverage.manifest_case_count is not None
-        and coverage.manifest_case_count != coverage.input_file_case_count
-    ):
-        coverage_warning = (
-            "runner_bundle_case_count_mismatch: "
-            f"manifest={coverage.manifest_case_count} input_cases={coverage.input_file_case_count}"
-        )
-    else:
-        coverage_warning = None
+        assert_no_evaluator_bundle_access(runner_bundle)
+        method_ids = [canonicalize_method_id(m) for m in (methods or COMPARISON_METHODS)]
 
-    if formal:
-        validate_formal_method_configs(
+        if formal:
+            layout = resolve_formal_run_layout(
+                formal_run_root=formal_run_root,
+                prediction_dir=prediction_dir,
+                decision_dir=decision_dir,
+            )
+            prediction_dir = layout.prediction_dir
+            decision_dir = layout.decision_dir
+            marker_dir = layout.run_root
+
+        validate_decision_suite_execution(
+            execution_stage=execution_stage,
+            experiment_manifest=experiment_manifest,
             method_ids=method_ids,
-            experiment_manifest=experiment_manifest,  # type: ignore[arg-type]
             runner_bundle=runner_bundle,
+            limit=limit,
         )
 
-    bundle = load_runner_bundle(runner_bundle)
-    scenarios_path = Path(bundle["scenarios_path"])
-    schema_path = Path(bundle.get("prediction_schema_path") or SCHEMA_PATH)
-    corpus_dir = bundle.get("corpus_dir")
-    scenarios = load_scenarios(scenarios_path, limit=load_limit)
-    case_ids = coverage.input_case_ids if formal else coverage.loaded_case_ids
-    input_cases_sha = sha256_file(scenarios_path)
-    schema_sha = sha256_file(schema_path) if schema_path.is_file() else None
+        load_limit = None if formal else limit
+        coverage = inspect_runner_bundle_case_coverage(runner_bundle, limit=load_limit)
+        coverage_warning: str | None = None
+        if formal:
+            validate_formal_runner_bundle_coverage(coverage)
+        elif (
+            coverage.manifest_case_count is not None
+            and coverage.manifest_case_count != coverage.input_file_case_count
+        ):
+            coverage_warning = (
+                "runner_bundle_case_count_mismatch: "
+                f"manifest={coverage.manifest_case_count} input_cases={coverage.input_file_case_count}"
+            )
+        else:
+            coverage_warning = None
 
-    if formal:
-        base: dict[str, Any] = {
-            "execution_stage": "formal",
-            "unified_decision_output": True,
-            "strict_decision_parse": True,
-            "dev_aliases_enabled": False,
-            "paper_final": True,
-            "normalization": {"infer_structured_safety_fields": False},
-        }
-    else:
-        base = _base_smoke_config(corpus_dir, execution_stage=execution_stage)
-        if dev_aliases_enabled:
-            base["dev_aliases_enabled"] = True
-    if corpus_dir:
-        base.setdefault("paths", {})["corpus_dir"] = str(corpus_dir)
+        if formal:
+            validate_formal_method_configs(
+                method_ids=method_ids,
+                experiment_manifest=experiment_manifest,  # type: ignore[arg-type]
+                runner_bundle=runner_bundle,
+            )
 
-    method_configs: dict[str, dict[str, Any]] = {}
-    for method_id in method_ids:
-        method_config = _method_config(
-            method_id,
-            base=base,
+        bundle = load_runner_bundle(runner_bundle)
+        scenarios_path = Path(bundle["scenarios_path"])
+        schema_path = Path(bundle.get("prediction_schema_path") or SCHEMA_PATH)
+        corpus_dir = bundle.get("corpus_dir")
+        scenarios = load_scenarios(scenarios_path, limit=load_limit)
+        case_ids = coverage.input_case_ids if formal else coverage.loaded_case_ids
+        input_cases_sha = sha256_file(scenarios_path)
+        schema_sha = sha256_file(schema_path) if schema_path.is_file() else None
+
+        if formal:
+            base: dict[str, Any] = {
+                "execution_stage": "formal",
+                "unified_decision_output": True,
+                "strict_decision_parse": True,
+                "dev_aliases_enabled": False,
+                "paper_final": True,
+                "normalization": {"infer_structured_safety_fields": False},
+            }
+        else:
+            base = _base_smoke_config(corpus_dir, execution_stage=execution_stage)
+            if dev_aliases_enabled:
+                base["dev_aliases_enabled"] = True
+        if corpus_dir:
+            base.setdefault("paths", {})["corpus_dir"] = str(corpus_dir)
+
+        method_configs: dict[str, dict[str, Any]] = {}
+        for method_id in method_ids:
+            method_config = _method_config(
+                method_id,
+                base=base,
+                experiment_manifest=experiment_manifest,
+            )
+            if corpus_dir:
+                method_config.setdefault("paths", {})["corpus_dir"] = str(corpus_dir)
+            method_config["unified_decision_output"] = True
+            method_config["strict_decision_parse"] = formal
+            method_config["execution_stage"] = execution_stage
+            method_config["dev_aliases_enabled"] = bool(dev_aliases_enabled and not formal)
+            method_configs[method_id] = method_config
+
+        preflight = preflight_decision_suite(
+            method_ids=method_ids,
+            method_configs=method_configs,
+            runner_bundle=runner_bundle,
+            execution_stage=execution_stage,
             experiment_manifest=experiment_manifest,
         )
-        if corpus_dir:
-            method_config.setdefault("paths", {})["corpus_dir"] = str(corpus_dir)
-        method_config["unified_decision_output"] = True
-        method_config["strict_decision_parse"] = formal
-        method_config["execution_stage"] = execution_stage
-        method_config["dev_aliases_enabled"] = bool(dev_aliases_enabled and not formal)
-        method_configs[method_id] = method_config
+        diagnostics_dir = ensure_dir(marker_dir / "diagnostics")
+        write_json(diagnostics_dir / "decision_suite_preflight.json", preflight)
+        if formal and not preflight.get("ok"):
+            suite_summary = {
+                "execution_stage": execution_stage,
+                "formal": formal,
+                "preflight_ok": False,
+                "formal_compliance": {"pre_publish_compliance_passed": False, "formal_result": False},
+            }
+            _raise_formal_failure(
+                message="Formal decision suite preflight failed.",
+                stage="preflight",
+                run_id=run_id,
+                marker_dir=marker_dir,
+                suite_summary=suite_summary,
+                temp_root=temp_root,
+                keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                error_type="PreflightError",
+            )
 
-    preflight = preflight_decision_suite(
-        method_ids=method_ids,
-        method_configs=method_configs,
-        runner_bundle=runner_bundle,
-        execution_stage=execution_stage,
-        experiment_manifest=experiment_manifest,
-    )
-    diagnostics_dir = ensure_dir(decision_dir.parent / "diagnostics")
-    write_json(diagnostics_dir / "decision_suite_preflight.json", preflight)
-    if formal and not preflight.get("ok"):
-        suite_summary = {
-            "execution_stage": execution_stage,
-            "formal": formal,
-            "preflight_ok": False,
-            "formal_compliance": {"pre_publish_compliance_passed": False, "formal_result": False},
-        }
-        _raise_formal_failure(
-            message="Formal decision suite preflight failed.",
-            stage="preflight",
-            run_id=run_id,
-            decision_dir=decision_dir,
-            suite_summary=suite_summary,
-            temp_root=temp_root,
-            keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-            error_type="PreflightError",
+        if formal and layout is not None:
+            temp_root = create_formal_temp_run_root(layout.run_root, run_id)
+            write_prediction_dir = ensure_dir(temp_root / "predictions")
+            write_decision_dir = ensure_dir(temp_root / "decisions")
+
+        ensure_dir(write_prediction_dir)
+        ensure_dir(write_decision_dir)
+        from external_baselines.common.firebench_taxonomy import (
+            alias_sha256,
+            formal_alias_sha256,
+            taxonomy_sha256,
         )
 
-    ensure_dir(write_prediction_dir)
-    ensure_dir(write_decision_dir)
-    from external_baselines.common.firebench_taxonomy import (
-        alias_sha256,
-        formal_alias_sha256,
-        taxonomy_sha256,
-    )
-
-    integrity_flags = _integrity_flags_from_preflight(preflight)
-    suite_summary: dict[str, Any] = {
-        "execution_stage": execution_stage,
-        "formal": formal,
-        "runner_bundle": str(runner_bundle),
-        "case_count": len(case_ids),
-        "methods": method_ids,
-        "method_summaries": {},
-        "coverage": {},
-        "runner_bundle_coverage": coverage.to_dict(),
-        "warnings": [coverage_warning] if coverage_warning else [],
-        "preflight_ok": bool(preflight.get("ok")),
-        "taxonomy_contract": {
-            "taxonomy_version": "firebench-taxonomy-v1",
-            "taxonomy_sha256": taxonomy_sha256(),
-            "alias_sha256": alias_sha256(),
-            "formal_alias_sha256": formal_alias_sha256(),
-            "all_methods_valid": True,
-            "dev_aliases_enabled": bool(dev_aliases_enabled and not formal),
-        },
-        "formal_compliance": compute_suite_formal_compliance(
-            formal=formal,
-            experiment_manifest_provided=experiment_manifest is not None,
-            limit_used=limit is not None,
-            preflight_ok=bool(preflight.get("ok")),
-            coverage_ok=False,
-            method_evidences={},
-            method_compliance={},
-            dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
-            shared_generation_identity_match=bool(
-                (preflight.get("shared_generation_identity") or {}).get("ok")
-            ),
-            ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
-            method_ids=method_ids,
-            phase="pre_publish",
-            **integrity_flags,
-        ),
-    }
-
-    method_evidences: dict[str, Any] = {}
-    method_compliance_reports: dict[str, dict[str, Any]] = {}
-    all_coverage_ok = True
-
-    try:
-        for method_id in method_ids:
-            method_config = method_configs[method_id]
-            llm = build_llm_client(method_config)
-            pipeline = resolve_pipeline(method_id)
-            runtime = prepare_method_runtime(method_id, method_config)
-            evidence = collect_method_runtime_evidence(
-                method_id=method_id,
-                config=method_config,
-                llm=llm,
-                runtime=runtime,
-            )
-            method_evidences[method_id] = evidence
-            accepts_runtime = pipeline_accepts_runtime(pipeline)
-            interop_rows: list[dict[str, Any]] = []
-            parsing_failures = 0
-            schema_failures = 0
-            t0 = time.perf_counter()
-            try:
-                for scenario in scenarios:
-                    usage_before = (
-                        llm.usage_snapshot()
-                        if isinstance(llm, UsageTrackingLLMClient)
-                        else TokenUsage()
-                    )
-                    prediction_input = to_prediction_input(scenario, config=method_config)
-                    assert_no_gold_in_prediction_input(prediction_input)
-                    for forbidden in ("category", "severity", "gold", "expected", "annotation"):
-                        if forbidden in prediction_input:
-                            raise AssertionError(f"{forbidden} leaked into prediction input")
-                    try:
-                        if accepts_runtime and runtime is not None:
-                            out = pipeline(
-                                prediction_input, config=method_config, llm=llm, runtime=runtime
-                            )
-                        else:
-                            out = pipeline(prediction_input, config=method_config, llm=llm)
-                    except DecisionParseError:
-                        parsing_failures += 1
-                        if formal:
-                            raise
-                        continue
-                    case_usage = (
-                        llm.usage_delta(usage_before)
-                        if isinstance(llm, UsageTrackingLLMClient)
-                        else TokenUsage()
-                    )
-                    ms = out.setdefault("method_specific", {})
-                    runtime_block = ms.setdefault("runtime", {})
-                    runtime_block.update(
-                        {
-                            "llm_calls": case_usage.llm_calls,
-                            "token_usage": case_usage.to_dict(),
-                        }
-                    )
-                    if ms.get("parsing_failure"):
-                        parsing_failures += 1
-                        if formal:
-                            raise RuntimeError(
-                                f"Formal parsing failure for {method_id} case "
-                                f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
-                            )
-                    interop = unified_row_to_interop(out)
-                    interop["case_id"] = prediction_input["case_id"]
-                    interop["method_id"] = method_id
-                    interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
-                    assert_canonical_interop_record(
-                        interop,
-                        dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
-                    )
-                    errors = validate_interop_record(
-                        interop,
-                        schema_path=schema_path,
-                        expected_schema_sha256=schema_sha,
-                    )
-                    if errors:
-                        schema_failures += 1
-                        if formal:
-                            raise RuntimeError(
-                                f"Schema failure for {method_id} case "
-                                f"{prediction_input['case_id']}: {errors}"
-                            )
-                    interop_rows.append(interop)
-            finally:
-                close_method_runtime(runtime)
-
-            pred_path = write_prediction_dir / f"{method_id}.jsonl"
-            write_jsonl(pred_path, interop_rows)
-            coverage_report = _assert_method_coverage(
-                case_ids=case_ids,
-                method_id=method_id,
-                rows=interop_rows,
-                formal=formal,
-            )
-            if coverage_report.get("errors"):
-                all_coverage_ok = False
-            taxonomy_valid = _interop_taxonomy_valid(interop_rows)
-            compliance = method_formal_compliance(
-                evidence,
-                formal=formal,
-                method_id=method_id,
-                coverage_ok=not coverage_report.get("errors"),
-                parsing_failures=parsing_failures,
-                schema_failures=schema_failures,
-                taxonomy_valid=taxonomy_valid,
-            )
-            method_compliance_reports[method_id] = compliance
-            summary = _write_decision_artifacts(
-                write_decision_dir,
-                method_id,
-                interop_rows,
-                input_cases_sha256=input_cases_sha,
-                prediction_schema_sha256=schema_sha,
-                prediction_file=pred_path,
-                formal=formal,
-                coverage_ok=not coverage_report.get("errors"),
-                runtime_evidence=evidence,
-                method_compliance=compliance,
-                execution_stage=execution_stage,
-            )
-            summary["execution_contract"] = {
-                "execution_stage": execution_stage,
-                "experiment_manifest_provided": bool(experiment_manifest),
-                "heuristic_llm_used": bool(evidence.llm_is_smoke),
-                "smoke_embedding_used": bool(evidence.smoke_fallback_used),
-                "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
-                "strict_required_fields": formal,
-                "canonical_output_only": True,
-            }
-            summary["parsing_failure_count"] = parsing_failures
-            summary["schema_failure_count"] = schema_failures
-            summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
-            write_json(write_decision_dir / method_id / "run_summary.json", summary)
-            suite_summary["method_summaries"][method_id] = summary
-            suite_summary["coverage"][method_id] = coverage_report
-            if not (summary.get("taxonomy_validation") or {}).get("valid", False):
-                suite_summary["taxonomy_contract"]["all_methods_valid"] = False
-            if formal and (parsing_failures or schema_failures):
-                raise RuntimeError(
-                    f"Formal run failed for {method_id}: "
-                    f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
-                )
-    except Exception as exc:
-        if formal:
-            suite_summary["formal_compliance"] = compute_suite_formal_compliance(
+        integrity_flags = _integrity_flags_from_preflight(preflight)
+        suite_summary: dict[str, Any] = {
+            "execution_stage": execution_stage,
+            "formal": formal,
+            "runner_bundle": str(runner_bundle),
+            "case_count": len(case_ids),
+            "methods": method_ids,
+            "method_summaries": {},
+            "coverage": {},
+            "runner_bundle_coverage": coverage.to_dict(),
+            "warnings": [coverage_warning] if coverage_warning else [],
+            "preflight_ok": bool(preflight.get("ok")),
+            "taxonomy_contract": {
+                "taxonomy_version": "firebench-taxonomy-v1",
+                "taxonomy_sha256": taxonomy_sha256(),
+                "alias_sha256": alias_sha256(),
+                "formal_alias_sha256": formal_alias_sha256(),
+                "all_methods_valid": True,
+                "dev_aliases_enabled": bool(dev_aliases_enabled and not formal),
+            },
+            "formal_compliance": compute_suite_formal_compliance(
                 formal=formal,
                 experiment_manifest_provided=experiment_manifest is not None,
                 limit_used=limit is not None,
                 preflight_ok=bool(preflight.get("ok")),
                 coverage_ok=False,
-                method_evidences=method_evidences,
-                method_compliance=method_compliance_reports,
+                method_evidences={},
+                method_compliance={},
                 dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
                 shared_generation_identity_match=bool(
                     (preflight.get("shared_generation_identity") or {}).get("ok")
@@ -906,44 +936,187 @@ def run_decision_suite(
                 method_ids=method_ids,
                 phase="pre_publish",
                 **integrity_flags,
-            )
-            _raise_formal_failure(
-                message=str(exc),
-                stage="method_execution",
-                run_id=run_id,
-                decision_dir=decision_dir,
-                suite_summary=suite_summary,
-                temp_root=temp_root,
-                keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-                method_id=method_id if "method_id" in locals() else None,
-                error_type=type(exc).__name__,
-            )
-        raise
+            ),
+        }
 
-    suite_summary["formal_compliance"] = compute_suite_formal_compliance(
-        formal=formal,
-        experiment_manifest_provided=experiment_manifest is not None,
-        limit_used=limit is not None,
-        preflight_ok=bool(preflight.get("ok")),
-        coverage_ok=all_coverage_ok,
-        method_evidences=method_evidences,
-        method_compliance=method_compliance_reports,
-        dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
-        shared_generation_identity_match=bool(
-            (preflight.get("shared_generation_identity") or {}).get("ok")
-        ),
-        ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
-        method_ids=method_ids,
-        phase="pre_publish",
-        **integrity_flags,
-    )
-    suite_summary["runtime_evidence"] = {
-        mid: evidence_to_summary_sections(ev) for mid, ev in method_evidences.items()
-    }
+        method_evidences: dict[str, Any] = {}
+        method_compliance_reports: dict[str, dict[str, Any]] = {}
+        all_coverage_ok = True
 
-    pre_publish_passed = bool(suite_summary["formal_compliance"].get("pre_publish_compliance_passed"))
+        try:
+            for method_id in method_ids:
+                method_config = method_configs[method_id]
+                llm = build_llm_client(method_config)
+                pipeline = resolve_pipeline(method_id)
+                runtime = prepare_method_runtime(method_id, method_config)
+                evidence = collect_method_runtime_evidence(
+                    method_id=method_id,
+                    config=method_config,
+                    llm=llm,
+                    runtime=runtime,
+                )
+                method_evidences[method_id] = evidence
+                accepts_runtime = pipeline_accepts_runtime(pipeline)
+                interop_rows: list[dict[str, Any]] = []
+                parsing_failures = 0
+                schema_failures = 0
+                t0 = time.perf_counter()
+                try:
+                    for scenario in scenarios:
+                        usage_before = (
+                            llm.usage_snapshot()
+                            if isinstance(llm, UsageTrackingLLMClient)
+                            else TokenUsage()
+                        )
+                        prediction_input = to_prediction_input(scenario, config=method_config)
+                        assert_no_gold_in_prediction_input(prediction_input)
+                        for forbidden in ("category", "severity", "gold", "expected", "annotation"):
+                            if forbidden in prediction_input:
+                                raise AssertionError(f"{forbidden} leaked into prediction input")
+                        try:
+                            if accepts_runtime and runtime is not None:
+                                out = pipeline(
+                                    prediction_input, config=method_config, llm=llm, runtime=runtime
+                                )
+                            else:
+                                out = pipeline(prediction_input, config=method_config, llm=llm)
+                        except DecisionParseError:
+                            parsing_failures += 1
+                            if formal:
+                                raise
+                            continue
+                        case_usage = (
+                            llm.usage_delta(usage_before)
+                            if isinstance(llm, UsageTrackingLLMClient)
+                            else TokenUsage()
+                        )
+                        ms = out.setdefault("method_specific", {})
+                        runtime_block = ms.setdefault("runtime", {})
+                        runtime_block.update(
+                            {
+                                "llm_calls": case_usage.llm_calls,
+                                "token_usage": case_usage.to_dict(),
+                            }
+                        )
+                        if ms.get("parsing_failure"):
+                            parsing_failures += 1
+                            if formal:
+                                raise RuntimeError(
+                                    f"Formal parsing failure for {method_id} case "
+                                    f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
+                                )
+                        interop = unified_row_to_interop(out)
+                        interop["case_id"] = prediction_input["case_id"]
+                        interop["method_id"] = method_id
+                        interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
+                        assert_canonical_interop_record(
+                            interop,
+                            dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
+                        )
+                        errors = validate_interop_record(
+                            interop,
+                            schema_path=schema_path,
+                            expected_schema_sha256=schema_sha,
+                        )
+                        if errors:
+                            schema_failures += 1
+                            if formal:
+                                raise RuntimeError(
+                                    f"Schema failure for {method_id} case "
+                                    f"{prediction_input['case_id']}: {errors}"
+                                )
+                        interop_rows.append(interop)
+                finally:
+                    close_method_runtime(runtime)
 
-    if formal and pre_publish_passed:
+                pred_path = write_prediction_dir / f"{method_id}.jsonl"
+                write_jsonl(pred_path, interop_rows)
+                coverage_report = _assert_method_coverage(
+                    case_ids=case_ids,
+                    method_id=method_id,
+                    rows=interop_rows,
+                    formal=formal,
+                )
+                if coverage_report.get("errors"):
+                    all_coverage_ok = False
+                taxonomy_valid = _interop_taxonomy_valid(interop_rows)
+                compliance = method_formal_compliance(
+                    evidence,
+                    formal=formal,
+                    method_id=method_id,
+                    coverage_ok=not coverage_report.get("errors"),
+                    parsing_failures=parsing_failures,
+                    schema_failures=schema_failures,
+                    taxonomy_valid=taxonomy_valid,
+                )
+                method_compliance_reports[method_id] = compliance
+                summary = _write_decision_artifacts(
+                    write_decision_dir,
+                    method_id,
+                    interop_rows,
+                    input_cases_sha256=input_cases_sha,
+                    prediction_schema_sha256=schema_sha,
+                    prediction_file=pred_path,
+                    formal=formal,
+                    coverage_ok=not coverage_report.get("errors"),
+                    runtime_evidence=evidence,
+                    method_compliance=compliance,
+                    execution_stage=execution_stage,
+                )
+                summary["execution_contract"] = {
+                    "execution_stage": execution_stage,
+                    "experiment_manifest_provided": bool(experiment_manifest),
+                    "heuristic_llm_used": bool(evidence.llm_is_smoke),
+                    "smoke_embedding_used": bool(evidence.smoke_fallback_used),
+                    "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
+                    "strict_required_fields": formal,
+                    "canonical_output_only": True,
+                }
+                summary["parsing_failure_count"] = parsing_failures
+                summary["schema_failure_count"] = schema_failures
+                summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
+                write_json(write_decision_dir / method_id / "run_summary.json", summary)
+                suite_summary["method_summaries"][method_id] = summary
+                suite_summary["coverage"][method_id] = coverage_report
+                if not (summary.get("taxonomy_validation") or {}).get("valid", False):
+                    suite_summary["taxonomy_contract"]["all_methods_valid"] = False
+                if formal and (parsing_failures or schema_failures):
+                    raise RuntimeError(
+                        f"Formal run failed for {method_id}: "
+                        f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
+                    )
+        except Exception as exc:
+            if formal:
+                suite_summary["formal_compliance"] = compute_suite_formal_compliance(
+                    formal=formal,
+                    experiment_manifest_provided=experiment_manifest is not None,
+                    limit_used=limit is not None,
+                    preflight_ok=bool(preflight.get("ok")),
+                    coverage_ok=False,
+                    method_evidences=method_evidences,
+                    method_compliance=method_compliance_reports,
+                    dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+                    shared_generation_identity_match=bool(
+                        (preflight.get("shared_generation_identity") or {}).get("ok")
+                    ),
+                    ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+                    method_ids=method_ids,
+                    phase="pre_publish",
+                    **integrity_flags,
+                )
+                _raise_formal_failure(
+                    message=str(exc),
+                    stage="method_execution",
+                    run_id=run_id,
+                    marker_dir=marker_dir,
+                    suite_summary=suite_summary,
+                    temp_root=temp_root,
+                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                    method_id=method_id if "method_id" in locals() else None,
+                    error_type=type(exc).__name__,
+                )
+            raise
+
         suite_summary["formal_compliance"] = compute_suite_formal_compliance(
             formal=formal,
             experiment_manifest_provided=experiment_manifest is not None,
@@ -958,79 +1131,143 @@ def run_decision_suite(
             ),
             ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
             method_ids=method_ids,
-            phase="final",
-            transactional_publish_complete=True,
+            phase="pre_publish",
             **integrity_flags,
         )
-        write_json(write_decision_dir / "suite_summary.json", suite_summary)
-        try:
-            publish_result = publish_formal_artifacts_transactionally(
-                temp_prediction_dir=write_prediction_dir,
-                final_prediction_dir=prediction_dir,
-                temp_decision_dir=write_decision_dir,
-                final_decision_dir=decision_dir,
+        suite_summary["runtime_evidence"] = {
+            mid: evidence_to_summary_sections(ev) for mid, ev in method_evidences.items()
+        }
+
+        pre_publish_passed = bool(
+            suite_summary["formal_compliance"].get("pre_publish_compliance_passed")
+        )
+
+        if formal and pre_publish_passed and layout is not None and temp_root is not None:
+            suite_summary_path = temp_root / "suite_summary.json"
+            write_json(suite_summary_path, suite_summary)
+            try:
+                publish_result = publish_formal_run_root_transactionally(
+                    temp_run_root=temp_root,
+                    final_run_root=layout.run_root,
+                )
+            except FormalPublishError as exc:
+                publish_result = exc.publish_result
+                _raise_formal_failure(
+                    message=str(exc),
+                    stage="transactional_publish",
+                    run_id=run_id,
+                    marker_dir=marker_dir,
+                    suite_summary=suite_summary,
+                    temp_root=temp_root,
+                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                    error_type=type(exc).__name__,
+                    rollback_attempted=publish_result.rollback_attempted,
+                    rollback_succeeded=publish_result.rollback_succeeded,
+                    rollback_errors=publish_result.errors,
+                )
+
+            suite_summary["transactional_publish"] = {
+                "committed": publish_result.committed,
+                "cleanup_complete": publish_result.cleanup_complete,
+                "cleanup_warnings": list(publish_result.cleanup_warnings),
+            }
+            if publish_result.cleanup_warnings:
+                write_json(
+                    marker_dir / "FORMAL_PUBLISH_CLEANUP_WARNING.json",
+                    {
+                        "committed": publish_result.committed,
+                        "cleanup_complete": publish_result.cleanup_complete,
+                        "cleanup_warnings": publish_result.cleanup_warnings,
+                    },
+                )
+
+            suite_summary["formal_compliance"] = compute_suite_formal_compliance(
+                formal=formal,
+                experiment_manifest_provided=experiment_manifest is not None,
+                limit_used=limit is not None,
+                preflight_ok=bool(preflight.get("ok")),
+                coverage_ok=all_coverage_ok,
+                method_evidences=method_evidences,
+                method_compliance=method_compliance_reports,
+                dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+                shared_generation_identity_match=bool(
+                    (preflight.get("shared_generation_identity") or {}).get("ok")
+                ),
+                ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+                method_ids=method_ids,
+                phase="final",
+                transactional_publish_committed=publish_result.committed,
+                transactional_cleanup_complete=publish_result.cleanup_complete,
+                **integrity_flags,
             )
-            failed_marker = decision_dir.parent / "FORMAL_RUN_FAILED.json"
+            write_json(layout.run_root / "suite_summary.json", suite_summary)
+
+            failed_marker = marker_dir / "FORMAL_RUN_FAILED.json"
             if failed_marker.is_file():
                 failed_marker.unlink()
-            if temp_root and temp_root.exists():
-                _cleanup_formal_temp(temp_root)
-        except FormalPublishError as exc:
-            publish_result = exc.publish_result
+
+            final_compliance = suite_summary["formal_compliance"]
+            if not (
+                final_compliance.get("formal_result") is True
+                and final_compliance.get("transactional_publish_committed") is True
+                and final_compliance.get("pre_publish_compliance_passed") is True
+            ):
+                if publish_result.run_root_state is not None:
+                    rollback_result = _rollback_run_root(publish_result.run_root_state)
+                else:
+                    rollback_result = FormalPublishResult(
+                        success=False,
+                        committed=False,
+                        cleanup_complete=False,
+                        cleanup_warnings=[],
+                        rollback_attempted=False,
+                        rollback_succeeded=False,
+                        errors=[],
+                    )
+                _raise_formal_failure(
+                    message="Final formal compliance checks did not pass after publish.",
+                    stage="final_compliance",
+                    run_id=run_id,
+                    marker_dir=marker_dir,
+                    suite_summary=suite_summary,
+                    temp_root=None,
+                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                    error_type="FormalComplianceError",
+                    rollback_attempted=rollback_result.rollback_attempted,
+                    rollback_succeeded=rollback_result.rollback_succeeded,
+                    rollback_errors=rollback_result.errors,
+                )
+        elif formal:
+            suite_summary["formal_compliance"]["formal_result"] = False
+            suite_summary["formal_compliance"]["transactional_publish_complete"] = False
+            suite_summary["formal_compliance"]["transactional_publish_committed"] = False
             _raise_formal_failure(
-                message=str(exc),
-                stage="transactional_publish",
+                message="Pre-publish compliance checks did not pass.",
+                stage="pre_publish_compliance",
                 run_id=run_id,
-                decision_dir=decision_dir,
-                suite_summary=suite_summary,
-                temp_root=temp_root,
-                keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-                error_type=type(exc).__name__,
-                rollback_attempted=publish_result.rollback_attempted,
-                rollback_succeeded=publish_result.rollback_succeeded,
-                rollback_errors=publish_result.errors,
-                published_targets=[state.name for state in publish_result.targets if state.published],
-                targets=_publish_targets_to_marker(publish_result.targets),
-            )
-        final_compliance = suite_summary["formal_compliance"]
-        if not (
-            final_compliance.get("formal_result") is True
-            and final_compliance.get("transactional_publish_complete") is True
-            and final_compliance.get("pre_publish_compliance_passed") is True
-        ):
-            rollback_result = rollback_all_targets(publish_result.targets)
-            _raise_formal_failure(
-                message="Final formal compliance checks did not pass after publish.",
-                stage="final_compliance",
-                run_id=run_id,
-                decision_dir=decision_dir,
+                marker_dir=marker_dir,
                 suite_summary=suite_summary,
                 temp_root=temp_root,
                 keep_failed_temp_artifacts=keep_failed_temp_artifacts,
                 error_type="FormalComplianceError",
-                rollback_attempted=rollback_result.rollback_attempted,
-                rollback_succeeded=rollback_result.rollback_succeeded,
-                rollback_errors=rollback_result.errors,
-                published_targets=[state.name for state in rollback_result.targets if state.published],
-                targets=_publish_targets_to_marker(rollback_result.targets),
             )
-    elif formal:
-        suite_summary["formal_compliance"]["formal_result"] = False
-        suite_summary["formal_compliance"]["transactional_publish_complete"] = False
-        _raise_formal_failure(
-            message="Pre-publish compliance checks did not pass.",
-            stage="pre_publish_compliance",
-            run_id=run_id,
-            decision_dir=decision_dir,
-            suite_summary=suite_summary,
-            temp_root=temp_root,
-            keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-            error_type="FormalComplianceError",
-        )
-    else:
-        write_json(write_decision_dir / "suite_summary.json", suite_summary)
-    return suite_summary
+        else:
+            write_json(write_decision_dir / "suite_summary.json", suite_summary)
+        return suite_summary
 
+
+    except FormalRunFailed:
+        raise
+    except Exception as exc:
+        if formal:
+            _raise_formal_early_failure(
+                exc=exc,
+                run_id=run_id,
+                marker_dir=marker_dir,
+                temp_root=temp_root,
+                keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+            )
+        raise
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Five-method decision comparison suite")
@@ -1040,6 +1277,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--prediction-dir", required=True)
     parser.add_argument("--decision-dir", required=True)
+    parser.add_argument(
+        "--formal-run-root",
+        default=None,
+        help="Formal run root containing predictions/ and decisions/ (recommended for formal).",
+    )
     parser.add_argument("--experiment-manifest", default=None)
     parser.add_argument(
         "--enable-dev-aliases",
@@ -1062,15 +1304,23 @@ def main(argv: list[str] | None = None) -> None:
     if args.method_set != "comparison_suite":
         raise SystemExit("Only comparison_suite is supported for the decision suite.")
 
+    prediction_dir = Path(args.prediction_dir)
+    decision_dir = Path(args.decision_dir)
+    formal_run_root = Path(args.formal_run_root) if args.formal_run_root else None
+    if args.execution_stage == "formal" and formal_run_root is not None:
+        prediction_dir = formal_run_root / "predictions"
+        decision_dir = formal_run_root / "decisions"
+
     summary = run_decision_suite(
         runner_bundle=Path(args.runner_bundle),
-        prediction_dir=Path(args.prediction_dir),
-        decision_dir=Path(args.decision_dir),
+        prediction_dir=prediction_dir,
+        decision_dir=decision_dir,
         execution_stage=args.execution_stage,
         limit=args.limit,
         experiment_manifest=Path(args.experiment_manifest) if args.experiment_manifest else None,
         dev_aliases_enabled=bool(args.enable_dev_aliases),
         keep_failed_temp_artifacts=bool(args.keep_failed_temp_artifacts),
+        formal_run_root=formal_run_root,
     )
     formal = args.execution_stage == "formal"
     formal_result = bool((summary.get("formal_compliance") or {}).get("formal_result"))

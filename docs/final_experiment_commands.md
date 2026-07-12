@@ -93,9 +93,16 @@ python scripts/run_decision_comparison_suite.py \
   --runner-bundle <frozen_runner_bundle> \
   --method-set comparison_suite \
   --execution-stage formal \
-  --prediction-dir outputs/interop/test_public/predictions \
-  --decision-dir outputs/decision_runs/test_public \
+  --formal-run-root outputs/formal/test_public \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
+
+# Legacy layout (prediction_dir and decision_dir must share one formal run root):
+#   <formal_run_root>/predictions
+#   <formal_run_root>/decisions
+# python scripts/run_decision_comparison_suite.py \
+#   --prediction-dir outputs/formal/test_public/predictions \
+#   --decision-dir outputs/formal/test_public/decisions \
+#   ...
 
 # 8) Taxonomy contract check before handing predictions to the main-project evaluator
 python scripts/check_output_taxonomy.py \

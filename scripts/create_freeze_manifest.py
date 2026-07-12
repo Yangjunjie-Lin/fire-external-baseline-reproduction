@@ -61,6 +61,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Allow incomplete fields (do not claim a complete freeze).",
     )
+    parser.add_argument(
+        "--include-legacy-compat-fields",
+        action="store_true",
+        help="Also write legacy top-level runner_bundle_checksum and corpus/schema checksum fields.",
+    )
     args = parser.parse_args(argv)
 
     evidence = Path(args.selected_dev_run)
@@ -156,6 +161,7 @@ def main(argv: list[str] | None = None) -> None:
         indexes=indexes,
         embedding=embedding or None,
         producer_checksum_available=bool(producer_declared_checksum),
+        include_legacy_compat_fields=bool(args.include_legacy_compat_fields),
     )
     if args.draft:
         payload["freeze_status"] = "draft"

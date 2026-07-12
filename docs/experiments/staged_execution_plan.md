@@ -175,7 +175,10 @@ Requires:
 - **no** `--enable-dev-aliases`
 - frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256)
 - manifest method entries resolved before per-method config merge
-- two-phase formal compliance: pre-publish checks (no publish required) → transactional publish → final `formal_result`
+- two-phase formal compliance: pre-publish checks (no publish required) → transactional publish commit → final `formal_result` (cleanup warnings do not invalidate commit)
+- formal temp root created only after static validation and five-method preflight
+- single same-filesystem `--formal-run-root` publication (one directory rename)
+- new freeze manifests use explicit `runner_bundle` block (legacy top-level checksum fields opt-in only)
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`; includes E-KELL prompt files)

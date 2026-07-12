@@ -19,9 +19,6 @@ REQUIRED_COMPLETE_FIELDS = (
     "method_config_sha256",
     "prompt_tree_sha256",
     "runner_bundle",
-    "runner_bundle_checksum",
-    "corpus_checksum",
-    "prediction_schema_checksum",
     "llm",
     "embedding",
     "indexes",
@@ -111,6 +108,7 @@ def build_freeze_manifest_payload(
     embedding: dict[str, Any] | None = None,
     llm: dict[str, Any] | None = None,
     producer_checksum_available: bool | None = None,
+    include_legacy_compat_fields: bool = False,
 ) -> dict[str, Any]:
     experiment_manifest_path = Path(experiment_manifest_path)
     selected = Path(selected_dev_run)
@@ -177,7 +175,7 @@ def build_freeze_manifest_payload(
         "corpus_aggregate_sha256": corpus_checksum,
     }
 
-    return {
+    payload: dict[str, Any] = {
         "freeze_id": "controlled_comparison_v1",
         "freeze_status": "frozen",
         "selected_dev_run_evidence": str(selected).replace("\\", "/"),
@@ -189,15 +187,21 @@ def build_freeze_manifest_payload(
         "method_config_sha256": method_hashes,
         "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
         "runner_bundle": runner_bundle_block,
-        "runner_bundle_checksum": consumer_computed_hash,
-        "producer_declared_checksum": producer_declared_checksum,
-        "input_cases_sha256": input_cases_sha256,
-        "corpus_checksum": corpus_checksum,
-        "prediction_schema_checksum": schema_checksum,
         "llm": llm_out,
         "embedding": emb_out,
         "indexes": index_payload,
     }
+    if include_legacy_compat_fields:
+        payload.update(
+            {
+                "runner_bundle_checksum": consumer_computed_hash,
+                "producer_declared_checksum": producer_declared_checksum,
+                "input_cases_sha256": input_cases_sha256,
+                "corpus_checksum": corpus_checksum,
+                "prediction_schema_checksum": schema_checksum,
+            }
+        )
+    return payload
 
 
 def _require_nonempty_file(path: Path, *, label: str) -> None:
@@ -269,10 +273,28 @@ def validate_freeze_manifest(
     if str(freeze.get("freeze_status") or "").lower() != "frozen":
         raise FormalConfigError("freeze_manifest.freeze_status must be frozen.")
 
+    migration_warning: str | None = None
     if require_complete:
+        runner_block_raw = freeze.get("runner_bundle")
+        if not isinstance(runner_block_raw, dict):
+            if any(
+                freeze.get(key)
+                for key in (
+                    "runner_bundle_checksum",
+                    "corpus_checksum",
+                    "prediction_schema_checksum",
+                )
+            ):
+                raise FormalConfigError("legacy_freeze_requires_regeneration")
+            raise FormalConfigError("freeze_manifest missing runner_bundle block.")
         for field in REQUIRED_COMPLETE_FIELDS:
             if field not in freeze or freeze.get(field) in (None, ""):
                 raise FormalConfigError(f"freeze_manifest incomplete: missing {field}.")
+    elif any(
+        freeze.get(key)
+        for key in ("runner_bundle_checksum", "corpus_checksum", "prediction_schema_checksum")
+    ) and not isinstance(freeze.get("runner_bundle"), dict):
+        migration_warning = "legacy_freeze_requires_regeneration"
 
     evidence = freeze.get("selected_dev_run_evidence")
     if not evidence or _is_placeholder(evidence):
@@ -510,7 +532,10 @@ def validate_freeze_manifest(
             if frozen and actual:
                 _check_optional_pair(frozen, actual, label=f"indexes.ekell.{field}")
 
-    return {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
+    result = {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
+    if migration_warning:
+        result["migration_warning"] = migration_warning
+    return result
 
 
 def validate_frozen_runtime_inputs(

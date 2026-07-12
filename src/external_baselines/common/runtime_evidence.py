@@ -335,6 +335,8 @@ def compute_suite_formal_compliance(
     hybrid_dense_identity_match: bool = False,
     ekell_prompt_bundle_valid: bool = False,
     transactional_publish_complete: bool = False,
+    transactional_publish_committed: bool | None = None,
+    transactional_cleanup_complete: bool = True,
     method_ids: list[str] | None = None,
     phase: Literal["pre_publish", "final"] = "pre_publish",
 ) -> dict[str, Any]:
@@ -387,11 +389,18 @@ def compute_suite_formal_compliance(
     if not formal:
         pre_publish_compliance_passed = False
 
+    publish_committed = (
+        transactional_publish_committed
+        if transactional_publish_committed is not None
+        else transactional_publish_complete
+    )
+    cleanup_complete = transactional_cleanup_complete if formal and phase == "final" else True
+
     formal_result = bool(
-        pre_publish_compliance_passed and transactional_publish_complete
+        pre_publish_compliance_passed and publish_committed
     ) if phase == "final" else False
 
-    publish_complete = transactional_publish_complete if formal and phase == "final" else False
+    publish_complete = publish_committed if formal and phase == "final" else False
 
     return {
         "real_manifest": bool(formal and experiment_manifest_provided),
@@ -413,6 +422,8 @@ def compute_suite_formal_compliance(
         "no_runtime_index_build": no_runtime_build if formal else False,
         "pre_publish_compliance_passed": pre_publish_compliance_passed if formal else False,
         "transactional_publish_complete": publish_complete,
+        "transactional_publish_committed": publish_committed if formal and phase == "final" else False,
+        "transactional_cleanup_complete": cleanup_complete if formal and phase == "final" else True,
         "preflight_ok": preflight_ok,
         "limit_used": limit_used,
         "formal_result": formal_result,

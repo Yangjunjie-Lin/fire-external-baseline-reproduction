@@ -528,7 +528,49 @@ def _llm_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
     return dict(config.get("llm", config) if isinstance(config, dict) else {})
 
 
-def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool = True) -> LLMClient:
+@dataclass
+class _TransportInjectedLLMClient:
+    inner: Any
+    transport: Any
+
+    @property
+    def provider(self) -> str:
+        return str(getattr(self.inner, "provider", "unknown"))
+
+    @property
+    def model(self) -> str:
+        return str(getattr(self.inner, "model", "unknown"))
+
+    @property
+    def heuristic_fallback(self) -> bool:
+        return bool(getattr(self.inner, "heuristic_fallback", False))
+
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+        top_p: float | None = None,
+        seed: int | None = None,
+    ) -> str:
+        return self.transport(
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            seed=seed,
+        )
+
+
+def build_llm_client(
+    config: dict[str, Any] | None = None,
+    *,
+    track_usage: bool = True,
+    transport: Any | None = None,
+) -> LLMClient:
     from external_baselines.common.environment import load_local_environment
 
     load_local_environment()
@@ -574,6 +616,8 @@ def build_llm_client(config: dict[str, Any] | None = None, *, track_usage: bool 
     else:
         inner = HeuristicLLMClient(model=model, provider=provider or "heuristic")
         setattr(inner, "model_source", "yaml_config")
+    if transport is not None:
+        inner = _TransportInjectedLLMClient(inner=inner, transport=transport)
     if track_usage:
         client = UsageTrackingLLMClient(inner=inner)
         setattr(client, "model_source", model_source)
