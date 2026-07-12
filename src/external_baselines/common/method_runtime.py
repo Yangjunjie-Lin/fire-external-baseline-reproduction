@@ -45,9 +45,12 @@ class DenseRuntime:
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
     index_built_during_run: bool = False
     embedding_identity_report: dict[str, Any] = field(default_factory=dict)
+    _closed: bool = field(default=False, repr=False, compare=False)
 
     def close(self) -> None:
-        return None
+        if self._closed:
+            return
+        self._closed = True
 
 
 @dataclass
@@ -55,9 +58,13 @@ class HybridRuntime:
     lexical_retriever: Any
     dense_runtime: DenseRuntime
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
+    _closed: bool = field(default=False, repr=False, compare=False)
 
     def close(self) -> None:
-        if self.dense_runtime is not None:
+        if self._closed:
+            return
+        self._closed = True
+        if self.dense_runtime is not None and not self.dense_runtime._closed:
             self.dense_runtime.close()
 
 
@@ -71,9 +78,12 @@ class EKELLRuntime:
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
     index_built_during_run: bool = False
     embedding_identity_report: dict[str, Any] = field(default_factory=dict)
+    _closed: bool = field(default=False, repr=False, compare=False)
 
     def close(self) -> None:
-        return None
+        if self._closed:
+            return
+        self._closed = True
 
 
 # Direct-call cache for tests/tools outside a suite scope.
@@ -495,12 +505,40 @@ def prepare_method_runtime(
     return None
 
 
+def runtime_is_cached(runtime: Any | None) -> bool:
+    if runtime is None:
+        return False
+    cache = _current_runtime_cache()
+    for cached in cache.values():
+        if cached is runtime:
+            return True
+        if isinstance(cached, HybridRuntime) and cached.dense_runtime is runtime:
+            return True
+    if isinstance(runtime, HybridRuntime) and runtime.dense_runtime is not None:
+        if runtime.dense_runtime in cache.values():
+            return True
+    return False
+
+
 def close_method_runtime(runtime: Any | None) -> None:
     if runtime is None:
         return
     closer = getattr(runtime, "close", None)
     if callable(closer):
         closer()
+
+
+def _close_cache_runtimes(cache: dict[tuple[str, ...], Any]) -> None:
+    seen_dense: set[int] = set()
+    for runtime in cache.values():
+        if isinstance(runtime, HybridRuntime):
+            close_method_runtime(runtime)
+            if runtime.dense_runtime is not None:
+                seen_dense.add(id(runtime.dense_runtime))
+            continue
+        if id(runtime) in seen_dense:
+            continue
+        close_method_runtime(runtime)
 
 
 @contextmanager
@@ -510,16 +548,7 @@ def runtime_cache_scope() -> Iterator[dict[tuple[str, ...], Any]]:
     try:
         yield cache
     finally:
-        seen: set[int] = set()
-        for runtime in cache.values():
-            runtime_id = id(runtime)
-            if runtime_id in seen:
-                continue
-            seen.add(runtime_id)
-            try:
-                close_method_runtime(runtime)
-            except Exception:  # noqa: BLE001
-                pass
+        _close_cache_runtimes(cache)
         cache.clear()
         _ACTIVE_RUNTIME_CACHE.reset(token)
 

@@ -4896,27 +4896,105 @@ def test_runtime_cache_direct_call_uses_direct_cache():
 
 
 def test_runtime_cache_concurrent_suites_do_not_share(tmp_path):
-    from concurrent.futures import ThreadPoolExecutor
+    import threading
 
-    from external_baselines.common.method_runtime import runtime_cache_scope
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
 
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
     config = _dense_method_config(fixture)
     backend = _matching_embedding_backend()
-    seen: dict[str, int] = {}
+    barrier = threading.Barrier(2, timeout=30)
+    runtime_ids: dict[str, int] = {}
+    errors: list[BaseException] = []
 
     def _run(label: str) -> None:
-        with runtime_cache_scope() as cache:
-            runtime = prepare_dense_runtime(config, embedding_backend=backend)
-            seen[label] = id(runtime)
-            cache[("marker",)] = label
+        try:
+            with runtime_cache_scope() as cache:
+                runtime = prepare_dense_runtime(config, embedding_backend=backend)
+                cache[("marker",)] = label
+                barrier.wait()
+                assert cache[("marker",)] == label
+                runtime_ids[label] = id(runtime)
+                barrier.wait()
+        except BaseException as exc:
+            errors.append(exc)
 
-    from external_baselines.common.method_runtime import prepare_dense_runtime
+    threads = [threading.Thread(target=_run, args=(label,)) for label in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert runtime_ids["a"] != runtime_ids["b"]
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        pool.submit(_run, "a").result()
-        pool.submit(_run, "b").result()
-    assert seen["a"] != seen["b"]
+
+def test_runtime_cache_scopes_overlap_without_sharing():
+    import threading
+
+    from external_baselines.common.method_runtime import runtime_cache_scope
+
+    barrier = threading.Barrier(2, timeout=30)
+    cache_ids: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def _run(label: str) -> None:
+        try:
+            with runtime_cache_scope() as cache:
+                cache[("marker",)] = label
+                barrier.wait()
+                assert cache[("marker",)] == label
+                cache_ids[label] = id(cache)
+                barrier.wait()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, args=(label,)) for label in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert cache_ids["a"] != cache_ids["b"]
+
+
+def test_runtime_cache_scope_a_exit_does_not_clear_b():
+    import threading
+
+    from external_baselines.common.method_runtime import runtime_cache_scope
+
+    b_entered = threading.Event()
+    a_exited = threading.Event()
+    b_marker_seen = threading.Event()
+    errors: list[BaseException] = []
+
+    def _run_b() -> None:
+        try:
+            with runtime_cache_scope() as cache:
+                cache[("marker",)] = "b-alive"
+                b_entered.set()
+                assert a_exited.wait(timeout=30)
+                assert cache[("marker",)] == "b-alive"
+                b_marker_seen.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _run_a() -> None:
+        try:
+            assert b_entered.wait(timeout=30)
+            with runtime_cache_scope():
+                pass
+            a_exited.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread_b = threading.Thread(target=_run_b)
+    thread_a = threading.Thread(target=_run_a)
+    thread_b.start()
+    thread_a.start()
+    thread_a.join(timeout=60)
+    thread_b.join(timeout=60)
+    assert not errors, errors
+    assert b_marker_seen.is_set()
 
 
 def test_runtime_cache_suite_end_does_not_clear_other_suite(tmp_path):
@@ -5350,39 +5428,93 @@ def test_manifest_rejects_path_traversal_artifact(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.parametrize(
-    ("bad_path", "error_token"),
-    [
-        ("predictions/direct_llm.jsonl", None),
-        ("../outside.json", "manifest_artifact_path_traversal"),
-        ("/outside.json", "manifest_artifact_path_absolute"),
-        (r"\outside.json", "manifest_artifact_path_outside_run_root"),
-        (r"\\outside.json", "manifest_artifact_path_drive_qualified"),
-        (r"C:\outside.json", "manifest_artifact_path_absolute"),
-        ("C:/outside.json", "manifest_artifact_path_absolute"),
-        ("C:outside.json", "manifest_artifact_path_drive_qualified"),
-        (r"\\server\share\file.json", "manifest_artifact_path_absolute"),
-        ("//server/share/file.json", "manifest_artifact_path_absolute"),
-        (r"\\?\C:\outside.json", "manifest_artifact_path_device_namespace"),
-        (r"\\.\PhysicalDrive0", "manifest_artifact_path_device_namespace"),
-    ],
-)
-def test_manifest_artifact_path_containment(tmp_path, bad_path, error_token):
+_DANGEROUS_MANIFEST_PATHS = [
+    "../outside.json",
+    "/outside.json",
+    r"\outside.json",
+    r"\\outside.json",
+    r"C:\outside.json",
+    "C:/outside.json",
+    "C:outside.json",
+    r"\\server\share\file.json",
+    "//server/share/file.json",
+    r"\\?\C:\outside.json",
+    r"\\.\PhysicalDrive0",
+]
+
+
+@pytest.mark.parametrize("bad_path", _DANGEROUS_MANIFEST_PATHS)
+def test_manifest_rejects_dangerous_artifact_path(tmp_path, bad_path):
     from external_baselines.common.safe_paths import ManifestArtifactPathError, resolve_manifest_artifact_path
 
     run_root = tmp_path / "run"
     run_root.mkdir()
-    if error_token is None:
-        target = resolve_manifest_artifact_path(run_root, bad_path)
-        assert target.is_file() is False
-        assert str(target).startswith(str(run_root.resolve()))
-    else:
-        with pytest.raises(ManifestArtifactPathError, match=error_token):
-            resolve_manifest_artifact_path(run_root, bad_path)
+    with pytest.raises(ManifestArtifactPathError):
+        resolve_manifest_artifact_path(run_root, bad_path)
+
+
+@pytest.mark.parametrize(
+    ("bad_path", "error_token"),
+    [
+        (r"C:\outside.json", "manifest_artifact_path_drive_qualified"),
+        ("C:outside.json", "manifest_artifact_path_drive_qualified"),
+        (r"\outside.json", "manifest_artifact_path_windows_root_relative"),
+        (r"\\server\share\file.json", "manifest_artifact_path_unc"),
+        ("//server/share/file.json", "manifest_artifact_path_unc"),
+        (r"\\?\C:\outside.json", "manifest_artifact_path_device_namespace"),
+        (r"\\.\PhysicalDrive0", "manifest_artifact_path_device_namespace"),
+        ("/outside.json", "manifest_artifact_path_absolute"),
+        ("../outside.json", "manifest_artifact_path_traversal"),
+    ],
+)
+def test_manifest_artifact_path_classification(tmp_path, bad_path, error_token):
+    from external_baselines.common.safe_paths import ManifestArtifactPathError, resolve_manifest_artifact_path
+
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    with pytest.raises(ManifestArtifactPathError, match=error_token):
+        resolve_manifest_artifact_path(run_root, bad_path)
+
+
+def test_manifest_accepts_normal_relative_path(tmp_path):
+    from external_baselines.common.safe_paths import resolve_manifest_artifact_path
+
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    target = resolve_manifest_artifact_path(run_root, "predictions/direct_llm.jsonl")
+    target.relative_to(run_root.resolve())
+
+
+def test_manifest_rejects_windows_root_relative_path(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, r"\outside.json", "manifest_artifact_path_windows_root_relative")
+
+
+def test_manifest_rejects_windows_drive_absolute_path(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, r"C:\outside.json", "manifest_artifact_path_drive_qualified")
+
+
+def test_manifest_rejects_windows_drive_relative_path(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, "C:outside.json", "manifest_artifact_path_drive_qualified")
+
+
+def test_manifest_rejects_unc_path(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, r"\\server\share\file.json", "manifest_artifact_path_unc")
+
+
+def test_manifest_rejects_device_namespace(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, r"\\?\C:\outside.json", "manifest_artifact_path_device_namespace")
+
+
+def test_manifest_rejects_posix_absolute_path(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, "/outside.json", "manifest_artifact_path_absolute")
+
+
+def test_manifest_rejects_traversal(tmp_path):
+    test_manifest_artifact_path_classification(tmp_path, "../outside.json", "manifest_artifact_path_traversal")
 
 
 @pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="symlink unsupported")
-def test_manifest_artifact_path_rejects_symlink_escape(tmp_path):
+def test_manifest_symlink_escape_rejected(tmp_path):
     from external_baselines.common.safe_paths import ManifestArtifactPathError, resolve_manifest_artifact_path
 
     run_root = tmp_path / "run"
@@ -5450,6 +5582,249 @@ def _assert_manifest_field_rejected(missing_field: str) -> None:
     report = validate_runtime_embedding_identity(**_embedding_identity_kwargs(index_manifest=manifest))
     assert report["ok"] is False
     assert report["errors"]
+
+
+def _assert_manifest_type_rejected(field: str, value: Any, error_token: str) -> None:
+    from external_baselines.retrieval.embedding_backends import validate_runtime_embedding_identity
+
+    manifest = _formal_index_manifest(**{field: value})
+    report = validate_runtime_embedding_identity(**_embedding_identity_kwargs(index_manifest=manifest))
+    assert report["ok"] is False
+    assert any(error_token in err for err in report["errors"])
+
+
+def test_manifest_rejects_actual_embedding_used_string_false():
+    _assert_manifest_type_rejected("actual_embedding_used", "false", "invalid_type: actual_embedding_used")
+
+
+def test_manifest_rejects_actual_embedding_used_integer_one():
+    _assert_manifest_type_rejected("actual_embedding_used", 1, "invalid_type: actual_embedding_used")
+
+
+def test_manifest_rejects_smoke_fallback_used_string_false():
+    _assert_manifest_type_rejected("smoke_fallback_used", "false", "invalid_type: smoke_fallback_used")
+
+
+def test_manifest_rejects_smoke_fallback_used_integer_zero():
+    _assert_manifest_type_rejected("smoke_fallback_used", 0, "invalid_type: smoke_fallback_used")
+
+
+def test_manifest_rejects_dimension_string():
+    _assert_manifest_type_rejected("dimension", "8", "invalid_type: dimension")
+
+
+def test_manifest_rejects_dimension_float():
+    _assert_manifest_type_rejected("dimension", 8.0, "invalid_type: dimension")
+
+
+def test_manifest_rejects_dimension_bool():
+    _assert_manifest_type_rejected("dimension", True, "invalid_type: dimension")
+
+
+def test_manifest_accepts_exact_boolean_flags():
+    from external_baselines.retrieval.embedding_backends import validate_runtime_embedding_identity
+
+    report = validate_runtime_embedding_identity(**_embedding_identity_kwargs())
+    assert report["ok"] is True
+    assert report["index_manifest"]["actual_embedding_used"] is True
+    assert report["index_manifest"]["smoke_fallback_used"] is False
+
+
+def test_manifest_accepts_positive_integer_dimension():
+    from external_baselines.retrieval.embedding_backends import validate_runtime_embedding_identity
+
+    kwargs = _embedding_identity_kwargs(
+        configured_dimension=16,
+        index_manifest=_formal_index_manifest(dimension=16),
+    )
+    backend = kwargs["actual_backend"]
+    backend.dimension = 16
+    report = validate_runtime_embedding_identity(**kwargs)
+    assert report["ok"] is True
+    assert report["index_manifest"]["dimension"] == 16
+    assert type(report["index_manifest"]["dimension_raw"]) is int
+
+
+def test_staged_schema_rejects_invalid_type_keyword(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bad_type_schema.json"
+    schema_path.write_text(json.dumps({"type": 123}), encoding="utf-8")
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="staged_prediction_schema_invalid_draft202012"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=sha256_file(schema_path),
+        )
+
+
+def test_staged_schema_rejects_unknown_type(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "unknown_type_schema.json"
+    schema_path.write_text(
+        json.dumps({"type": "object", "properties": {"x": {"type": "unknown_type"}}}),
+        encoding="utf-8",
+    )
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="staged_prediction_schema_invalid_draft202012"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=sha256_file(schema_path),
+        )
+
+
+def test_staged_schema_rejects_non_schema_object(tmp_path, monkeypatch):
+    test_staged_validator_rejects_schema_array_root(tmp_path, monkeypatch)
+
+
+def test_staged_schema_rejects_unresolvable_ref(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bad_ref_schema.json"
+    schema_path.write_text(json.dumps({"$ref": "#/$defs/missing"}), encoding="utf-8")
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="staged_prediction_schema_invalid_draft202012"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=sha256_file(schema_path),
+        )
+
+
+def test_staged_schema_returns_formal_error_not_schemaerror(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bad_type_schema.json"
+    schema_path.write_text(json.dumps({"type": 123}), encoding="utf-8")
+    from jsonschema.exceptions import SchemaError
+
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError) as excinfo:
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=sha256_file(schema_path),
+        )
+    assert not isinstance(excinfo.value.__cause__, SchemaError)
+
+
+def test_valid_draft202012_schema_passes(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    from scripts.run_decision_comparison_suite import load_and_validate_frozen_prediction_schema
+
+    payload, errors = load_and_validate_frozen_prediction_schema(schema_path, schema_sha)
+    assert errors == []
+    assert isinstance(payload, dict)
+
+
+def test_cached_runtime_closed_once(tmp_path, monkeypatch):
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        prepare_dense_runtime,
+        runtime_cache_scope,
+        runtime_is_cached,
+    )
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    config = _dense_method_config(fixture)
+    backend = _matching_embedding_backend()
+    closes = {"n": 0}
+    original_close = DenseRuntime.close
+
+    def _counting_close(self):
+        closes["n"] += 1
+        return original_close(self)
+
+    monkeypatch.setattr(DenseRuntime, "close", _counting_close)
+    with runtime_cache_scope():
+        runtime = prepare_dense_runtime(config, embedding_backend=backend)
+        assert runtime_is_cached(runtime)
+        assert runtime._closed is False
+        assert closes["n"] == 0
+    assert runtime._closed is True
+    assert closes["n"] == 1
+
+
+def test_runtime_close_idempotent():
+    from external_baselines.common.method_runtime import DenseRuntime, close_method_runtime
+
+    runtime = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    close_method_runtime(runtime)
+    close_method_runtime(runtime)
+    assert runtime._closed is True
+
+
+def test_hybrid_runtime_does_not_double_close_dense():
+    from external_baselines.common.method_runtime import DenseRuntime, HybridRuntime, close_method_runtime
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = HybridRuntime(lexical_retriever=object(), dense_runtime=dense)
+    close_method_runtime(hybrid)
+    assert hybrid._closed is True
+    assert dense._closed is True
+    close_method_runtime(dense)
+    assert dense._closed is True
+
+
+def test_concurrent_suites_same_index_have_distinct_runtime(tmp_path):
+    import threading
+
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    config = _dense_method_config(fixture)
+    backend_a = _matching_embedding_backend()
+    backend_b = _matching_embedding_backend()
+    barrier = threading.Barrier(2, timeout=30)
+    runtime_ids: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def _run(label: str, backend) -> None:
+        try:
+            with runtime_cache_scope():
+                runtime = prepare_dense_runtime(config, embedding_backend=backend)
+                runtime_ids[label] = id(runtime)
+                barrier.wait()
+                barrier.wait()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_run, args=("a", backend_a)),
+        threading.Thread(target=_run, args=("b", backend_b)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert runtime_ids["a"] != runtime_ids["b"]
 
 
 def test_staged_validator_rejects_invalid_schema_json_with_formal_error(tmp_path, monkeypatch):

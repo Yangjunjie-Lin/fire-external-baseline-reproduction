@@ -1,28 +1,76 @@
-name: CI
+name: baseline-ci
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
-
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Compileall
+        run: python -m compileall -q src scripts tests
+      - name: Ruff
+        run: ruff check src scripts tests
+      - name: Pytest
+        run: python -m pytest -q
+      - name: Repository hygiene
+        run: python scripts/check_repository_hygiene.py
 
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pip install -r requirements.txt
-
-      - run: python -m compileall src scripts tests
-      - run: ruff check src scripts tests
-      - run: python -m pytest -q
-      - run: python scripts/check_repository_hygiene.py
+  readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Formal config validator (placeholders allowed on example)
+        run: |
+          python scripts/validate_formal_config.py \
+            --config configs/experiments/controlled_main_table_v1.yaml.example \
+            --allow-placeholders
+      - name: E-KELL fidelity audit
+        run: python scripts/audit/audit_ekell_fidelity.py
+      - name: Deterministic smoke generate
+        run: |
+          python scripts/generate_predictions.py \
+            --methods direct_llm,bm25_rag,ekell_style_controlled_shared_llm \
+            --config configs/smoke/deterministic_heuristic.yaml \
+            --limit 1 \
+            --output outputs/ci_predictions.jsonl \
+            --manifest outputs/ci_manifest.json
+      - name: Repository hygiene after smoke
+        run: python scripts/check_repository_hygiene.py
+      - name: Package build
+        run: python -m build
+      - name: Artifact packaging dry-run
+        run: python scripts/package_reproducibility_artifact.py --dry-run
+      - name: Release readiness audit
+        run: python scripts/audit_release_readiness.py
+      - name: Upload smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-predictions
+          path: outputs/ci_predictions.jsonl
+          if-no-files-found: warn

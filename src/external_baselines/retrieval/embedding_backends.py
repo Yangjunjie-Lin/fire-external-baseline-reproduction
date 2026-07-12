@@ -247,18 +247,116 @@ def embedding_backend_identity(backend: Any) -> dict[str, Any]:
 
 
 def _manifest_embedding_fields(index_manifest: dict[str, Any]) -> dict[str, Any]:
-    actual_used = index_manifest.get("actual_embedding_used")
-    smoke_used = index_manifest.get("smoke_fallback_used")
+    model_name_raw = index_manifest.get("model_name")
+    if model_name_raw is None:
+        model_name_raw = index_manifest.get("embedding_model")
     return {
-        "backend": str(index_manifest.get("backend") or ""),
-        "model_name": str(
-            index_manifest.get("model_name") or index_manifest.get("embedding_model") or ""
-        ),
-        "model_version": str(index_manifest.get("model_version") or ""),
-        "dimension": int(index_manifest.get("dimension") or 0),
-        "actual_embedding_used": actual_used if actual_used is None else bool(actual_used),
-        "smoke_fallback_used": smoke_used if smoke_used is None else bool(smoke_used),
+        "backend_raw": index_manifest.get("backend"),
+        "model_name_raw": model_name_raw,
+        "model_version_raw": index_manifest.get("model_version"),
+        "dimension_raw": index_manifest.get("dimension"),
+        "actual_embedding_used_raw": index_manifest.get("actual_embedding_used"),
+        "smoke_fallback_used_raw": index_manifest.get("smoke_fallback_used"),
+        "backend": "",
+        "model_name": "",
+        "model_version": "",
+        "dimension": 0,
+        "actual_embedding_used": None,
+        "smoke_fallback_used": None,
     }
+
+
+def _validate_manifest_field_types(index_manifest: dict[str, Any]) -> tuple[dict[str, Any], list[str], dict[str, bool]]:
+    fields = _manifest_embedding_fields(index_manifest)
+    errors: list[str] = []
+    checks: dict[str, bool] = {
+        "manifest_backend_present": False,
+        "manifest_backend_type_valid": False,
+        "manifest_model_name_present": False,
+        "manifest_model_name_type_valid": False,
+        "manifest_model_version_present": False,
+        "manifest_model_version_type_valid": False,
+        "manifest_dimension_type_valid": False,
+        "manifest_dimension_valid": False,
+        "manifest_actual_embedding_used_type_valid": False,
+        "manifest_actual_embedding_used_true": False,
+        "manifest_smoke_fallback_used_type_valid": False,
+        "manifest_smoke_fallback_used_false": False,
+    }
+
+    backend_raw = fields["backend_raw"]
+    if backend_raw is None:
+        errors.append("runtime_embedding_manifest_missing: backend")
+    elif not isinstance(backend_raw, str):
+        errors.append("runtime_embedding_manifest_invalid_type: backend")
+    elif not backend_raw.strip():
+        errors.append("runtime_embedding_manifest_missing: backend")
+    else:
+        checks["manifest_backend_present"] = True
+        checks["manifest_backend_type_valid"] = True
+        fields["backend"] = backend_raw.strip()
+
+    model_name_raw = fields["model_name_raw"]
+    if model_name_raw is None:
+        errors.append("runtime_embedding_manifest_missing: model_name")
+    elif not isinstance(model_name_raw, str):
+        errors.append("runtime_embedding_manifest_invalid_type: model_name")
+    elif not model_name_raw.strip():
+        errors.append("runtime_embedding_manifest_missing: model_name")
+    else:
+        checks["manifest_model_name_present"] = True
+        checks["manifest_model_name_type_valid"] = True
+        fields["model_name"] = model_name_raw.strip()
+
+    model_version_raw = fields["model_version_raw"]
+    if model_version_raw is None:
+        errors.append("runtime_embedding_manifest_missing: model_version")
+    elif not isinstance(model_version_raw, str):
+        errors.append("runtime_embedding_manifest_invalid_type: model_version")
+    elif not model_version_raw.strip():
+        errors.append("runtime_embedding_manifest_missing: model_version")
+    else:
+        checks["manifest_model_version_present"] = True
+        checks["manifest_model_version_type_valid"] = True
+        fields["model_version"] = model_version_raw.strip()
+
+    dimension_raw = fields["dimension_raw"]
+    if dimension_raw is None:
+        errors.append("runtime_embedding_manifest_missing: dimension")
+    elif type(dimension_raw) is not int:
+        errors.append("runtime_embedding_manifest_invalid_type: dimension")
+    elif dimension_raw <= 0:
+        errors.append("runtime_embedding_manifest_invalid: dimension must be a positive integer")
+    else:
+        checks["manifest_dimension_type_valid"] = True
+        checks["manifest_dimension_valid"] = True
+        fields["dimension"] = dimension_raw
+
+    actual_raw = fields["actual_embedding_used_raw"]
+    if actual_raw is None:
+        errors.append("runtime_embedding_manifest_missing: actual_embedding_used")
+    elif type(actual_raw) is not bool:
+        errors.append("runtime_embedding_manifest_invalid_type: actual_embedding_used")
+    elif actual_raw is not True:
+        errors.append("runtime_embedding_manifest_invalid: actual_embedding_used must be true")
+    else:
+        checks["manifest_actual_embedding_used_type_valid"] = True
+        checks["manifest_actual_embedding_used_true"] = True
+        fields["actual_embedding_used"] = actual_raw
+
+    smoke_raw = fields["smoke_fallback_used_raw"]
+    if smoke_raw is None:
+        errors.append("runtime_embedding_manifest_missing: smoke_fallback_used")
+    elif type(smoke_raw) is not bool:
+        errors.append("runtime_embedding_manifest_invalid_type: smoke_fallback_used")
+    elif smoke_raw is not False:
+        errors.append("runtime_embedding_manifest_invalid: smoke_fallback_used must be false")
+    else:
+        checks["manifest_smoke_fallback_used_type_valid"] = True
+        checks["manifest_smoke_fallback_used_false"] = True
+        fields["smoke_fallback_used"] = smoke_raw
+
+    return fields, errors, checks
 
 
 def validate_runtime_embedding_identity(
@@ -278,14 +376,9 @@ def validate_runtime_embedding_identity(
         "model_version": str(configured_model_version or ""),
         "dimension": int(configured_dimension or 0),
     }
-    manifest = _manifest_embedding_fields(index_manifest)
-    checks: dict[str, bool] = {
-        "manifest_backend_present": bool(manifest["backend"].strip()),
-        "manifest_model_name_present": bool(manifest["model_name"].strip()),
-        "manifest_model_version_present": bool(manifest["model_version"].strip()),
-        "manifest_dimension_valid": manifest["dimension"] > 0,
-        "manifest_actual_embedding_used_true": manifest["actual_embedding_used"] is True,
-        "manifest_smoke_fallback_used_false": manifest["smoke_fallback_used"] is False,
+    manifest, manifest_errors, manifest_checks = _validate_manifest_field_types(index_manifest)
+    checks: dict[str, bool] = dict(manifest_checks)
+    checks.update({
         "backend_match": _normalize_backend_name(actual["backend"])
         == _normalize_backend_name(configured["backend"])
         == _normalize_backend_name(manifest["backend"]),
@@ -297,48 +390,43 @@ def validate_runtime_embedding_identity(
         "dimension_match": actual["dimension"] == configured["dimension"] == manifest["dimension"],
         "actual_embedding_used": actual["actual_embedding_used"] is True,
         "smoke_fallback_forbidden": actual["smoke_fallback_used"] is False,
-    }
-    errors: list[str] = []
+    })
+    errors: list[str] = list(manifest_errors)
     if formal:
-        if not checks["manifest_backend_present"]:
-            errors.append("runtime_embedding_manifest_missing: backend")
-        if not checks["manifest_model_name_present"]:
-            errors.append("runtime_embedding_manifest_missing: model_name")
-        if not checks["manifest_model_version_present"]:
-            errors.append("runtime_embedding_manifest_missing: model_version")
-        if not checks["manifest_dimension_valid"]:
-            errors.append("runtime_embedding_manifest_invalid: dimension")
-        if "actual_embedding_used" not in index_manifest:
-            errors.append("runtime_embedding_manifest_missing: actual_embedding_used")
-        elif manifest["actual_embedding_used"] is not True:
-            errors.append("runtime_embedding_manifest_invalid: actual_embedding_used must be true")
-        if "smoke_fallback_used" not in index_manifest:
-            errors.append("runtime_embedding_manifest_missing: smoke_fallback_used")
-        elif manifest["smoke_fallback_used"] is not False:
-            errors.append("runtime_embedding_manifest_invalid: smoke_fallback_used must be false")
-        if not checks["backend_match"]:
+        if checks["manifest_backend_type_valid"] and checks["manifest_backend_present"] and not checks["backend_match"]:
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"backend configured={configured['backend']!r} actual={actual['backend']!r} "
                 f"index={manifest['backend']!r}"
             )
-        if actual["model_name"].strip() != configured["model_name"].strip():
+        if checks["manifest_model_name_type_valid"] and actual["model_name"].strip() != configured["model_name"].strip():
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"model_name configured={configured['model_name']!r} actual={actual['model_name']!r}"
             )
-        if not manifest["model_name"].strip() or actual["model_name"].strip() != manifest["model_name"].strip():
+        if (
+            checks["manifest_model_name_type_valid"]
+            and checks["manifest_model_name_present"]
+            and actual["model_name"].strip() != manifest["model_name"].strip()
+        ):
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"model_name actual={actual['model_name']!r} index={manifest['model_name']!r}"
             )
-        if actual["model_version"].strip() != configured["model_version"].strip():
+        if (
+            checks["manifest_model_version_type_valid"]
+            and actual["model_version"].strip() != configured["model_version"].strip()
+        ):
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"model_version configured={configured['model_version']!r} "
                 f"actual={actual['model_version']!r}"
             )
-        if not manifest["model_version"].strip() or actual["model_version"].strip() != manifest["model_version"].strip():
+        if (
+            checks["manifest_model_version_type_valid"]
+            and checks["manifest_model_version_present"]
+            and actual["model_version"].strip() != manifest["model_version"].strip()
+        ):
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"model_version actual={actual['model_version']!r} index={manifest['model_version']!r}"
@@ -348,7 +436,11 @@ def validate_runtime_embedding_identity(
                 "runtime_embedding_identity_mismatch: "
                 f"dimension configured={configured['dimension']} actual={actual['dimension']}"
             )
-        if manifest["dimension"] <= 0 or actual["dimension"] != manifest["dimension"]:
+        if (
+            checks["manifest_dimension_type_valid"]
+            and checks["manifest_dimension_valid"]
+            and actual["dimension"] != manifest["dimension"]
+        ):
             errors.append(
                 "runtime_embedding_identity_mismatch: "
                 f"dimension actual={actual['dimension']} index={manifest['dimension']}"

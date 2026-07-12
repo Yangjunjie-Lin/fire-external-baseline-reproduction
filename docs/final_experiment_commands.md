@@ -193,10 +193,10 @@ outputs/formal/
 - Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
-- Manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root.
-- The frozen prediction schema is parsed and checksum-validated once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`.
-- Formal embedding identity validation requires complete persisted index metadata, including real-embedding and smoke-fallback flags.
-- Runtime caches are scoped through a context-local suite cache; concurrent comparison suites in the same process do not share or clear each other's runtime objects.
+- Manifest artifact paths are validated with both POSIX and Windows path semantics (drive-qualified, root-relative, UNC, device namespace, traversal, symlink escape) and must resolve inside the staged run root.
+- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`.
+- Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
+- Runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects.
 - GitHub Actions performs offline compile, lint, test, and repository-hygiene checks.
 - Offline Formal E2E injects only LLM transport and embedding-compute boundaries.
 - Post-commit warning failures are printed and returned, but never mutate or invalidate the committed run.

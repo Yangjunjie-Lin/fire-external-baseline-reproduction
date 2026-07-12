@@ -12,7 +12,7 @@ dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
 llm = ["openai>=1.0.0"]
-dev = ["pytest>=8.0.0", "ruff>=0.6.0", "build>=1.0.0"]
+dev = ["pytest>=8.0.0", "ruff>=0.6.0", "build>=1.0.0", "jsonschema>=4.0.0"]
 embeddings = ["numpy>=1.24.0", "text2vec>=1.2.0"]
 graphrag = []
 

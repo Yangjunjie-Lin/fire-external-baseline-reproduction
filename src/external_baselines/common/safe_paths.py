@@ -11,26 +11,33 @@ class ManifestArtifactPathError(ValueError):
 
 def validate_manifest_relative_path(manifest_path: str) -> str:
     raw = str(manifest_path or "").strip()
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+
     if not raw:
         raise ManifestArtifactPathError("manifest_artifact_path_empty")
     if "\x00" in raw:
-        raise ManifestArtifactPathError("manifest_artifact_path_traversal")
+        raise ManifestArtifactPathError("manifest_artifact_path_nul")
 
     lowered = raw.casefold()
     if lowered.startswith(("\\\\?\\", "\\\\.\\", "//?/", "//./")):
         raise ManifestArtifactPathError("manifest_artifact_path_device_namespace")
 
-    posix = PurePosixPath(raw)
-    windows = PureWindowsPath(raw)
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        raise ManifestArtifactPathError("manifest_artifact_path_unc")
+
+    if windows.drive:
+        raise ManifestArtifactPathError("manifest_artifact_path_drive_qualified")
+
+    if raw.startswith("/") and not raw.startswith("//"):
+        raise ManifestArtifactPathError("manifest_artifact_path_absolute")
+
+    if windows.root:
+        raise ManifestArtifactPathError("manifest_artifact_path_windows_root_relative")
 
     if posix.is_absolute():
         raise ManifestArtifactPathError("manifest_artifact_path_absolute")
-    if windows.is_absolute():
-        raise ManifestArtifactPathError("manifest_artifact_path_absolute")
-    if windows.drive:
-        raise ManifestArtifactPathError("manifest_artifact_path_drive_qualified")
-    if raw.startswith("\\\\") or raw.startswith("//"):
-        raise ManifestArtifactPathError("manifest_artifact_path_unc")
+
     if ".." in posix.parts or ".." in windows.parts:
         raise ManifestArtifactPathError("manifest_artifact_path_traversal")
 

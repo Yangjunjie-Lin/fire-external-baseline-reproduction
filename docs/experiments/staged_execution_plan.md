@@ -188,10 +188,10 @@ Requires:
 - embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
 - run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts
 - manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root
-- the frozen prediction schema is parsed and checksum-validated once before staged record validation
-- formal embedding identity validation requires complete persisted index metadata, including real-embedding and smoke-fallback flags
-- runtime caches are scoped through a context-local suite cache; concurrent comparison suites in the same process do not share or clear each other's runtime objects
-- GitHub Actions performs offline compile, lint, test, and repository-hygiene checks
+- the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation
+- formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata
+- runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects
+- GitHub Actions covers Python 3.10–3.12 with offline compile, lint, tests, hygiene, formal-config validation, E-KELL fidelity audit, package build, reproducibility dry-run, and release-readiness checks
 - offline Formal E2E injects only LLM transport and embedding-compute boundaries
 - producer-declared checksum and consumer-computed hash are frozen and validated separately (legacy ambiguous `bundle_checksum` rejected in formal)
 - output under `outputs/interop/` (or formal directory)

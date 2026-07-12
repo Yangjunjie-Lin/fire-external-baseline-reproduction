@@ -446,6 +446,56 @@ def load_schema(path: str | Path | None = None) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+SCHEMA_DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema"
+SCHEMA_DRAFT_2020_12_ALIASES = frozenset({
+    SCHEMA_DRAFT_2020_12_URI,
+    "https://json-schema.org/draft/2020-12/schema#",
+})
+
+
+def validate_schema_draft202012(payload: dict[str, Any]) -> list[str]:
+    """Return structured errors when payload is not a valid Draft 2020-12 schema."""
+    try:
+        from jsonschema import Draft202012Validator
+        from jsonschema.exceptions import SchemaError
+    except ImportError as exc:
+        return [f"jsonschema_unavailable:{exc}"]
+
+    schema_uri = payload.get("$schema")
+    if schema_uri is not None and str(schema_uri) not in SCHEMA_DRAFT_2020_12_ALIASES:
+        return ["staged_prediction_schema_unsupported_draft"]
+
+    try:
+        validator = Draft202012Validator(payload)
+        Draft202012Validator.check_schema(payload)
+        list(validator.iter_errors({}))
+    except SchemaError:
+        return ["external_schema_invalid_draft202012"]
+    except Exception as exc:
+        exc_name = type(exc).__name__
+        if "Referencing" in exc_name or "Unresolvable" in exc_name or "PointerToNowhere" in exc_name:
+            return ["external_schema_reference_unresolvable"]
+        return ["external_schema_invalid_draft202012"]
+    return []
+
+
+def _interop_schema_registry() -> Any:
+    from referencing import Registry, Resource
+
+    registry = Registry()
+    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
+        if candidate.exists():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            resource = Resource.from_contents(payload)
+            schema_id = str(payload.get("$id") or candidate.name)
+            registry = registry.with_resource(schema_id, resource)
+            registry = registry.with_resource(candidate.name, resource)
+    return registry
+
+
 def validate_against_jsonschema(
     record: dict[str, Any],
     *,
@@ -456,7 +506,6 @@ def validate_against_jsonschema(
     """Validate with jsonschema Draft 2020-12 against a provided or local schema."""
     try:
         from jsonschema import Draft202012Validator
-        from referencing import Registry, Resource
     except ImportError as exc:  # pragma: no cover - CI installs jsonschema
         return [f"jsonschema_unavailable:{exc}"]
 
@@ -491,22 +540,34 @@ def validate_against_jsonschema(
         if actual != expected_schema_sha256:
             return [f"schema_hash_mismatch:expected={expected_schema_sha256} actual={actual}"]
 
-    registry = Registry()
-    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
-        if candidate.exists():
-            try:
-                payload = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            resource = Resource.from_contents(payload)
-            schema_id = str(payload.get("$id") or candidate.name)
-            registry = registry.with_resource(schema_id, resource)
-            registry = registry.with_resource(candidate.name, resource)
+    meta_errors = validate_schema_draft202012(loaded)
+    if meta_errors:
+        return meta_errors
 
-    validator = Draft202012Validator(loaded, registry=registry)
+    try:
+        from jsonschema.exceptions import SchemaError
+        from referencing.exceptions import NoSuchResource, Unresolvable
+
+        registry = _interop_schema_registry()
+        validator = Draft202012Validator(loaded, registry=registry)
+    except SchemaError:
+        return ["external_schema_invalid_draft202012"]
+    except (Unresolvable, NoSuchResource):
+        return ["external_schema_reference_unresolvable"]
+    except Exception:
+        return ["external_schema_validator_failed"]
+
+    try:
+        validation_errors = sorted(validator.iter_errors(record), key=lambda e: list(e.path))
+    except Exception as exc:
+        exc_name = type(exc).__name__
+        if "Referencing" in exc_name or "Unresolvable" in exc_name:
+            return ["external_schema_reference_unresolvable"]
+        return ["external_schema_validator_failed"]
+
     return [
         f"{'/'.join(str(p) for p in err.path) or '<root>'}: {err.message}"
-        for err in sorted(validator.iter_errors(record), key=lambda e: list(e.path))
+        for err in validation_errors
     ]
 
 

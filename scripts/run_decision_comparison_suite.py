@@ -58,6 +58,7 @@ from external_baselines.common.method_runtime import (  # noqa: E402
     pipeline_accepts_runtime,
     prepare_method_runtime,
     runtime_cache_scope,
+    runtime_is_cached,
 )
 from external_baselines.common.runtime_evidence import (  # noqa: E402
     collect_method_runtime_evidence,
@@ -498,6 +499,23 @@ def load_and_validate_frozen_prediction_schema(
     observed_sha = sha256_file(schema_path)
     if observed_sha != expected_sha256:
         errors.append("staged_prediction_schema_sha256_mismatch")
+    if errors:
+        return None, errors
+
+    from external_baselines.interop.schema import validate_schema_draft202012
+
+    draft_errors = validate_schema_draft202012(payload)
+    for code in draft_errors:
+        if code == "external_schema_invalid_draft202012":
+            errors.append("staged_prediction_schema_invalid_draft202012")
+        elif code == "external_schema_reference_unresolvable":
+            errors.append("staged_prediction_schema_invalid_draft202012")
+        elif code == "staged_prediction_schema_unsupported_draft":
+            errors.append(code)
+        elif code.startswith("jsonschema_unavailable"):
+            errors.append("jsonschema_unavailable")
+        else:
+            errors.append(code)
     if errors:
         return None, errors
     return payload, errors
@@ -1654,7 +1672,8 @@ def _run_decision_suite_impl(
                                 )
                         interop_rows.append(interop)
                 finally:
-                    close_method_runtime(runtime)
+                    if runtime is not None and not runtime_is_cached(runtime):
+                        close_method_runtime(runtime)
 
                 pred_path = write_prediction_dir / f"{method_id}.jsonl"
                 write_jsonl(pred_path, interop_rows)
