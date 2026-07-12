@@ -2,9 +2,9 @@ from .fol_executor import FOLExecutor, execute_fol, execute_query
 from .parser import QueryParseError, parse_logical_query, parse_query
 from .query_decomposer import LogicalQueryDecomposer, decompose_query
 from .schema import (
+    OPERATION_ALIASES,
     DecompositionResult,
     ExecutionResult,
-    OPERATION_ALIASES,
     QueryNode,
     ValidationResult,
 )

@@ -8,7 +8,7 @@ import pytest
 
 from external_baselines.ekell_style.embedding_backends import create_embedding_backend
 from external_baselines.ekell_style.kg_loader import FireKG
-from external_baselines.ekell_style.vector_index import VectorDocument, VectorIndex, VectorIndexError
+from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
 from external_baselines.ekell_style.vector_retriever import VectorRetriever
 
 

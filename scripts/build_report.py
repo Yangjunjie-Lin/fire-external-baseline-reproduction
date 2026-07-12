@@ -10,10 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from external_baselines.common.io import read_json, read_jsonl
+from external_baselines.common.io import load_expected_by_id, read_json, read_jsonl
 from external_baselines.evaluation.metrics import aggregate_metrics, score_output
 from external_baselines.evaluation.report import build_report
-from external_baselines.common.io import load_expected_by_id
 
 
 def main(argv: list[str] | None = None) -> None:

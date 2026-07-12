@@ -18,7 +18,6 @@ from external_baselines.common.formal_config_validator import (  # noqa: E402
 )
 from external_baselines.common.io import read_yaml
 
-
 FORMAL_MANIFEST = ROOT / "configs/experiments/controlled_main_table_v1.yaml.example"
 PAPER_FIDELITY_MANIFEST = ROOT / "configs/experiments/ekell_paper_fidelity_v1.yaml.example"
 SMOKE = ROOT / "configs/smoke/deterministic_heuristic.yaml"

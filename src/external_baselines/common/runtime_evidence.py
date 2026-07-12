@@ -166,12 +166,16 @@ def collect_dense_runtime_evidence(
         "model_version": str(dense_cfg.get("model_version") or ""),
         "dimension": int(dense_cfg.get("dimension", dense_cfg.get("dim", 0)) or 0),
     }
-    manifest_identity = {
-        "backend": str(manifest.get("backend") or ""),
-        "model_name": str(manifest.get("model_name") or ""),
-        "model_version": str(manifest.get("model_version") or ""),
-        "dimension": int(manifest.get("dimension") or 0),
-    }
+    manifest_identity = dict(identity_report.get("index_manifest") or {})
+    if not manifest_identity:
+        manifest_identity = {
+            "backend": str(manifest.get("backend") or ""),
+            "model_name": str(manifest.get("model_name") or ""),
+            "model_version": str(manifest.get("model_version") or ""),
+            "dimension": int(manifest.get("dimension") or 0),
+            "actual_embedding_used": manifest.get("actual_embedding_used"),
+            "smoke_fallback_used": manifest.get("smoke_fallback_used"),
+        }
     evidence.embedding_backend = str(actual_identity.get("backend") or "")
     evidence.embedding_model = str(actual_identity.get("model_name") or "")
     evidence.embedding_model_version = str(actual_identity.get("model_version") or "")

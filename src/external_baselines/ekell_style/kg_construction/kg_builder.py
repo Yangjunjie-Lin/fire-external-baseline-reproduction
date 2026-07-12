@@ -7,7 +7,7 @@ from typing import Any, Iterable, Mapping
 
 from external_baselines.common.checksums import sha256_json, sha256_text
 
-from .schema import KGTriple, SCHEMA_VERSION, schema_document
+from .schema import SCHEMA_VERSION, KGTriple, schema_document
 from .triple_validator import validate_triple
 
 

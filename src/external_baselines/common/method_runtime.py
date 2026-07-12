@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.schema import canonicalize_method_id
@@ -74,12 +76,23 @@ class EKELLRuntime:
         return None
 
 
-# Shared cache scoped to one comparison-suite invocation.
-_RUNTIME_CACHE: dict[tuple[str, ...], Any] = {}
+# Direct-call cache for tests/tools outside a suite scope.
+_DIRECT_RUNTIME_CACHE: dict[tuple[str, ...], Any] = {}
+_ACTIVE_RUNTIME_CACHE: ContextVar[dict[tuple[str, ...], Any] | None] = ContextVar(
+    "external_baseline_runtime_cache",
+    default=None,
+)
+
+
+def _current_runtime_cache() -> dict[tuple[str, ...], Any]:
+    cache = _ACTIVE_RUNTIME_CACHE.get()
+    if cache is None:
+        return _DIRECT_RUNTIME_CACHE
+    return cache
 
 
 def clear_runtime_cache() -> None:
-    _RUNTIME_CACHE.clear()
+    _current_runtime_cache().clear()
 
 
 def _index_manifest_checksum(index_path: str | Path) -> str:
@@ -111,11 +124,11 @@ def _runtime_cache_key(
 
 
 def _cache_get(key: tuple[str, ...]) -> Any | None:
-    return _RUNTIME_CACHE.get(key)
+    return _current_runtime_cache().get(key)
 
 
 def _cache_set(key: tuple[str, ...], value: Any) -> None:
-    _RUNTIME_CACHE[key] = value
+    _current_runtime_cache()[key] = value
 
 
 def assert_cached_runtime_compatible(
@@ -488,6 +501,27 @@ def close_method_runtime(runtime: Any | None) -> None:
     closer = getattr(runtime, "close", None)
     if callable(closer):
         closer()
+
+
+@contextmanager
+def runtime_cache_scope() -> Iterator[dict[tuple[str, ...], Any]]:
+    cache: dict[tuple[str, ...], Any] = {}
+    token = _ACTIVE_RUNTIME_CACHE.set(cache)
+    try:
+        yield cache
+    finally:
+        seen: set[int] = set()
+        for runtime in cache.values():
+            runtime_id = id(runtime)
+            if runtime_id in seen:
+                continue
+            seen.add(runtime_id)
+            try:
+                close_method_runtime(runtime)
+            except Exception:  # noqa: BLE001
+                pass
+        cache.clear()
+        _ACTIVE_RUNTIME_CACHE.reset(token)
 
 
 def pipeline_accepts_runtime(pipeline: Callable[..., Any]) -> bool:

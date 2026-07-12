@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from external_baselines.ekell_style.neighborhood_expander import NeighborhoodExpander
 
-
 TRIPLES = [
     {
         "triple_id": "t1",

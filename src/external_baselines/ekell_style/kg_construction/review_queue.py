@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Iterable, Literal
+from typing import Iterable
 
 from .schema import KGTriple, ReviewStatus
 

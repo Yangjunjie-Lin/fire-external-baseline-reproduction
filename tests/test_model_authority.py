@@ -6,7 +6,6 @@ import pytest
 
 from external_baselines.common.formal_config_validator import FormalConfigError, validate_llm_for_formal
 from external_baselines.common.llm_client import (
-    DEFAULT_SILICONFLOW_MODEL,
     llm_config_summary,
     resolve_siliconflow_model,
 )

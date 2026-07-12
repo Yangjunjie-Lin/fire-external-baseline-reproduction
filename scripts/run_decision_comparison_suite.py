@@ -54,16 +54,20 @@ from external_baselines.common.llm_client import (  # noqa: E402
     build_llm_client,
 )
 from external_baselines.common.method_runtime import (  # noqa: E402
-    clear_runtime_cache,
     close_method_runtime,
     pipeline_accepts_runtime,
     prepare_method_runtime,
+    runtime_cache_scope,
 )
 from external_baselines.common.runtime_evidence import (  # noqa: E402
     collect_method_runtime_evidence,
     compute_suite_formal_compliance,
     evidence_to_summary_sections,
     method_formal_compliance,
+)
+from external_baselines.common.safe_paths import (  # noqa: E402
+    ManifestArtifactPathError,
+    resolve_manifest_artifact_path,
 )
 from external_baselines.common.taxonomy_normalizer import assert_canonical_interop_record  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
@@ -464,13 +468,55 @@ def emit_post_commit_warning(
     return warning
 
 
+def load_and_validate_frozen_prediction_schema(
+    schema_path: Path,
+    expected_sha256: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    errors: list[str] = []
+    if not schema_path or not expected_sha256:
+        errors.append("staged_prediction_schema_missing")
+        return None, errors
+    if not schema_path.is_file():
+        errors.append("staged_prediction_schema_missing")
+        return None, errors
+    try:
+        raw_text = schema_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        errors.append("staged_prediction_schema_invalid_json")
+        return None, errors
+    except OSError:
+        errors.append("staged_prediction_schema_missing")
+        return None, errors
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        errors.append("staged_prediction_schema_invalid_json")
+        return None, errors
+    if not isinstance(payload, dict):
+        errors.append("staged_prediction_schema_invalid_json")
+        return None, errors
+    observed_sha = sha256_file(schema_path)
+    if observed_sha != expected_sha256:
+        errors.append("staged_prediction_schema_sha256_mismatch")
+    if errors:
+        return None, errors
+    return payload, errors
+
+
+def _manifest_artifact_path_errors(run_root: Path, rel_path: str) -> list[str]:
+    try:
+        resolve_manifest_artifact_path(run_root, rel_path)
+    except ManifestArtifactPathError as exc:
+        return [str(exc.args[0])]
+    return []
+
+
 def _validate_staged_prediction_file(
     pred_file: Path,
     *,
     method_id: str,
     expected_case_id_set: set[str],
-    prediction_schema_path: Path,
-    expected_prediction_schema_sha256: str,
+    prediction_schema: dict[str, Any],
 ) -> list[str]:
     from external_baselines.common.taxonomy_normalizer import assert_canonical_interop_record
 
@@ -497,8 +543,7 @@ def _validate_staged_prediction_file(
         records.append(record)
         schema_errors = validate_interop_record(
             record,
-            schema_path=prediction_schema_path,
-            expected_schema_sha256=expected_prediction_schema_sha256,
+            schema=prediction_schema,
             require_external_schema=True,
         )
         if schema_errors:
@@ -611,21 +656,12 @@ def validate_staged_formal_run_root(
         errors.append("expected_case_ids_empty")
     if len(expected_case_id_set) != len(list(expected_case_ids)):
         errors.append("expected_case_ids_duplicate")
-    if not prediction_schema_path or not expected_prediction_schema_sha256:
-        errors.append("staged_prediction_schema_missing")
-    elif not prediction_schema_path.is_file():
-        errors.append("staged_prediction_schema_missing")
-    else:
-        try:
-            schema_payload = json.loads(prediction_schema_path.read_text(encoding="utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            errors.append("staged_prediction_schema_invalid_json")
-            schema_payload = None
-        if schema_payload is not None and not isinstance(schema_payload, dict):
-            errors.append("staged_prediction_schema_invalid_json")
-        observed_schema_sha = sha256_file(prediction_schema_path)
-        if observed_schema_sha != expected_prediction_schema_sha256:
-            errors.append("staged_prediction_schema_sha256_mismatch")
+    schema_payload, schema_errors = load_and_validate_frozen_prediction_schema(
+        prediction_schema_path,
+        expected_prediction_schema_sha256,
+    )
+    errors.extend(schema_errors)
+    schema_ready = schema_payload is not None and not schema_errors
 
     predictions = temp_run_root / "predictions"
     decisions = temp_run_root / "decisions"
@@ -646,15 +682,15 @@ def validate_staged_formal_run_root(
     for method_id in method_ids:
         pred_file = predictions / f"{method_id}.jsonl"
         summary_file = decisions / method_id / "run_summary.json"
-        errors.extend(
-            _validate_staged_prediction_file(
-                pred_file,
-                method_id=method_id,
-                expected_case_id_set=expected_case_id_set,
-                prediction_schema_path=prediction_schema_path,
-                expected_prediction_schema_sha256=expected_prediction_schema_sha256,
+        if schema_ready and schema_payload is not None:
+            errors.extend(
+                _validate_staged_prediction_file(
+                    pred_file,
+                    method_id=method_id,
+                    expected_case_id_set=expected_case_id_set,
+                    prediction_schema=schema_payload,
+                )
             )
-        )
         method_dir = decisions / method_id
         errors.extend(
             _validate_staged_supplemental_jsonl(
@@ -795,16 +831,26 @@ def validate_staged_formal_run_root(
         artifact_hashes = manifest.get("artifact_hashes") or {}
         for rel_path, recorded_hash in artifact_hashes.items():
             rel_text = str(rel_path or "")
-            if not rel_text or ".." in Path(rel_text).parts or rel_text.startswith(("/", "\\")):
-                errors.append("manifest_rejects_path_traversal_artifact")
+            path_errors = _manifest_artifact_path_errors(temp_run_root, rel_text)
+            errors.extend(path_errors)
+            if path_errors:
                 continue
-            artifact_path = temp_run_root / rel_text
+            try:
+                artifact_path = resolve_manifest_artifact_path(temp_run_root, rel_text)
+            except ManifestArtifactPathError:
+                continue
             if not _is_valid_sha256_hex(recorded_hash):
                 errors.append(f"artifact_sha256_invalid:{rel_text}")
             elif not artifact_path.is_file():
                 errors.append(f"missing_supplemental_artifact:{rel_text}")
             elif sha256_file(artifact_path) != recorded_hash:
                 errors.append(f"artifact_sha256_mismatch:{rel_text}")
+        inventory = manifest.get("artifact_inventory") or {}
+        for rel_path in (
+            *(inventory.get("core_files") or []),
+            *(inventory.get("supplemental_files") or []),
+        ):
+            errors.extend(_manifest_artifact_path_errors(temp_run_root, str(rel_path or "")))
         decision_artifact_files = manifest.get("decision_artifact_files") or {}
         for method_id in method_ids:
             method_artifacts = decision_artifact_files.get(method_id) or {}
@@ -1292,8 +1338,7 @@ def run_decision_suite(
         prediction_dir=prediction_dir,
         decision_dir=decision_dir,
     ) or (decision_dir.parent.parent / ".formal.control")
-    clear_runtime_cache()
-    try:
+    with runtime_cache_scope():
         return _run_decision_suite_impl(
             formal=formal,
             run_id=run_id,
@@ -1315,8 +1360,6 @@ def run_decision_suite(
             llm_transport_factory=llm_transport_factory,
             embedding_backend_factory=embedding_backend_factory,
         )
-    finally:
-        clear_runtime_cache()
 
 
 def _run_decision_suite_impl(

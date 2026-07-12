@@ -4,16 +4,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary
+from external_baselines.common.llm_client import LLMClient, build_llm_client, llm_config_summary, llm_runtime_snapshot
 from external_baselines.common.schema import normalize_response_payload, retrieved_context_to_dict
 from external_baselines.common.text_utils import extract_json_object
 from external_baselines.ekell_style.entity_matcher import match_entities
 from external_baselines.ekell_style.kg_loader import load_kg
 from external_baselines.ekell_style.scenario_parser import deterministic_parse
 from external_baselines.ekell_style.subgraph_retriever import retrieve_subgraph
-from external_baselines.common.llm_client import llm_runtime_snapshot
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
-
 
 METHOD = "fallback_graph_retrieval"
 

@@ -24,7 +24,7 @@ from external_baselines.common.method_runtime import (
 from external_baselines.ekell_style.kg_loader import audit_corpus
 from external_baselines.evaluation.metrics import aggregate_metrics, score_output
 from external_baselines.evaluation.report import build_report, write_metrics_csv
-from external_baselines.interop.schema import baseline_row_to_interop, canonicalize_method_id
+from external_baselines.interop.schema import canonicalize_method_id
 
 
 def get_pipeline(method: str) -> Callable[..., dict[str, Any]]:

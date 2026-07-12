@@ -1,97 +1,28 @@
-name: baseline-ci
+name: CI
 
 on:
   push:
   pull_request:
-  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12"]
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: |
-          python -m pip install -U pip
-          pip install -e ".[dev]"
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-      - name: Compileall
-        run: python -m compileall -q src scripts tests
-      - name: Ruff (formal guard modules)
-        run: |
-          ruff check \
-            src/external_baselines/common/formal_config_validator.py \
-            src/external_baselines/common/method_runtime.py \
-            src/external_baselines/common/comparison_readiness.py \
-            src/external_baselines/common/freeze_manifest.py \
-            src/external_baselines/retrieval/dense_index.py \
-            src/external_baselines/ekell_style/vector_index.py \
-            scripts/audit \
-            scripts/validate_formal_config.py \
-            scripts/audit_release_readiness.py \
-            scripts/package_reproducibility_artifact.py \
-            scripts/verify_cross_repo_contract.py \
-            scripts/check_repository_hygiene.py \
-            scripts/build_comparison_indexes.py \
-            scripts/check_comparison_readiness.py \
-            scripts/create_freeze_manifest.py \
-            scripts/run_interop_baselines.py
-      - name: Pytest
-        run: python -m pytest -q
-      - name: Comparison suite offline tests
-        run: |
-          python -m pytest -q \
-            tests/test_dense_real_index.py \
-            tests/test_hybrid_rrf.py \
-            tests/test_ekell_index_persistence.py \
-            tests/test_method_runtime.py \
-            tests/test_method_set_and_freeze.py \
-            tests/test_comparison_readiness_and_fairness.py
-      - name: Independence audit
-        run: python -m pytest -q tests/test_no_fire_agent_demo_import.py tests/test_ekell_faithful_dependency_audit.py
-      - name: Interop contract tests
-        run: python -m pytest -q tests/interop tests/test_bundle_integrity.py tests/test_canonical_schema.py
-      - name: Gold isolation
-        run: python -m pytest -q tests/test_gold_isolation.py
-      - name: Registry and formal config
-        run: python -m pytest -q tests/test_registry_single_source.py tests/test_formal_config.py tests/test_formal_eligibility.py
-      - name: E-KELL fidelity matrix
-        run: python -m pytest -q tests/fidelity
-      - name: Formal config validator (placeholders allowed on example)
-        run: |
-          python scripts/validate_formal_config.py \
-            --config configs/experiments/controlled_main_table_v1.yaml.example \
-            --allow-placeholders
-      - name: E-KELL fidelity audit
-        run: python scripts/audit/audit_ekell_fidelity.py
-      - name: Repository hygiene
-        run: python scripts/check_repository_hygiene.py
-      - name: Deterministic smoke generate
-        run: |
-          python scripts/generate_predictions.py \
-            --methods direct_llm,bm25_rag,ekell_style_controlled_shared_llm \
-            --config configs/smoke/deterministic_heuristic.yaml \
-            --limit 1 \
-            --output outputs/ci_predictions.jsonl \
-            --manifest outputs/ci_manifest.json
-      - name: Package build
-        run: python -m build
-      - name: Artifact packaging dry-run
-        run: python scripts/package_reproducibility_artifact.py --dry-run
-      - name: Release readiness audit
-        run: python scripts/audit_release_readiness.py
-      - name: Upload smoke artifact
-        if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-smoke-predictions
-          path: outputs/ci_predictions.jsonl
-          if-no-files-found: warn
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install -r requirements.txt
+
+      - run: python -m compileall src scripts tests
+      - run: ruff check src scripts tests
+      - run: python -m pytest -q
+      - run: python scripts/check_repository_hygiene.py

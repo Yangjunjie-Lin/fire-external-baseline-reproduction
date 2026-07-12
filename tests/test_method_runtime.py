@@ -11,7 +11,8 @@ from external_baselines.common.method_runtime import (
     prepare_ekell_runtime,
     prepare_hybrid_runtime,
 )
-from external_baselines.dense_rag.pipeline import build_dense_index, run_scenario as dense_run
+from external_baselines.dense_rag.pipeline import build_dense_index
+from external_baselines.dense_rag.pipeline import run_scenario as dense_run
 from external_baselines.ekell_style.kg_loader import FireKG
 from external_baselines.ekell_style.vector_index import VectorIndex
 from external_baselines.hybrid_rag.pipeline import run_scenario as hybrid_run

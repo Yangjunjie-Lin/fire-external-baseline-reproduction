@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from external_baselines.graphrag_adapter.lightrag_adapter import is_available as lightrag_available  # noqa: E402
-from external_baselines.graphrag_adapter.microsoft_graphrag_adapter import is_available as ms_graphrag_available  # noqa: E402
+from external_baselines.graphrag_adapter.microsoft_graphrag_adapter import (
+    is_available as ms_graphrag_available,  # noqa: E402
+)
 
 REQUIRED_FILES = [
     "README.md",

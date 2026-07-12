@@ -10,8 +10,8 @@ import yaml
 
 from external_baselines.common.comparison_readiness import assess_comparison_readiness
 from external_baselines.common.fairness import CrossMethodFairnessError, validate_cross_method_fairness
-from external_baselines.common.freeze_manifest import validate_freeze_manifest
 from external_baselines.common.formal_config_validator import FormalConfigError, validate_experiment_manifest
+from external_baselines.common.freeze_manifest import validate_freeze_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 

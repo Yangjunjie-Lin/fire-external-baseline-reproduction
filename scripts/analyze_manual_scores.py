@@ -11,7 +11,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from external_baselines.evaluation.statistics import cohens_d_paired, mean, paired_difference, standard_deviation, summarize, win_rate  # noqa: E402
+from external_baselines.evaluation.statistics import (  # noqa: E402
+    cohens_d_paired,
+    mean,
+    paired_difference,
+    summarize,
+    win_rate,
+)
 
 DIMENSIONS = [
     "correctness_0_3",

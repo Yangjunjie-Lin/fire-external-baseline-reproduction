@@ -15,11 +15,13 @@ from typing import Any
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.guards import method_leaderboard_eligibility
 from external_baselines.common.text_utils import as_list
+from external_baselines.interop.normalizer import normalize_prediction_fields
 from external_baselines.method_registry import (
     canonicalize_method_id as registry_canonicalize,
+)
+from external_baselines.method_registry import (
     method_id_aliases,
 )
-from external_baselines.interop.normalizer import normalize_prediction_fields
 
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / "firebench_interop_v1_prediction.schema.json"
 SCHEMA_DRAFT_PATH = (
@@ -435,9 +437,13 @@ def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
 
 def load_schema(path: str | Path | None = None) -> dict[str, Any]:
     schema_path = Path(path) if path else SCHEMA_PATH
-    if not schema_path.exists():
+    if not schema_path.is_file():
         return {}
-    return json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def validate_against_jsonschema(
@@ -454,15 +460,32 @@ def validate_against_jsonschema(
     except ImportError as exc:  # pragma: no cover - CI installs jsonschema
         return [f"jsonschema_unavailable:{exc}"]
 
-    loaded = schema if schema is not None else load_schema(schema_path)
+    loaded = schema
+    if loaded is None:
+        if schema_path and Path(schema_path).is_file():
+            try:
+                raw_text = Path(schema_path).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return ["external_schema_not_utf8"]
+            except OSError:
+                return ["external_schema_read_failed"]
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                return ["external_schema_invalid_json"]
+            loaded = parsed if isinstance(parsed, dict) else None
+        else:
+            loaded = load_schema(schema_path)
     if not loaded:
         return ["missing_external_schema"]
     if expected_schema_sha256:
-        # Prefer file checksum (matches Runner Bundle manifest.checksums).
-        if schema_path and Path(schema_path).exists():
+        if schema_path and Path(schema_path).is_file():
             from external_baselines.common.checksums import sha256_file
 
-            actual = sha256_file(schema_path)
+            try:
+                actual = sha256_file(schema_path)
+            except OSError:
+                return ["external_schema_read_failed"]
         else:
             actual = sha256_json(loaded)
         if actual != expected_schema_sha256:
@@ -471,7 +494,10 @@ def validate_against_jsonschema(
     registry = Registry()
     for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
         if candidate.exists():
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
             resource = Resource.from_contents(payload)
             schema_id = str(payload.get("$id") or candidate.name)
             registry = registry.with_resource(schema_id, resource)

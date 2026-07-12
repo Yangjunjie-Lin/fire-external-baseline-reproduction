@@ -16,7 +16,6 @@ from external_baselines.common.text_utils import extract_json_object
 from external_baselines.evaluation.normalizer import maybe_infer_structured_safety_fields
 from external_baselines.vanilla_rag.retriever import LexicalRetriever
 
-
 METHOD = "bm25_rag"
 # Backward-compatible alias retained in runner as vanilla_rag → bm25_rag.
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from external_baselines.common.io import (
     assert_no_gold_in_prediction_input,
     flatten_scenario,

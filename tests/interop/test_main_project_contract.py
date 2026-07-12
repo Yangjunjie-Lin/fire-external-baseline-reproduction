@@ -14,7 +14,7 @@ from external_baselines.interop.bundle import (
     load_runner_bundle,
     validate_bundle_checksum,
 )
-from external_baselines.interop.schema import baseline_row_to_interop, validate_interop_record
+from external_baselines.interop.schema import baseline_row_to_interop
 from external_baselines.method_registry import main_table_methods
 
 ROOT = Path(__file__).resolve().parents[1]

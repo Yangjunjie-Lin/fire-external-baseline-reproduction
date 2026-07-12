@@ -231,6 +231,11 @@ python scripts/validate_formal_config.py \
 - Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL (`embedding_backend_factory`); Direct LLM and BM25 never request an embedding backend.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
+- Manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root.
+- The frozen prediction schema is parsed and checksum-validated once before staged record validation.
+- Formal embedding identity validation requires complete persisted index metadata, including real-embedding and smoke-fallback flags.
+- Runtime caches are scoped through a context-local suite cache; concurrent comparison suites in the same process do not share or clear each other's runtime objects.
+- GitHub Actions performs offline compile, lint, test, and repository-hygiene checks.
 - Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only external LLM transport and embedding-compute boundaries via `embedding_backend_factory`.
 - New freeze manifests use explicit `runner_bundle` identity fields; legacy `runner_bundle_checksum` is opt-in via `--include-legacy-compat-fields`.
 - Generated files under `outputs/` are never tracked.

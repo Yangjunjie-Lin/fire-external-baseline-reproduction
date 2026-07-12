@@ -9,7 +9,6 @@ from external_baselines.common.io import load_config, write_json
 from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 from external_baselines.runner import generate_predictions
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FROZEN = ROOT / "configs" / "frozen"
 

@@ -16,7 +16,6 @@ from typing import Any
 from external_baselines.common.checksums import directory_manifest, sha256_file
 from external_baselines.common.io import read_json, read_jsonl, read_yaml
 
-
 FORBIDDEN_BUNDLE_KEYS = {
     "expected",
     "gold",

@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from external_baselines.common.text_utils import as_list
-from external_baselines.interop.taxonomy import TAXONOMY_VERSION, canonicalize, canonical_id
+from external_baselines.interop.taxonomy import TAXONOMY_VERSION, canonical_id, canonicalize
 
 NORMALIZER_VERSION = "external_baselines_neutral_v1"
 
