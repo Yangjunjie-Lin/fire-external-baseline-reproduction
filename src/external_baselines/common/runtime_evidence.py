@@ -338,7 +338,7 @@ def compute_suite_formal_compliance(
     transactional_publish_committed: bool | None = None,
     transactional_cleanup_complete: bool = True,
     method_ids: list[str] | None = None,
-    phase: Literal["pre_publish", "final"] = "pre_publish",
+    phase: Literal["pre_publish", "planned_final", "final"] = "pre_publish",
 ) -> dict[str, Any]:
     llm_methods = [e for e in method_evidences.values() if e.llm_is_smoke is not None]
     dense_ev = method_evidences.get("dense_rag")
@@ -394,13 +394,16 @@ def compute_suite_formal_compliance(
         if transactional_publish_committed is not None
         else transactional_publish_complete
     )
-    cleanup_complete = transactional_cleanup_complete if formal and phase == "final" else True
+    cleanup_complete = (
+        transactional_cleanup_complete if formal and phase in {"final", "planned_final"} else True
+    )
 
+    is_final_phase = phase in {"final", "planned_final"}
     formal_result = bool(
         pre_publish_compliance_passed and publish_committed
-    ) if phase == "final" else False
+    ) if is_final_phase else False
 
-    publish_complete = publish_committed if formal and phase == "final" else False
+    publish_complete = publish_committed if formal and is_final_phase else False
 
     return {
         "real_manifest": bool(formal and experiment_manifest_provided),
@@ -422,8 +425,8 @@ def compute_suite_formal_compliance(
         "no_runtime_index_build": no_runtime_build if formal else False,
         "pre_publish_compliance_passed": pre_publish_compliance_passed if formal else False,
         "transactional_publish_complete": publish_complete,
-        "transactional_publish_committed": publish_committed if formal and phase == "final" else False,
-        "transactional_cleanup_complete": cleanup_complete if formal and phase == "final" else True,
+        "transactional_publish_committed": publish_committed if formal and is_final_phase else False,
+        "transactional_cleanup_complete": cleanup_complete if formal and is_final_phase else True,
         "preflight_ok": preflight_ok,
         "limit_used": limit_used,
         "formal_result": formal_result,

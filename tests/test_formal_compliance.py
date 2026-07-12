@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -53,6 +54,69 @@ MAIN_REPO = ROOT.parent / "fire-agent-demo"
 def _formal_run_dirs(tmp_path: Path, *, name: str = "formal") -> tuple[Path, Path, Path]:
     run_root = tmp_path / name
     return run_root, run_root / "predictions", run_root / "decisions"
+
+
+def _formal_control_root(tmp_path: Path, *, name: str = "formal") -> Path:
+    return tmp_path / f".{name}.control"
+
+
+def _stub_object_llm(_config, **_kwargs):
+    return object()
+
+
+def _offline_heuristic_transport_factory(_method_id, _config):
+    from external_baselines.common.llm_client import HeuristicLLMClient
+
+    client = HeuristicLLMClient(model="contract-generation-v1", provider="openai_compatible")
+
+    def complete(
+        *,
+        system,
+        user,
+        temperature=0.0,
+        max_tokens=1200,
+        top_p=None,
+        seed=None,
+    ) -> str:
+        return client.complete(
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            seed=seed,
+        )
+
+    return complete
+
+
+def _enable_offline_embedding_injection(monkeypatch) -> None:
+    """Use the production injected_model path for fake/bge offline index fixtures."""
+    from external_baselines.retrieval import embedding_backends
+    from tests.test_dense_real_index import FakeEmbeddingModel
+
+    original = embedding_backends.create_embedding_backend
+
+    def _create(backend, *, model_name=None, model=None, dimension=128, **kwargs):
+        if model is None and str(model_name or "").startswith("fake/"):
+            model = FakeEmbeddingModel(int(dimension or 8))
+        return original(
+            backend,
+            model_name=model_name,
+            model=model,
+            dimension=dimension,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(embedding_backends, "create_embedding_backend", _create)
+    monkeypatch.setattr(
+        "external_baselines.common.method_runtime.create_embedding_backend",
+        _create,
+    )
+    monkeypatch.setattr(
+        "external_baselines.ekell_style.embedding_backends.create_embedding_backend",
+        _create,
+    )
 
 
 def _valid_payload(**overrides) -> dict:
@@ -838,7 +902,7 @@ def test_preflight_failure_prevents_any_llm_build(tmp_path, monkeypatch):
 def test_preflight_failure_prevents_prediction_writes(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    _, pred_dir, _ = _formal_run_dirs(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -1215,6 +1279,180 @@ def _build_fake_ekell_index(tmp_path: Path) -> Path:
     index_dir = tmp_path / "ekell_idx"
     index.save_directory(index_dir)
     return index_dir
+
+
+def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name: str = "published") -> dict:
+    bundle_dir = _make_runner_bundle(tmp_path, n_cases=n_cases)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    dense_idx = _build_fake_dense_index(tmp_path)
+    ekell_idx = _build_fake_ekell_index(tmp_path)
+
+    shared = tmp_path / "shared.yaml"
+    shared.write_text(
+        "llm:\n  provider: openai_compatible\n  model: contract-generation-v1\n"
+        "  model_version: v1\n  temperature: 0.0\n  top_p: 1.0\n  max_tokens: 1024\n"
+        "  seed: 20260710\n  enable_thinking: false\n  api_key_env: OFFLINE_TEST_API_KEY\n",
+        encoding="utf-8",
+    )
+    dense_block = (
+        f"dense_rag:\n  backend: text2vec\n  model_name: fake/bge\n  model_version: v-test\n"
+        f"  dimension: 8\n  normalize_embeddings: true\n  index_path: {dense_idx.as_posix()}\n"
+        f"  reject_smoke: true\n"
+        f"hybrid_rag:\n  reject_smoke: true\n  top_k: 3\n  candidate_pool: 5\n"
+    )
+    ekell_block = (
+        f"ekell_vector:\n  backend: text2vec\n  model_name: fake/bge\n  model_version: v-test\n"
+        f"  dimension: 8\n  normalize_embeddings: true\n  index_path: {ekell_idx.as_posix()}\n"
+        f"  reject_smoke: true\n"
+        f"ekell_style:\n  prompt_dir: {(ROOT / 'configs/prompts/controlled').as_posix()}\n"
+    )
+    method_cfgs: dict[str, Path] = {}
+    for mid in [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]:
+        path = tmp_path / f"{mid}_cfg.yaml"
+        extra = ""
+        if mid in {"dense_rag", "hybrid_rag"}:
+            extra = dense_block
+        if mid == "ekell_style_controlled_shared_llm":
+            extra = ekell_block
+        path.write_text(
+            f"execution_stage: formal\npaper_final: true\n"
+            f"paths:\n  corpus_dir: {bundle['corpus_dir']}\n{extra}",
+            encoding="utf-8",
+        )
+        method_cfgs[mid] = path
+
+    identity = _frozen_runner_bundle_identity(bundle)
+    dev_evidence = tmp_path / "selected_dev_run.json"
+    dev_evidence.write_text('{"selected": true}\n', encoding="utf-8")
+
+    method_entries = [
+        {"method_id": mid, "config": str(cfg), "enabled": True}
+        for mid, cfg in method_cfgs.items()
+    ]
+
+    exp = tmp_path / "formal_manifest.yaml"
+    freeze_path = tmp_path / "freeze_manifest.json"
+    exp.write_text(
+        "\n".join(
+            [
+                "experiment_id: formal_offline_e2e",
+                "schema_version: firebench-interop-v1",
+                f"shared_model_config: {shared.as_posix()}",
+                "base_config: configs/default.yaml",
+                "freeze_status: frozen",
+                "paper_final: true",
+                f"bundle: {bundle_dir.as_posix()}",
+                f"freeze_manifest: {freeze_path.as_posix()}",
+                "require_bundle_checksum: true",
+                "require_external_schema: true",
+                "require_complete_case_match: true",
+                "fail_on_schema_error: true",
+                "fail_on_duplicate_case_id: true",
+                "fail_on_missing_case: true",
+                "fail_on_extra_case: true",
+                "main_table_methods:",
+                "  - direct_llm",
+                "  - bm25_rag",
+                "  - ekell_style_controlled_shared_llm",
+                "comparison_suite_methods:",
+                "  - direct_llm",
+                "  - bm25_rag",
+                "  - dense_rag",
+                "  - hybrid_rag",
+                "  - ekell_style_controlled_shared_llm",
+                "methods:",
+                *[
+                    line
+                    for mid, cfg in method_cfgs.items()
+                    for line in (
+                        f"  - method_id: {mid}",
+                        f"    config: {cfg.as_posix()}",
+                        "    enabled: true",
+                    )
+                ],
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.freeze_manifest import build_freeze_manifest_payload
+
+    dense_checksum = sha256_file(dense_idx / "index_manifest.json")
+    ekell_checksum = sha256_file(ekell_idx / "index_manifest.json")
+    corpus_manifest = bundle.get("corpus_manifest") if isinstance(bundle.get("corpus_manifest"), dict) else {}
+    freeze_payload = build_freeze_manifest_payload(
+        experiment_manifest_path=exp,
+        experiment_raw={
+            "shared_model_config": shared.as_posix(),
+            "methods": method_entries,
+            "bundle": bundle_dir.as_posix(),
+        },
+        selected_dev_run=dev_evidence,
+        producer_declared_checksum=identity.get("producer_declared_checksum"),
+        consumer_computed_hash=identity.get("consumer_computed_hash"),
+        input_cases_sha256=identity.get("input_cases_sha256"),
+        corpus_checksum=corpus_manifest.get("aggregate_sha256"),
+        schema_checksum=identity.get("prediction_schema_sha256"),
+        method_config_paths={mid: str(cfg) for mid, cfg in method_cfgs.items()},
+        indexes={
+            "dense": {
+                "index_checksum": dense_checksum,
+                "index_path": dense_idx.as_posix(),
+                "backend": "text2vec",
+                "model_name": "fake/bge",
+                "model_version": "v-test",
+                "dimension": 8,
+            },
+            "hybrid_dense_dependency": {
+                "index_checksum": dense_checksum,
+                "index_path": dense_idx.as_posix(),
+            },
+            "ekell": {
+                "index_checksum": ekell_checksum,
+                "index_path": ekell_idx.as_posix(),
+                "backend": "text2vec",
+                "model_name": "fake/bge",
+                "model_version": "v-test",
+                "dimension": 8,
+            },
+        },
+        embedding={
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+        },
+        llm={
+            "provider": "openai_compatible",
+            "model": "contract-generation-v1",
+            "model_version": "v1",
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 1024,
+            "seed": 20260710,
+            "enable_thinking": False,
+        },
+    )
+    freeze_path.write_text(json.dumps(freeze_payload, ensure_ascii=False), encoding="utf-8")
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path, name=run_name)
+    return {
+        "bundle_dir": bundle_dir,
+        "experiment_manifest": exp,
+        "run_root": run_root,
+        "pred_dir": pred_dir,
+        "dec_dir": dec_dir,
+        "control_root": _formal_control_root(tmp_path, name=run_name),
+        "dense_idx": dense_idx,
+        "ekell_idx": ekell_idx,
+    }
 
 
 def _passing_formal_method_evidences() -> dict[str, RuntimeEvidence]:
@@ -2020,7 +2258,7 @@ def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
             dense_dependency_index_checksum="same" if mid == "hybrid_rag" else None,
         )
 
-    def _fake_llm(_config):
+    def _fake_llm(_config, **kwargs):
         from external_baselines.common.llm_client import HeuristicLLMClient
 
         return HeuristicLLMClient()
@@ -2057,7 +2295,7 @@ def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
 def test_formal_preflight_failure_publishes_no_predictions(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    _, pred_dir, _ = _formal_run_dirs(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2069,18 +2307,18 @@ def test_formal_preflight_failure_publishes_no_predictions(tmp_path, monkeypatch
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path),
             prediction_dir=pred_dir,
-            decision_dir=tmp_path / "dec",
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
     assert not any(pred_dir.glob("*.jsonl"))
-    assert (tmp_path / "FORMAL_RUN_FAILED.json").is_file()
+    assert (_formal_control_root(tmp_path) / "FORMAL_RUN_FAILED.json").is_file()
 
 
 def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    _, pred_dir, _ = _formal_run_dirs(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2100,7 +2338,7 @@ def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path),
             prediction_dir=pred_dir,
-            decision_dir=tmp_path / "dec",
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
@@ -2110,7 +2348,7 @@ def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
 def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
-    _, pred_dir, _ = _formal_run_dirs(tmp_path)
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     call_count = {"n": 0}
 
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
@@ -2127,7 +2365,7 @@ def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, mon
         },
     )
 
-    def _fake_llm(_config):
+    def _fake_llm(_config, **kwargs):
         from external_baselines.common.llm_client import HeuristicLLMClient
 
         return HeuristicLLMClient()
@@ -2160,7 +2398,7 @@ def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, mon
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
             prediction_dir=pred_dir,
-            decision_dir=tmp_path / "dec",
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
@@ -2190,7 +2428,7 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
         },
     )
 
-    def _fake_llm(_config):
+    def _fake_llm(_config, **kwargs):
         from external_baselines.common.llm_client import HeuristicLLMClient
 
         return HeuristicLLMClient()
@@ -2253,6 +2491,7 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
 def test_formal_failure_writes_failed_marker(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2263,12 +2502,12 @@ def test_formal_failure_writes_failed_marker(tmp_path, monkeypatch):
     with pytest.raises(FormalRunFailed):
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path),
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
-    marker = json.loads((tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    marker = json.loads((_formal_control_root(tmp_path) / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
     assert marker["formal_outputs_published"] is False
     assert marker["execution_stage"] == "formal"
 
@@ -2276,6 +2515,7 @@ def test_formal_failure_writes_failed_marker(tmp_path, monkeypatch):
 def test_formal_failure_marker_contains_no_secrets(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
+    _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
     monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
     monkeypatch.setattr(
@@ -2286,12 +2526,12 @@ def test_formal_failure_marker_contains_no_secrets(tmp_path, monkeypatch):
     with pytest.raises(FormalRunFailed):
         run_decision_suite(
             runner_bundle=_make_runner_bundle(tmp_path),
-            prediction_dir=tmp_path / "pred",
-            decision_dir=tmp_path / "dec",
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
             execution_stage="formal",
             experiment_manifest=tmp_path / "manifest.yaml",
         )
-    text = (tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8").lower()
+    text = (_formal_control_root(tmp_path) / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8").lower()
     for secret in ("api_key", "apikey", "bearer ", "sk-"):
         assert secret not in text
 
@@ -2588,7 +2828,7 @@ def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, 
         )
         return decision_output_to_legacy_row(parsed)
 
-    monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
@@ -2628,7 +2868,7 @@ def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, 
         )
     assert (pred_dir / "old.jsonl").is_file()
     assert (dec_dir / "old.jsonl").is_file()
-    marker = json.loads((run_root / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    marker = json.loads((_formal_control_root(tmp_path) / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
     assert marker["rollback_succeeded"] is True
 
 
@@ -2793,14 +3033,14 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
 
     monkeypatch.setenv("LOCAL_CONTRACT_API_KEY", "offline-contract-key")
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
-    monkeypatch.setattr(suite, "build_llm_client", lambda _c: ContractLLM())
+    monkeypatch.setattr(suite, "build_llm_client", lambda _c, **kwargs: ContractLLM())
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
-    pred_dir = tmp_path / "published" / "predictions"
-    dec_dir = tmp_path / "published" / "decisions"
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path, name="published")
+    control_root = _formal_control_root(tmp_path, name="published")
     summary = run_decision_suite(
         runner_bundle=bundle_dir,
         prediction_dir=pred_dir,
@@ -2813,8 +3053,11 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
     assert summary["formal_compliance"]["formal_result"] is True
     assert len(list(pred_dir.glob("*.jsonl"))) == 5
     assert len(summary["method_summaries"]) == 5
-    assert not (tmp_path / "published" / "FORMAL_RUN_FAILED.json").exists()
-    assert not any(tmp_path.glob(".formal.tmp_*"))
+    assert (run_root / "suite_summary.json").is_file()
+    assert (run_root / "run_manifest.json").is_file()
+    assert (run_root / "diagnostics" / "decision_suite_preflight.json").is_file()
+    assert not (control_root / "FORMAL_RUN_FAILED.json").exists()
+    assert not any(tmp_path.glob(".published.tmp_*"))
     assert not any(tmp_path.rglob("*.bak"))
 
 
@@ -2857,7 +3100,7 @@ def test_formal_pre_publish_failure_raises_formal_run_failed(tmp_path, monkeypat
         parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
         return decision_output_to_legacy_row(parsed)
 
-    monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
@@ -2924,116 +3167,85 @@ def test_dry_run_cli_can_exit_zero_with_formal_result_false(tmp_path):
     assert '"formal_result": false' in result.stdout.lower()
 
 
-def test_publish_failure_without_existing_targets_removes_new_predictions(tmp_path):
-    from scripts.run_decision_comparison_suite import (
-        FormalPublishError,
-        publish_formal_artifacts_transactionally,
+def test_publish_failure_without_existing_targets_removes_new_predictions(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import FormalPublishError, publish_formal_run_root_transactionally
+
+    run_root, _, _ = _formal_run_dirs(tmp_path)
+    temp_root = tmp_path / ".formal.tmp_missing"
+    (temp_root / "predictions").mkdir(parents=True)
+    (temp_root / "decisions").mkdir()
+    (temp_root / "suite_summary.json").write_text("{}\n", encoding="utf-8")
+
+    orig_rename = Path.rename
+
+    def _fail_commit(self, target):
+        if self.name == temp_root.name:
+            raise OSError("commit failed")
+        return orig_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _fail_commit)
+    with pytest.raises(FormalPublishError):
+        publish_formal_run_root_transactionally(
+            temp_run_root=temp_root,
+            final_run_root=run_root,
+        )
+    assert not run_root.exists()
+
+
+def test_publish_failure_with_existing_targets_restores_both(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import FormalPublishError, publish_formal_run_root_transactionally
+
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    run_root.mkdir(parents=True)
+    pred_dir.mkdir()
+    dec_dir.mkdir()
+    (pred_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
+    (dec_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
+    temp_root = tmp_path / ".formal.tmp_restore"
+    (temp_root / "predictions").mkdir(parents=True)
+    (temp_root / "decisions").mkdir()
+
+    orig_rename = Path.rename
+
+    def _fail_commit(self, target):
+        if self.name == temp_root.name:
+            raise OSError("commit failed")
+        return orig_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _fail_commit)
+    with pytest.raises(FormalPublishError):
+        publish_formal_run_root_transactionally(
+            temp_run_root=temp_root,
+            final_run_root=run_root,
+        )
+    assert (pred_dir / "old.jsonl").is_file()
+    assert (dec_dir / "old.jsonl").is_file()
+
+
+def test_commit_success_never_rolls_back(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
+    temp_root = tmp_path / ".formal.tmp_ok"
+    (temp_root / "predictions").mkdir(parents=True)
+    (temp_root / "decisions").mkdir()
+    (temp_root / "suite_summary.json").write_text(
+        json.dumps({"formal_compliance": {"formal_result": True, "transactional_publish_committed": True}}),
+        encoding="utf-8",
     )
 
-    pred_final = tmp_path / "pred"
-    dec_final = tmp_path / "dec"
-    pred_temp = tmp_path / "tpred"
-    dec_temp = tmp_path / "tdec"
-    pred_temp.mkdir()
-    dec_temp.mkdir()
-    (pred_temp / "new.jsonl").write_text("{}\n", encoding="utf-8")
-    (dec_temp / "direct_llm").mkdir()
-    calls = {"n": 0}
-    orig_publish = __import__("scripts.run_decision_comparison_suite", fromlist=["_publish_temp_directory"])._publish_temp_directory
+    publish_result = suite.publish_formal_run_root_transactionally(
+        temp_run_root=temp_root,
+        final_run_root=run_root,
+    )
+    assert publish_result.committed is True
 
-    def _fail_second(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("decisions publish failed")
-        return orig_publish(src, dst)
+    def _forbidden_rollback(*_args, **_kwargs):
+        raise AssertionError("rollback must not run after commit")
 
-    import scripts.run_decision_comparison_suite as suite
-
-    suite._publish_temp_directory = _fail_second
-    try:
-        with pytest.raises(FormalPublishError):
-            publish_formal_artifacts_transactionally(
-                temp_prediction_dir=pred_temp,
-                final_prediction_dir=pred_final,
-                temp_decision_dir=dec_temp,
-                final_decision_dir=dec_final,
-            )
-    finally:
-        suite._publish_temp_directory = orig_publish
-    assert not pred_final.exists()
-    assert not dec_final.exists()
-
-
-def test_publish_failure_with_existing_targets_restores_both(tmp_path):
-    from scripts.run_decision_comparison_suite import FormalPublishError, publish_formal_artifacts_transactionally
-
-    pred_final = tmp_path / "pred"
-    dec_final = tmp_path / "dec"
-    pred_final.mkdir()
-    dec_final.mkdir()
-    (pred_final / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
-    (dec_final / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
-    pred_temp = tmp_path / "tpred"
-    dec_temp = tmp_path / "tdec"
-    pred_temp.mkdir()
-    dec_temp.mkdir()
-    calls = {"n": 0}
-    import scripts.run_decision_comparison_suite as suite
-
-    orig_publish = suite._publish_temp_directory
-
-    def _fail_second(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("decisions publish failed")
-        return orig_publish(src, dst)
-
-    suite._publish_temp_directory = _fail_second
-    try:
-        with pytest.raises(FormalPublishError):
-            publish_formal_artifacts_transactionally(
-                temp_prediction_dir=pred_temp,
-                final_prediction_dir=pred_final,
-                temp_decision_dir=dec_temp,
-                final_decision_dir=dec_final,
-            )
-    finally:
-        suite._publish_temp_directory = orig_publish
-    assert (pred_final / "old.jsonl").is_file()
-    assert (dec_final / "old.jsonl").is_file()
-
-
-def test_second_backup_failure_restores_first_backup(tmp_path, monkeypatch):
-    from scripts.run_decision_comparison_suite import FormalPublishError, publish_formal_artifacts_transactionally
-
-    pred_final = tmp_path / "pred"
-    dec_final = tmp_path / "dec"
-    pred_final.mkdir()
-    dec_final.mkdir()
-    (pred_final / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
-    (dec_final / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
-    calls = {"n": 0}
-    import scripts.run_decision_comparison_suite as suite
-
-    orig_prepare = suite._prepare_target_backup
-
-    def _fail_second(state):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("decisions backup failed")
-        return orig_prepare(state)
-
-    monkeypatch.setattr(suite, "_prepare_target_backup", _fail_second)
-    with pytest.raises(FormalPublishError):
-        publish_formal_artifacts_transactionally(
-            temp_prediction_dir=tmp_path / "tpred",
-            final_prediction_dir=pred_final,
-            temp_decision_dir=tmp_path / "tdec",
-            final_decision_dir=dec_final,
-        )
-    assert (pred_final / "old.jsonl").is_file()
-    assert (dec_final / "old.jsonl").is_file()
-    assert not any(tmp_path.glob("*.bak"))
+    monkeypatch.setattr(suite, "_rollback_run_root", _forbidden_rollback)
+    assert run_root.is_dir()
+    assert (run_root / "suite_summary.json").is_file()
 
 
 def test_freeze_records_producer_and_consumer_separately(tmp_path):
@@ -3139,7 +3351,7 @@ def test_publish_success_includes_final_suite_summary(tmp_path, monkeypatch):
         parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
         return decision_output_to_legacy_row(parsed)
 
-    monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
@@ -3153,6 +3365,7 @@ def test_publish_success_includes_final_suite_summary(tmp_path, monkeypatch):
     )
     assert (run_root / "suite_summary.json").is_file()
     published = json.loads((run_root / "suite_summary.json").read_text(encoding="utf-8"))
+    assert (run_root / "run_manifest.json").is_file()
     assert published["formal_compliance"]["formal_result"] is True
 
 
@@ -3166,7 +3379,7 @@ def test_failure_cleanup_does_not_recreate_temp_directory(tmp_path, monkeypatch)
         "preflight_decision_suite",
         lambda **kwargs: {"ok": True, "runner_bundle_integrity": {"ok": True}, "shared_generation_identity": {"ok": True}, "ekell_prompt_bundle_valid": True, "methods": {}},
     )
-    monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: (_ for _ in ()).throw(RuntimeError("fail")))
     _, pred_dir, dec_dir = _formal_run_dirs(tmp_path)
     with pytest.raises(FormalRunFailed):
@@ -3273,3 +3486,842 @@ def test_legacy_only_freeze_rejected_in_formal(tmp_path):
             experiment_raw={},
             require_complete=True,
         )
+
+
+# --- Round-4: external control root, staged commit, full offline E2E, CLI semantics ---
+
+
+def test_formal_preflight_does_not_create_final_run_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path)
+    run_root = fixture["run_root"]
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert not run_root.exists()
+
+
+def test_formal_preflight_does_not_modify_existing_final_run_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path)
+    run_root = fixture["run_root"]
+    run_root.mkdir(parents=True)
+    marker = run_root / "KEEP.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+    mtime_before = marker.stat().st_mtime
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+    assert marker.stat().st_mtime == mtime_before
+    assert not (run_root / "diagnostics").exists()
+
+
+def test_preflight_report_written_to_external_control_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    preflight_files = list((fixture["control_root"] / "runs").rglob("preflight.json"))
+    assert preflight_files
+    assert not (fixture["run_root"] / "diagnostics").exists()
+
+
+def test_preflight_report_copied_into_staged_run_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    assert (fixture["run_root"] / "diagnostics" / "decision_suite_preflight.json").is_file()
+
+
+def test_failed_run_marker_is_outside_final_run_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert (fixture["control_root"] / "FORMAL_RUN_FAILED.json").is_file()
+    assert not (fixture["run_root"] / "FORMAL_RUN_FAILED.json").exists()
+
+
+def test_final_suite_summary_written_before_commit(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    events: list[tuple[str, str]] = []
+    orig_write_json = suite.write_json
+    orig_rename = Path.rename
+
+    def _track_write_json(path, payload):
+        if str(path).endswith(("suite_summary.json", "run_manifest.json")):
+            events.append(("write_json", str(path)))
+        return orig_write_json(path, payload)
+
+    def _track_rename(self, target):
+        events.append(("rename", str(self)))
+        return orig_rename(self, target)
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "write_json", _track_write_json)
+    monkeypatch.setattr(Path, "rename", _track_rename)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    rename_idx = next(i for i, (kind, _) in enumerate(events) if kind == "rename")
+    assert all(kind == "write_json" for kind, _ in events[:rename_idx])
+    assert any("suite_summary.json" in path for _, path in events[:rename_idx])
+
+
+def test_staged_summary_has_formal_result_true(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    captured: dict[str, Any] = {}
+    orig_write_json = suite.write_json
+
+    def _capture_summary(path, payload):
+        if str(path).endswith("suite_summary.json") and ".tmp_" in str(path.parent):
+            captured.update(payload)
+        return orig_write_json(path, payload)
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "write_json", _capture_summary)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    assert captured["formal_compliance"]["formal_result"] is True
+    assert captured["formal_compliance"]["transactional_publish_committed"] is True
+
+
+def test_no_suite_summary_write_after_commit(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    post_commit_writes: list[str] = []
+    committed = {"done": False}
+    orig_write_json = suite.write_json
+    orig_rename = Path.rename
+
+    def _track_write_json(path, payload):
+        if committed["done"] and str(fixture["run_root"]) in str(path):
+            post_commit_writes.append(str(path))
+        return orig_write_json(path, payload)
+
+    def _track_rename(self, target):
+        if self.name.startswith(".published.tmp_"):
+            committed["done"] = True
+        return orig_rename(self, target)
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "write_json", _track_write_json)
+    monkeypatch.setattr(Path, "rename", _track_rename)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    core_post_writes = [
+        path
+        for path in post_commit_writes
+        if path.endswith(("suite_summary.json", "run_manifest.json")) or "/decisions/" in path.replace("\\", "/")
+    ]
+    assert core_post_writes == []
+
+
+def test_summary_write_failure_prevents_commit(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    orig_write_json = suite.write_json
+
+    def _fail_summary(path, payload):
+        if str(path).endswith("suite_summary.json") and ".tmp_" in str(path.parent):
+            raise OSError("summary write failed")
+        return orig_write_json(path, payload)
+
+    monkeypatch.setattr(suite, "write_json", _fail_summary)
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert not fixture["run_root"].exists()
+
+
+def test_staged_run_validation_failure_prevents_commit(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "validate_staged_formal_run_root", lambda *_a, **_k: (_ for _ in ()).throw(FormalSuiteExecutionError("staged invalid")))
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert not fixture["run_root"].exists()
+
+
+def test_run_manifest_written_before_commit(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    events: list[str] = []
+    orig_write_json = suite.write_json
+    orig_rename = Path.rename
+
+    def _track_write_json(path, payload):
+        if str(path).endswith("run_manifest.json"):
+            events.append(str(path))
+        return orig_write_json(path, payload)
+
+    def _track_rename(self, target):
+        events.append(f"rename:{self}")
+        return orig_rename(self, target)
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "write_json", _track_write_json)
+    monkeypatch.setattr(Path, "rename", _track_rename)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    assert events
+    assert events[-1].startswith("rename:")
+    assert any("run_manifest.json" in item for item in events[:-1])
+
+
+def test_cleanup_failure_keeps_formal_result_true(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    published = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    assert summary["formal_compliance"]["formal_result"] is True
+    assert published["formal_compliance"]["formal_result"] is True
+
+
+def test_cleanup_warning_written_only_to_control_root(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    fixture["run_root"].mkdir(parents=True)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    assert (fixture["control_root"] / "FORMAL_PUBLISH_CLEANUP_WARNING.json").is_file()
+    assert not (fixture["run_root"] / "FORMAL_PUBLISH_CLEANUP_WARNING.json").exists()
+
+
+def test_publish_receipt_failure_does_not_remove_committed_run(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(
+        suite,
+        "_write_publish_receipt",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("receipt write failed")),
+    )
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    assert summary["formal_compliance"]["formal_result"] is True
+    assert (fixture["run_root"] / "suite_summary.json").is_file()
+
+
+def test_final_run_root_survives_post_commit_warning_failure(tmp_path, monkeypatch):
+    test_publish_receipt_failure_does_not_remove_committed_run(tmp_path, monkeypatch)
+
+
+def test_publish_rejects_same_temp_and_final_root(tmp_path):
+    from scripts.run_decision_comparison_suite import FormalSuiteExecutionError, publish_formal_run_root_transactionally
+
+    run_root, _, _ = _formal_run_dirs(tmp_path)
+    with pytest.raises(FormalSuiteExecutionError, match="formal_temp_and_final_run_root_must_differ"):
+        publish_formal_run_root_transactionally(temp_run_root=run_root, final_run_root=run_root)
+
+
+def test_formal_cli_limit_error_is_structured_json(tmp_path):
+    import subprocess
+    import sys
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts/run_decision_comparison_suite.py"),
+        "--runner-bundle",
+        str(fixture["bundle_dir"]),
+        "--formal-run-root",
+        str(fixture["run_root"]),
+        "--prediction-dir",
+        str(fixture["pred_dir"]),
+        "--decision-dir",
+        str(fixture["dec_dir"]),
+        "--execution-stage",
+        "formal",
+        "--limit",
+        "1",
+        "--experiment-manifest",
+        str(fixture["experiment_manifest"]),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    assert result.returncode == 1
+    assert '"stage": "cli_validation"' in result.stderr
+    assert '"formal_result": false' in result.stderr.lower()
+
+
+def test_formal_cli_dev_alias_error_is_structured_json(tmp_path):
+    import subprocess
+    import sys
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts/run_decision_comparison_suite.py"),
+        "--runner-bundle",
+        str(fixture["bundle_dir"]),
+        "--formal-run-root",
+        str(fixture["run_root"]),
+        "--prediction-dir",
+        str(fixture["pred_dir"]),
+        "--decision-dir",
+        str(fixture["dec_dir"]),
+        "--execution-stage",
+        "formal",
+        "--enable-dev-aliases",
+        "--experiment-manifest",
+        str(fixture["experiment_manifest"]),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    assert result.returncode == 1
+    assert '"stage": "cli_validation"' in result.stderr
+
+
+def test_formal_cli_path_error_is_structured_json(tmp_path):
+    import subprocess
+    import sys
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts/run_decision_comparison_suite.py"),
+        "--runner-bundle",
+        str(fixture["bundle_dir"]),
+        "--prediction-dir",
+        str(tmp_path / "pred"),
+        "--decision-dir",
+        str(tmp_path / "dec"),
+        "--execution-stage",
+        "formal",
+        "--experiment-manifest",
+        str(fixture["experiment_manifest"]),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    assert result.returncode == 1
+    assert '"ok": false' in result.stderr.lower()
+
+
+def test_formal_cli_validation_error_exits_one(tmp_path):
+    test_formal_cli_limit_error_is_structured_json(tmp_path)
+
+
+def test_formal_cli_validation_does_not_create_final_run_root(tmp_path):
+    import subprocess
+    import sys
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    run_root = fixture["run_root"]
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts/run_decision_comparison_suite.py"),
+        "--runner-bundle",
+        str(fixture["bundle_dir"]),
+        "--formal-run-root",
+        str(run_root),
+        "--prediction-dir",
+        str(fixture["pred_dir"]),
+        "--decision-dir",
+        str(fixture["dec_dir"]),
+        "--execution-stage",
+        "formal",
+        "--limit",
+        "1",
+        "--experiment-manifest",
+        str(fixture["experiment_manifest"]),
+    ]
+    subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    assert not run_root.exists()
+
+
+def test_formal_full_guard_preflight_runtime_pipeline_and_publish_offline(tmp_path, monkeypatch):
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    _enable_offline_embedding_injection(monkeypatch)
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+    )
+    assert summary["formal_compliance"]["formal_result"] is True
+    assert len(list(fixture["pred_dir"].glob("*.jsonl"))) == 5
+    assert (fixture["run_root"] / "run_manifest.json").is_file()
+    assert (fixture["run_root"] / "diagnostics" / "decision_suite_preflight.json").is_file()
+    assert not (fixture["control_root"] / "FORMAL_RUN_FAILED.json").exists()
+    receipt_files = list((fixture["control_root"] / "runs").rglob("publish_receipt.json"))
+    assert receipt_files
+
+
+def _full_e2e_real_function_refs():
+    from external_baselines.common.decision_suite_guard import validate_decision_suite_execution
+    from external_baselines.common.runtime_evidence import collect_method_runtime_evidence
+    from scripts import run_decision_comparison_suite as suite
+
+    return {
+        "validate_decision_suite_execution": validate_decision_suite_execution,
+        "preflight_decision_suite": suite.preflight_decision_suite,
+        "resolve_pipeline": suite.resolve_pipeline,
+        "prepare_method_runtime": suite.prepare_method_runtime,
+        "collect_method_runtime_evidence": collect_method_runtime_evidence,
+    }
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    [
+        "validate_decision_suite_execution",
+        "preflight_decision_suite",
+        "resolve_pipeline",
+        "prepare_method_runtime",
+        "collect_method_runtime_evidence",
+    ],
+)
+def test_full_e2e_uses_real_core_functions(tmp_path, monkeypatch, function_name):
+    refs = _full_e2e_real_function_refs()
+    calls = {"n": 0}
+    target = refs[function_name]
+
+    def _spy(*args, **kwargs):
+        calls["n"] += 1
+        return target(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite." + function_name,
+        _spy,
+    )
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    _enable_offline_embedding_injection(monkeypatch)
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+    )
+    assert calls["n"] >= 1
+
+
+def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
+    transport_calls = {"n": 0}
+
+    def _factory(method_id, config):
+        transport_calls["n"] += 1
+        return _offline_heuristic_transport_factory(method_id, config)
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    _enable_offline_embedding_injection(monkeypatch)
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_factory,
+    )
+    assert transport_calls["n"] == 5
+
+
+def test_full_e2e_builds_no_index_during_run(tmp_path, monkeypatch):
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    _enable_offline_embedding_injection(monkeypatch)
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+    )
+    for mid in ("dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"):
+        evidence = (summary.get("runtime_evidence") or {}).get(mid, {}).get("index") or {}
+        assert evidence.get("index_built_during_run") is False

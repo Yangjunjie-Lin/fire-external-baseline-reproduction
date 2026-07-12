@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -220,6 +220,30 @@ class FormalRunLayout:
     run_root: Path
     prediction_dir: Path
     decision_dir: Path
+    control_root: Path
+    failure_marker_path: Path
+    cleanup_warning_path: Path
+
+
+def resolve_formal_control_root(run_root: Path) -> Path:
+    return run_root.parent / f".{run_root.name}.control"
+
+
+def resolve_formal_control_root_from_paths(
+    *,
+    formal_run_root: Path | None,
+    prediction_dir: Path,
+    decision_dir: Path,
+) -> Path | None:
+    try:
+        layout = resolve_formal_run_layout(
+            formal_run_root=formal_run_root,
+            prediction_dir=prediction_dir,
+            decision_dir=decision_dir,
+        )
+    except FormalSuiteExecutionError:
+        return None
+    return layout.control_root
 
 
 def resolve_formal_run_layout(
@@ -242,10 +266,14 @@ def resolve_formal_run_layout(
         if pred_res.name != "predictions" or dec_res.name != "decisions":
             raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
         root = dec_res.parent
+    control_root = resolve_formal_control_root(root)
     return FormalRunLayout(
         run_root=root,
         prediction_dir=root / "predictions",
         decision_dir=root / "decisions",
+        control_root=control_root,
+        failure_marker_path=control_root / "FORMAL_RUN_FAILED.json",
+        cleanup_warning_path=control_root / "FORMAL_PUBLISH_CLEANUP_WARNING.json",
     )
 
 
@@ -279,19 +307,6 @@ class RunRootPublishState:
 
 
 @dataclass
-class PublishTargetState:
-    name: str
-    temp_path: Path
-    final_path: Path
-    backup_path: Path | None = None
-    original_existed: bool = False
-    backup_prepared: bool = False
-    published: bool = False
-    restored: bool = False
-    rollback_error: str | None = None
-
-
-@dataclass
 class FormalPublishResult:
     success: bool
     committed: bool
@@ -300,7 +315,6 @@ class FormalPublishResult:
     rollback_attempted: bool
     rollback_succeeded: bool
     run_root_state: RunRootPublishState | None = None
-    targets: list[PublishTargetState] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -312,30 +326,6 @@ class FormalPublishError(RuntimeError):
         self.publish_result = publish_result
 
 
-def _prepare_target_backup(state: PublishTargetState) -> None:
-    state.original_existed = state.final_path.exists()
-    if not state.original_existed:
-        state.backup_path = None
-        state.backup_prepared = True
-        return
-    backup = state.final_path.with_name(f"{state.final_path.name}.bak")
-    if backup.exists():
-        if backup.is_dir():
-            shutil.rmtree(backup)
-        else:
-            backup.unlink()
-    state.final_path.rename(backup)
-    state.backup_path = backup
-    state.backup_prepared = True
-
-
-def _publish_temp_directory(src: Path, dst: Path) -> None:
-    if not src.exists():
-        raise FileNotFoundError(f"Formal temp directory missing: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dst))
-
-
 def _remove_path(path: Path) -> None:
     if not path.exists():
         return
@@ -343,48 +333,6 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink()
-
-
-def _rollback_target(state: PublishTargetState) -> None:
-    if state.final_path.exists():
-        _remove_path(state.final_path)
-    if state.original_existed:
-        if state.backup_path is None or not state.backup_path.exists():
-            raise FileNotFoundError(f"backup missing for {state.name}")
-        state.backup_path.rename(state.final_path)
-    state.restored = True
-    state.rollback_error = None
-
-
-def _remove_directory_backup(backup: Path | None) -> None:
-    if backup is None or not backup.exists():
-        return
-    _remove_path(backup)
-
-
-def rollback_all_targets(states: list[PublishTargetState]) -> FormalPublishResult:
-    errors: list[str] = []
-    rollback_attempted = any(state.backup_prepared or state.published for state in states)
-    for state in reversed(states):
-        if not (state.backup_prepared or state.published):
-            continue
-        try:
-            _rollback_target(state)
-        except Exception as exc:  # noqa: BLE001
-            state.restored = False
-            state.rollback_error = sanitize_error_message(str(exc))
-            errors.append(f"restore_{state.name}_failed: {state.rollback_error}")
-    rollback_succeeded = rollback_attempted and not errors
-    return FormalPublishResult(
-        success=False,
-        committed=False,
-        cleanup_complete=False,
-        cleanup_warnings=[],
-        rollback_attempted=rollback_attempted,
-        rollback_succeeded=rollback_succeeded,
-        targets=list(states),
-        errors=errors,
-    )
 
 
 def _rollback_run_root(state: RunRootPublishState) -> FormalPublishResult:
@@ -416,12 +364,20 @@ def _rollback_run_root(state: RunRootPublishState) -> FormalPublishResult:
     )
 
 
+def _remove_directory_backup(backup: Path | None) -> None:
+    if backup is None or not backup.exists():
+        return
+    _remove_path(backup)
+
+
 def publish_formal_run_root_transactionally(
     *,
     temp_run_root: Path,
     final_run_root: Path,
 ) -> FormalPublishResult:
     """Publish a formal run root with PREPARE / COMMIT / CLEANUP phases."""
+    if temp_run_root.resolve() == final_run_root.resolve():
+        raise FormalSuiteExecutionError("formal_temp_and_final_run_root_must_differ")
     assert_same_filesystem(temp_run_root.parent, final_run_root.parent)
     state = RunRootPublishState(temp_run_root=temp_run_root, final_run_root=final_run_root)
     cleanup_warnings: list[str] = []
@@ -471,21 +427,146 @@ def publish_formal_run_root_transactionally(
     )
 
 
-def publish_formal_artifacts_transactionally(
+def validate_staged_formal_run_root(
+    temp_run_root: Path,
     *,
-    temp_prediction_dir: Path,
-    temp_decision_dir: Path,
-    final_prediction_dir: Path,
-    final_decision_dir: Path,
-) -> FormalPublishResult:
-    """Backward-compatible wrapper that publishes via a shared formal run root."""
-    temp_run_root = temp_prediction_dir.parent
-    final_run_root = final_prediction_dir.parent
-    if temp_decision_dir.parent != temp_run_root or final_decision_dir.parent != final_run_root:
-        raise FormalSuiteExecutionError("formal_output_paths_must_share_run_root")
-    return publish_formal_run_root_transactionally(
-        temp_run_root=temp_run_root,
-        final_run_root=final_run_root,
+    method_ids: list[str],
+    case_count: int,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    predictions = temp_run_root / "predictions"
+    decisions = temp_run_root / "decisions"
+    suite_summary_path = temp_run_root / "suite_summary.json"
+    run_manifest_path = temp_run_root / "run_manifest.json"
+    preflight_path = temp_run_root / "diagnostics" / "decision_suite_preflight.json"
+
+    for label, path in (
+        ("predictions", predictions),
+        ("decisions", decisions),
+        ("suite_summary.json", suite_summary_path),
+        ("run_manifest.json", run_manifest_path),
+        ("diagnostics/decision_suite_preflight.json", preflight_path),
+    ):
+        if not path.exists():
+            errors.append(f"missing_{label}")
+
+    for method_id in method_ids:
+        pred_file = predictions / f"{method_id}.jsonl"
+        summary_file = decisions / method_id / "run_summary.json"
+        if not pred_file.is_file():
+            errors.append(f"missing_prediction_{method_id}")
+        if not summary_file.is_file():
+            errors.append(f"missing_run_summary_{method_id}")
+
+    if suite_summary_path.is_file():
+        summary = json.loads(suite_summary_path.read_text(encoding="utf-8"))
+        compliance = summary.get("formal_compliance") or {}
+        if compliance.get("formal_result") is not True:
+            errors.append("staged_formal_result_not_true")
+        if compliance.get("transactional_publish_committed") is not True:
+            errors.append("staged_publish_not_committed")
+        coverage = summary.get("coverage") or {}
+        for method_id in method_ids:
+            report = coverage.get(method_id) or {}
+            if report.get("errors"):
+                errors.append(f"coverage_errors_{method_id}")
+            if report.get("expected_case_count") != case_count:
+                errors.append(f"coverage_count_mismatch_{method_id}")
+
+    if errors:
+        raise FormalSuiteExecutionError(
+            "staged_formal_run_root_invalid: " + ", ".join(errors)
+        )
+    return {"ok": True, "method_count": len(method_ids), "case_count": case_count}
+
+
+def build_formal_run_manifest(
+    *,
+    run_id: str,
+    method_ids: list[str],
+    case_count: int,
+    runner_bundle: Path,
+    experiment_manifest: Path | None,
+    temp_run_root: Path,
+    suite_summary: dict[str, Any],
+    preflight_path: Path,
+    formal_result: bool,
+) -> dict[str, Any]:
+    predictions_dir = temp_run_root / "predictions"
+    decisions_dir = temp_run_root / "decisions"
+    suite_summary_path = temp_run_root / "suite_summary.json"
+    prediction_files = {
+        mid: sha256_file(predictions_dir / f"{mid}.jsonl")
+        for mid in method_ids
+        if (predictions_dir / f"{mid}.jsonl").is_file()
+    }
+    decision_summary_files = {
+        mid: sha256_file(decisions_dir / mid / "run_summary.json")
+        for mid in method_ids
+        if (decisions_dir / mid / "run_summary.json").is_file()
+    }
+    return {
+        "run_id": run_id,
+        "execution_stage": "formal",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "method_ids": method_ids,
+        "case_count": case_count,
+        "runner_bundle": str(runner_bundle),
+        "experiment_manifest": str(experiment_manifest) if experiment_manifest else None,
+        "suite_summary_sha256": sha256_file(suite_summary_path) if suite_summary_path.is_file() else "",
+        "preflight_sha256": sha256_file(preflight_path) if preflight_path.is_file() else "",
+        "prediction_files": prediction_files,
+        "decision_summary_files": decision_summary_files,
+        "formal_result": formal_result,
+        "suite_summary": {
+            "formal_compliance": suite_summary.get("formal_compliance"),
+            "transactional_publish": suite_summary.get("transactional_publish"),
+        },
+    }
+
+
+def _write_publish_receipt(
+    *,
+    control_root: Path,
+    run_id: str,
+    layout: FormalRunLayout,
+    publish_result: FormalPublishResult,
+    formal_result: bool,
+) -> None:
+    run_record = ensure_dir(control_root / "runs" / run_id)
+    backup_path = (
+        publish_result.run_root_state.backup_path
+        if publish_result.run_root_state is not None
+        else None
+    )
+    write_json(
+        run_record / "publish_receipt.json",
+        {
+            "run_id": run_id,
+            "committed": publish_result.committed,
+            "formal_run_root": str(layout.run_root),
+            "backup_path": str(backup_path) if backup_path else None,
+            "cleanup_complete": publish_result.cleanup_complete,
+            "cleanup_warnings": list(publish_result.cleanup_warnings),
+            "formal_result": formal_result,
+        },
+    )
+
+
+def _write_cleanup_warning(
+    *,
+    layout: FormalRunLayout,
+    publish_result: FormalPublishResult,
+) -> None:
+    if not publish_result.cleanup_warnings:
+        return
+    write_json(
+        layout.cleanup_warning_path,
+        {
+            "committed": publish_result.committed,
+            "cleanup_complete": publish_result.cleanup_complete,
+            "cleanup_warnings": publish_result.cleanup_warnings,
+        },
     )
 
 
@@ -505,21 +586,9 @@ def write_formal_failure_diagnostics(
     return path
 
 
-def _publish_targets_to_marker(states: list[PublishTargetState]) -> dict[str, Any]:
-    return {
-        state.name: {
-            "original_existed": state.original_existed,
-            "published": state.published,
-            "restored": state.restored,
-            "rollback_error": state.rollback_error,
-        }
-        for state in states
-    }
-
-
 def _write_formal_failed_marker(
     *,
-    decision_parent: Path,
+    control_root: Path,
     run_id: str,
     stage: str,
     method_id: str | None,
@@ -529,8 +598,6 @@ def _write_formal_failed_marker(
     rollback_attempted: bool = False,
     rollback_succeeded: bool = False,
     rollback_errors: list[str] | None = None,
-    published_targets: list[str] | None = None,
-    targets: dict[str, Any] | None = None,
     failure_summary_path: str | None = None,
 ) -> None:
     marker = {
@@ -545,11 +612,9 @@ def _write_formal_failed_marker(
         "rollback_attempted": rollback_attempted,
         "rollback_succeeded": rollback_succeeded,
         "rollback_errors": list(rollback_errors or []),
-        "published_targets": list(published_targets or []),
-        "targets": dict(targets or {}),
         "failure_summary_path": failure_summary_path,
     }
-    write_json(decision_parent / "FORMAL_RUN_FAILED.json", marker)
+    write_json(control_root / "FORMAL_RUN_FAILED.json", marker)
 
 
 def _classify_formal_failure_stage(exc: Exception) -> str:
@@ -576,7 +641,7 @@ def _raise_formal_failure(
     message: str,
     stage: str,
     run_id: str,
-    marker_dir: Path,
+    control_root: Path,
     suite_summary: dict[str, Any],
     temp_root: Path | None,
     keep_failed_temp_artifacts: bool,
@@ -585,17 +650,15 @@ def _raise_formal_failure(
     rollback_attempted: bool = False,
     rollback_succeeded: bool = False,
     rollback_errors: list[str] | None = None,
-    published_targets: list[str] | None = None,
-    targets: dict[str, Any] | None = None,
 ) -> None:
-    diagnostics_dir = ensure_dir(marker_dir / "diagnostics")
+    run_record_dir = ensure_dir(control_root / "runs" / run_id)
     failure_summary_path = write_formal_failure_diagnostics(
-        diagnostics_dir=diagnostics_dir,
+        diagnostics_dir=run_record_dir,
         run_id=run_id,
         suite_summary=suite_summary,
     )
     _write_formal_failed_marker(
-        decision_parent=marker_dir,
+        control_root=control_root,
         run_id=run_id,
         stage=stage,
         method_id=method_id,
@@ -605,9 +668,7 @@ def _raise_formal_failure(
         rollback_attempted=rollback_attempted,
         rollback_succeeded=rollback_succeeded,
         rollback_errors=rollback_errors,
-        published_targets=published_targets,
-        targets=targets,
-        failure_summary_path=str(failure_summary_path.relative_to(marker_dir)),
+        failure_summary_path=str(failure_summary_path.relative_to(control_root)),
     )
     if temp_root and not keep_failed_temp_artifacts:
         _cleanup_formal_temp(temp_root)
@@ -618,7 +679,7 @@ def _raise_formal_early_failure(
     *,
     exc: Exception,
     run_id: str,
-    marker_dir: Path,
+    control_root: Path,
     temp_root: Path | None,
     keep_failed_temp_artifacts: bool,
 ) -> None:
@@ -631,12 +692,68 @@ def _raise_formal_early_failure(
         message=str(exc),
         stage=_classify_formal_failure_stage(exc),
         run_id=run_id,
-        marker_dir=marker_dir,
+        control_root=control_root,
         suite_summary=suite_summary,
         temp_root=temp_root,
         keep_failed_temp_artifacts=keep_failed_temp_artifacts,
         error_type=type(exc).__name__,
     )
+
+
+def validate_cli_args(args: argparse.Namespace) -> None:
+    if args.execution_stage != "formal":
+        if args.method_set != "comparison_suite":
+            raise SystemExit("Only comparison_suite is supported for the decision suite.")
+        return
+    if args.enable_dev_aliases:
+        raise FormalRunFailed(
+            "Formal execution forbids --enable-dev-aliases.",
+            stage="cli_validation",
+        )
+    if args.limit is not None:
+        raise FormalRunFailed(FORMAL_LIMIT_FORBIDDEN_MESSAGE, stage="cli_validation")
+    if args.method_set != "comparison_suite":
+        raise FormalRunFailed(
+            "Only comparison_suite is supported for the decision suite.",
+            stage="cli_validation",
+        )
+
+
+def _emit_formal_cli_error(
+    exc: FormalRunFailed,
+    *,
+    control_root: Path | None,
+    run_id: str,
+) -> None:
+    if control_root is not None:
+        try:
+            _write_formal_failed_marker(
+                control_root=control_root,
+                run_id=run_id,
+                stage=exc.stage,
+                method_id=None,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                temporary_artifacts_path=None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "execution_stage": "formal",
+                "stage": exc.stage,
+                "formal_result": False,
+                "error_type": type(exc).__name__,
+                "error": sanitize_error_message(str(exc)),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 
 
 def _write_decision_artifacts(
@@ -754,6 +871,9 @@ def _write_decision_artifacts(
     return summary
 
 
+LLMTransportFactory = Callable[[str, dict[str, Any]], Callable[..., str] | None]
+
+
 def run_decision_suite(
     *,
     runner_bundle: Path,
@@ -766,6 +886,7 @@ def run_decision_suite(
     dev_aliases_enabled: bool = False,
     keep_failed_temp_artifacts: bool = False,
     formal_run_root: Path | None = None,
+    llm_transport_factory: LLMTransportFactory | None = None,
 ) -> dict[str, Any]:
     formal = execution_stage == "formal"
     run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
@@ -773,7 +894,11 @@ def run_decision_suite(
     write_prediction_dir = prediction_dir
     write_decision_dir = decision_dir
     layout: FormalRunLayout | None = None
-    marker_dir = decision_dir.parent
+    control_root = resolve_formal_control_root_from_paths(
+        formal_run_root=formal_run_root,
+        prediction_dir=prediction_dir,
+        decision_dir=decision_dir,
+    ) or (decision_dir.parent.parent / ".formal.control")
     try:
 
         assert_no_evaluator_bundle_access(runner_bundle)
@@ -787,7 +912,7 @@ def run_decision_suite(
             )
             prediction_dir = layout.prediction_dir
             decision_dir = layout.decision_dir
-            marker_dir = layout.run_root
+            control_root = layout.control_root
 
         validate_decision_suite_execution(
             execution_stage=execution_stage,
@@ -867,8 +992,9 @@ def run_decision_suite(
             execution_stage=execution_stage,
             experiment_manifest=experiment_manifest,
         )
-        diagnostics_dir = ensure_dir(marker_dir / "diagnostics")
-        write_json(diagnostics_dir / "decision_suite_preflight.json", preflight)
+        if formal:
+            run_record_dir = ensure_dir(control_root / "runs" / run_id)
+            write_json(run_record_dir / "preflight.json", preflight)
         if formal and not preflight.get("ok"):
             suite_summary = {
                 "execution_stage": execution_stage,
@@ -880,7 +1006,7 @@ def run_decision_suite(
                 message="Formal decision suite preflight failed.",
                 stage="preflight",
                 run_id=run_id,
-                marker_dir=marker_dir,
+                control_root=control_root,
                 suite_summary=suite_summary,
                 temp_root=temp_root,
                 keep_failed_temp_artifacts=keep_failed_temp_artifacts,
@@ -891,6 +1017,8 @@ def run_decision_suite(
             temp_root = create_formal_temp_run_root(layout.run_root, run_id)
             write_prediction_dir = ensure_dir(temp_root / "predictions")
             write_decision_dir = ensure_dir(temp_root / "decisions")
+            staged_preflight = ensure_dir(temp_root / "diagnostics")
+            write_json(staged_preflight / "decision_suite_preflight.json", preflight)
 
         ensure_dir(write_prediction_dir)
         ensure_dir(write_decision_dir)
@@ -946,7 +1074,12 @@ def run_decision_suite(
         try:
             for method_id in method_ids:
                 method_config = method_configs[method_id]
-                llm = build_llm_client(method_config)
+                transport = (
+                    llm_transport_factory(method_id, method_config)
+                    if llm_transport_factory is not None
+                    else None
+                )
+                llm = build_llm_client(method_config, transport=transport)
                 pipeline = resolve_pipeline(method_id)
                 runtime = prepare_method_runtime(method_id, method_config)
                 evidence = collect_method_runtime_evidence(
@@ -1108,7 +1241,7 @@ def run_decision_suite(
                     message=str(exc),
                     stage="method_execution",
                     run_id=run_id,
-                    marker_dir=marker_dir,
+                    control_root=control_root,
                     suite_summary=suite_summary,
                     temp_root=temp_root,
                     keep_failed_temp_artifacts=keep_failed_temp_artifacts,
@@ -1143,44 +1276,7 @@ def run_decision_suite(
         )
 
         if formal and pre_publish_passed and layout is not None and temp_root is not None:
-            suite_summary_path = temp_root / "suite_summary.json"
-            write_json(suite_summary_path, suite_summary)
-            try:
-                publish_result = publish_formal_run_root_transactionally(
-                    temp_run_root=temp_root,
-                    final_run_root=layout.run_root,
-                )
-            except FormalPublishError as exc:
-                publish_result = exc.publish_result
-                _raise_formal_failure(
-                    message=str(exc),
-                    stage="transactional_publish",
-                    run_id=run_id,
-                    marker_dir=marker_dir,
-                    suite_summary=suite_summary,
-                    temp_root=temp_root,
-                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-                    error_type=type(exc).__name__,
-                    rollback_attempted=publish_result.rollback_attempted,
-                    rollback_succeeded=publish_result.rollback_succeeded,
-                    rollback_errors=publish_result.errors,
-                )
-
-            suite_summary["transactional_publish"] = {
-                "committed": publish_result.committed,
-                "cleanup_complete": publish_result.cleanup_complete,
-                "cleanup_warnings": list(publish_result.cleanup_warnings),
-            }
-            if publish_result.cleanup_warnings:
-                write_json(
-                    marker_dir / "FORMAL_PUBLISH_CLEANUP_WARNING.json",
-                    {
-                        "committed": publish_result.committed,
-                        "cleanup_complete": publish_result.cleanup_complete,
-                        "cleanup_warnings": publish_result.cleanup_warnings,
-                    },
-                )
-
+            staged_preflight_path = temp_root / "diagnostics" / "decision_suite_preflight.json"
             suite_summary["formal_compliance"] = compute_suite_formal_compliance(
                 formal=formal,
                 experiment_manifest_provided=experiment_manifest is not None,
@@ -1195,48 +1291,79 @@ def run_decision_suite(
                 ),
                 ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
                 method_ids=method_ids,
-                phase="final",
-                transactional_publish_committed=publish_result.committed,
-                transactional_cleanup_complete=publish_result.cleanup_complete,
+                phase="planned_final",
+                transactional_publish_committed=True,
+                transactional_cleanup_complete=True,
                 **integrity_flags,
             )
-            write_json(layout.run_root / "suite_summary.json", suite_summary)
-
-            failed_marker = marker_dir / "FORMAL_RUN_FAILED.json"
-            if failed_marker.is_file():
-                failed_marker.unlink()
-
-            final_compliance = suite_summary["formal_compliance"]
-            if not (
-                final_compliance.get("formal_result") is True
-                and final_compliance.get("transactional_publish_committed") is True
-                and final_compliance.get("pre_publish_compliance_passed") is True
-            ):
-                if publish_result.run_root_state is not None:
-                    rollback_result = _rollback_run_root(publish_result.run_root_state)
-                else:
-                    rollback_result = FormalPublishResult(
-                        success=False,
-                        committed=False,
-                        cleanup_complete=False,
-                        cleanup_warnings=[],
-                        rollback_attempted=False,
-                        rollback_succeeded=False,
-                        errors=[],
-                    )
-                _raise_formal_failure(
-                    message="Final formal compliance checks did not pass after publish.",
-                    stage="final_compliance",
-                    run_id=run_id,
-                    marker_dir=marker_dir,
-                    suite_summary=suite_summary,
-                    temp_root=None,
-                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-                    error_type="FormalComplianceError",
-                    rollback_attempted=rollback_result.rollback_attempted,
-                    rollback_succeeded=rollback_result.rollback_succeeded,
-                    rollback_errors=rollback_result.errors,
+            suite_summary["transactional_publish"] = {
+                "committed": True,
+                "cleanup_complete": True,
+                "cleanup_warnings": [],
+            }
+            write_json(temp_root / "suite_summary.json", suite_summary)
+            run_manifest = build_formal_run_manifest(
+                run_id=run_id,
+                method_ids=method_ids,
+                case_count=len(case_ids),
+                runner_bundle=runner_bundle,
+                experiment_manifest=experiment_manifest,
+                temp_run_root=temp_root,
+                suite_summary=suite_summary,
+                preflight_path=staged_preflight_path,
+                formal_result=True,
+            )
+            write_json(temp_root / "run_manifest.json", run_manifest)
+            validate_staged_formal_run_root(
+                temp_root,
+                method_ids=method_ids,
+                case_count=len(case_ids),
+            )
+            try:
+                publish_result = publish_formal_run_root_transactionally(
+                    temp_run_root=temp_root,
+                    final_run_root=layout.run_root,
                 )
+            except FormalPublishError as exc:
+                publish_result = exc.publish_result
+                _raise_formal_failure(
+                    message=str(exc),
+                    stage="transactional_publish",
+                    run_id=run_id,
+                    control_root=control_root,
+                    suite_summary=suite_summary,
+                    temp_root=temp_root,
+                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                    error_type=type(exc).__name__,
+                    rollback_attempted=publish_result.rollback_attempted,
+                    rollback_succeeded=publish_result.rollback_succeeded,
+                    rollback_errors=publish_result.errors,
+                )
+
+            suite_summary["transactional_publish"] = {
+                "committed": publish_result.committed,
+                "cleanup_complete": publish_result.cleanup_complete,
+                "cleanup_warnings": list(publish_result.cleanup_warnings),
+            }
+            try:
+                _write_cleanup_warning(layout=layout, publish_result=publish_result)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _write_publish_receipt(
+                    control_root=control_root,
+                    run_id=run_id,
+                    layout=layout,
+                    publish_result=publish_result,
+                    formal_result=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                if layout.failure_marker_path.is_file():
+                    layout.failure_marker_path.unlink()
+            except Exception:  # noqa: BLE001
+                pass
         elif formal:
             suite_summary["formal_compliance"]["formal_result"] = False
             suite_summary["formal_compliance"]["transactional_publish_complete"] = False
@@ -1245,7 +1372,7 @@ def run_decision_suite(
                 message="Pre-publish compliance checks did not pass.",
                 stage="pre_publish_compliance",
                 run_id=run_id,
-                marker_dir=marker_dir,
+                control_root=control_root,
                 suite_summary=suite_summary,
                 temp_root=temp_root,
                 keep_failed_temp_artifacts=keep_failed_temp_artifacts,
@@ -1263,7 +1390,7 @@ def run_decision_suite(
             _raise_formal_early_failure(
                 exc=exc,
                 run_id=run_id,
-                marker_dir=marker_dir,
+                control_root=control_root,
                 temp_root=temp_root,
                 keep_failed_temp_artifacts=keep_failed_temp_artifacts,
             )
@@ -1294,34 +1421,38 @@ def main(argv: list[str] | None = None) -> None:
         help="Retain formal temporary directories when a formal run fails (debug only).",
     )
     args = parser.parse_args(argv)
-
-    if args.execution_stage == "formal" and args.enable_dev_aliases:
-        raise SystemExit("Formal execution forbids --enable-dev-aliases.")
-
-    if args.execution_stage == "formal" and args.limit is not None:
-        raise SystemExit(FORMAL_LIMIT_FORBIDDEN_MESSAGE)
-
-    if args.method_set != "comparison_suite":
-        raise SystemExit("Only comparison_suite is supported for the decision suite.")
-
+    run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
     prediction_dir = Path(args.prediction_dir)
     decision_dir = Path(args.decision_dir)
     formal_run_root = Path(args.formal_run_root) if args.formal_run_root else None
     if args.execution_stage == "formal" and formal_run_root is not None:
         prediction_dir = formal_run_root / "predictions"
         decision_dir = formal_run_root / "decisions"
-
-    summary = run_decision_suite(
-        runner_bundle=Path(args.runner_bundle),
+    control_root = resolve_formal_control_root_from_paths(
+        formal_run_root=formal_run_root,
         prediction_dir=prediction_dir,
         decision_dir=decision_dir,
-        execution_stage=args.execution_stage,
-        limit=args.limit,
-        experiment_manifest=Path(args.experiment_manifest) if args.experiment_manifest else None,
-        dev_aliases_enabled=bool(args.enable_dev_aliases),
-        keep_failed_temp_artifacts=bool(args.keep_failed_temp_artifacts),
-        formal_run_root=formal_run_root,
     )
+
+    try:
+        validate_cli_args(args)
+    except FormalRunFailed as exc:
+        _emit_formal_cli_error(exc, control_root=control_root, run_id=run_id)
+
+    try:
+        summary = run_decision_suite(
+            runner_bundle=Path(args.runner_bundle),
+            prediction_dir=prediction_dir,
+            decision_dir=decision_dir,
+            execution_stage=args.execution_stage,
+            limit=args.limit,
+            experiment_manifest=Path(args.experiment_manifest) if args.experiment_manifest else None,
+            dev_aliases_enabled=bool(args.enable_dev_aliases),
+            keep_failed_temp_artifacts=bool(args.keep_failed_temp_artifacts),
+            formal_run_root=formal_run_root,
+        )
+    except FormalRunFailed as exc:
+        _emit_formal_cli_error(exc, control_root=control_root, run_id=run_id)
     formal = args.execution_stage == "formal"
     formal_result = bool((summary.get("formal_compliance") or {}).get("formal_result"))
     payload = {
@@ -1337,21 +1468,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except FormalRunFailed as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "execution_stage": "formal",
-                    "stage": exc.stage,
-                    "formal_result": False,
-                    "error": sanitize_error_message(str(exc)),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            file=sys.stderr,
-        )
-        raise SystemExit(1) from exc
+    main()

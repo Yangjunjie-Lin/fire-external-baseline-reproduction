@@ -166,3 +166,26 @@ python scripts/validate_formal_config.py \
 - Dense/Hybrid are controlled supplemental baselines; not E-KELL paper-fidelity.
 - `--include-supplemental` is deprecated; use `--method-set comparison_suite`.
 - Formal model identity is frozen in YAML; env vars supply credentials only.
+- Formal control/diagnostics directory is outside the immutable run root:
+
+```text
+outputs/formal/
+├── test_public/
+│   ├── predictions/
+│   ├── decisions/
+│   ├── suite_summary.json
+│   ├── run_manifest.json
+│   └── diagnostics/
+│       └── decision_suite_preflight.json
+└── .test_public.control/
+    ├── runs/<run_id>/
+    │   ├── preflight.json
+    │   ├── failure_summary.json
+    │   └── publish_receipt.json
+    ├── FORMAL_RUN_FAILED.json
+    └── FORMAL_PUBLISH_CLEANUP_WARNING.json
+```
+
+- Final suite summary and run manifest are staged before commit; the committed run root is never rewritten after rename.
+- Post-commit cleanup failures are warnings only (written to control root).
+- All Formal CLI validation failures emit structured JSON on stderr and exit 1.

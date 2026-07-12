@@ -175,15 +175,15 @@ Requires:
 - **no** `--enable-dev-aliases`
 - frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256)
 - manifest method entries resolved before per-method config merge
-- two-phase formal compliance: pre-publish checks (no publish required) → transactional publish commit → final `formal_result` (cleanup warnings do not invalidate commit)
-- formal temp root created only after static validation and five-method preflight
-- single same-filesystem `--formal-run-root` publication (one directory rename)
+- two-phase formal compliance: pre-publish checks (no publish required) → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` at first rename (cleanup warnings do not invalidate commit)
+- formal temp root created only after static validation and five-method preflight; preflight/failure records written to external `.control/` directory (never mutates published run root before commit)
+- single same-filesystem `--formal-run-root` publication (one directory rename); **no core formal artifact rewritten after commit**
 - new freeze manifests use explicit `runner_bundle` block (legacy top-level checksum fields opt-in only)
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
-- five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`; includes E-KELL prompt files)
-- **transactional** publish of predictions, decisions, and `suite_summary.json` (temp dir → atomic publish only when pre-publish compliance passes; failures roll back both targets, exit nonzero, and leave `FORMAL_RUN_FAILED.json`)
-- Formal CLI exits nonzero on any configuration/compliance/publish failure; dry-run may exit zero with `formal_result=false`
+- five-method **preflight** passes before any LLM call (external control root + copy under `diagnostics/` in staged run root; includes E-KELL prompt files)
+- **transactional** publish: staged package validation → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; committed runs are never rolled back)
+- Formal CLI validation failures emit structured JSON and exit 1; dry-run may exit zero with `formal_result=false`
 - producer-declared checksum and consumer-computed hash are frozen and validated separately (legacy ambiguous `bundle_checksum` rejected in formal)
 - output under `outputs/interop/` (or formal directory)
 - dry-run artifacts must never report `formal_result=true`

@@ -564,6 +564,9 @@ class _TransportInjectedLLMClient:
             seed=seed,
         )
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
 
 def build_llm_client(
     config: dict[str, Any] | None = None,

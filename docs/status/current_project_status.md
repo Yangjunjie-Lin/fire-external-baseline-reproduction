@@ -23,7 +23,7 @@ Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench
 | DEV | real or experimental config | explicit enable only | allowed (subset debug) | recommended persisted dirs | recommended | false |
 | Formal | forbidden | forbidden | **forbidden** | **load-only** persisted dirs | required (non-`.example`, frozen) | runtime evidence + transactional publish |
 
-Formal enforcement (decision suite): temp run root is created only after manifest/freeze/coverage/config validation and five-method preflight; publication uses a single same-filesystem `--formal-run-root` with PREPARE/COMMIT/CLEANUP phases (backup cleanup failures are warnings, not rollbacks); new freezes use explicit `runner_bundle` block without requiring legacy `runner_bundle_checksum`; full offline E2E exercises real guard/preflight/runtime while injecting only LLM transport and embedding boundaries.
+Formal enforcement (decision suite): preflight/failure diagnostics and publish receipts are written to an external control directory (`.<run-root-name>.control/`); temp run root is created only after manifest/freeze/coverage/config validation and five-method preflight; the final `suite_summary.json`, `run_manifest.json`, and preflight copy are staged and validated before a single same-filesystem `--formal-run-root` rename; **no core formal artifact is rewritten after commit**; PREPARE/COMMIT/CLEANUP phases treat backup cleanup failures as control-root warnings only (never rollback); new freezes use explicit `runner_bundle` block without requiring legacy `runner_bundle_checksum`; full offline E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only LLM transport.
 
 Formal pre-checks (read-only against main project):
 

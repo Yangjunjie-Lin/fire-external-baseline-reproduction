@@ -218,10 +218,13 @@ python scripts/validate_formal_config.py \
 **Formal comparison suite compliance (offline-tested):**
 
 - Manifest method entries are resolved before config merge (`get_method_entry` → `build_method_config`).
-- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → transactional publish commit → `formal_result` (cleanup warnings do not invalidate commit).
+- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` already present at first rename (cleanup warnings do not invalidate commit).
 - Formal temp artifacts are created **only after** static validation and five-method preflight pass.
-- Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename.
-- Publish phases: **PREPARE** (backup) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures are warnings only).
+- Formal diagnostics and failure records live in an external **control root** (`.<run-root-name>.control/`) and never mutate the published run root before commit.
+- Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename. **No core formal artifact is rewritten after commit.**
+- Publish phases: **PREPARE** (backup) → **STAGED PACKAGE** (final `suite_summary.json`, `run_manifest.json`, preflight copy) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures write warnings/receipts to control root only).
+- Post-commit cleanup or receipt failures are non-destructive warnings; committed runs are never rolled back.
+- Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only the external LLM transport (and deterministic fake embedding for offline index fixtures).
 - New freeze manifests use explicit `runner_bundle` identity fields; legacy `runner_bundle_checksum` is opt-in via `--include-legacy-compat-fields`.
 - Generated files under `outputs/` are never tracked.
 
