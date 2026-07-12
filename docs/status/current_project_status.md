@@ -19,11 +19,11 @@ Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench
 
 | Mode | Heuristic/smoke | Dev aliases | `--limit` | Index build | Manifest | `formal_result` |
 |---|---|---|---|---|---|---|
-| Dry run | allowed (fixtures) | optional (`--enable-dev-aliases`) | allowed | allowed (smoke/rebuild) | optional | always false |
+| Dry run | allowed (fixtures) | optional (`--enable-dev-aliases`) | allowed | allowed (smoke/rebuild) | optional | **always false** |
 | DEV | real or experimental config | explicit enable only | allowed (subset debug) | recommended persisted dirs | recommended | false |
-| Formal | forbidden | forbidden | **forbidden** | **load-only** persisted dirs | required (non-`.example`, frozen) | runtime evidence only |
+| Formal | forbidden | forbidden | **forbidden** | **load-only** persisted dirs | required (non-`.example`, frozen) | runtime evidence + transactional publish |
 
-Formal enforcement (decision suite): complete Runner Bundle case coverage; Dense/E-KELL directory indexes only; five-method preflight before any LLM call; strict JSON array types; `formal_compliance` derived from runtime evidence (`runtime_evidence.py`).
+Formal enforcement (decision suite): frozen Runner Bundle checksum validation; shared generation identity across all five methods; complete Runner Bundle case coverage; Dense/E-KELL/Hybrid directory indexes only with explicit real-embedding manifest fields; separate semantic index checksum vs on-disk `index_manifest.json` SHA; E-KELL prompt file + logical-component preflight; five-method preflight before any LLM call; strict JSON array types; predictions published transactionally (`.formal_tmp_<run_id>/` → atomic publish only when all methods pass; failures write `FORMAL_RUN_FAILED.json` and leave no partial formal predictions); `formal_compliance` derived from runtime evidence (`runtime_evidence.py`).
 
 Formal pre-checks (read-only against main project):
 
@@ -52,6 +52,9 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 | Formal decision suite guard | `src/external_baselines/common/decision_suite_guard.py` |
 | Unified five-method preflight | `src/external_baselines/common/decision_suite_preflight.py` |
 | Runtime evidence / formal compliance | `src/external_baselines/common/runtime_evidence.py` |
+| Runner Bundle integrity (formal) | `src/external_baselines/common/bundle_integrity.py` |
+| Shared generation identity (formal) | `src/external_baselines/common/generation_identity.py` |
+| Transactional formal publish | `scripts/run_decision_comparison_suite.py` (`--keep-failed-temp-artifacts` debug only) |
 | Taxonomy normalizer (character-level only) | `src/external_baselines/common/taxonomy_normalizer.py` |
 | Output taxonomy checker | `scripts/check_output_taxonomy.py` |
 | Schema snapshot checker | `scripts/check_firebench_contract_snapshot.py` |

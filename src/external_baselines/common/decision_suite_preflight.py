@@ -2,16 +2,45 @@
 
 from __future__ import annotations
 
+import importlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from external_baselines.common.bundle_integrity import (
+    extract_frozen_runner_bundle_identity,
+    validate_formal_runner_bundle_integrity,
+)
+from external_baselines.common.checksums import sha256_file
 from external_baselines.common.formal_config_validator import (
     FormalConfigError,
     validate_method_config,
 )
-from external_baselines.interop.bundle import load_runner_bundle
+from external_baselines.common.generation_identity import (
+    detect_method_llm_overrides,
+    validate_shared_generation_identity,
+)
+from external_baselines.common.io import read_json, read_jsonl, read_yaml
+from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 from external_baselines.method_registry import canonicalize_method_id
+
+EKELL_REQUIRED_PROMPTS = (
+    "stepwise_projection.txt",
+    "stepwise_intersection.txt",
+    "stepwise_union.txt",
+    "stepwise_negation.txt",
+    "final_kg_grounded_response.txt",
+)
+
+EKELL_LOGICAL_COMPONENTS = (
+    ("parse_query", "external_baselines.ekell_style.logical_query.parser", "parse_query"),
+    ("validate_query", "external_baselines.ekell_style.logical_query.validator", "validate_query"),
+    ("execute_query", "external_baselines.ekell_style.logical_query.fol_executor", "execute_query"),
+    ("run_stepwise_prompt_chain", "external_baselines.ekell_style.stepwise_prompt_chain", "run_stepwise_prompt_chain"),
+    ("expand_neighborhood", "external_baselines.ekell_style.neighborhood_expander", "expand_neighborhood"),
+    ("load_kg", "external_baselines.ekell_style.kg_loader", "load_kg"),
+)
 
 
 @dataclass
@@ -51,17 +80,177 @@ def _resolve_path(config: dict[str, Any], rel: str | Path) -> Path:
     return root / rel
 
 
+def _load_freeze_manifest(experiment_manifest: Path | None) -> dict[str, Any] | None:
+    if experiment_manifest is None or not experiment_manifest.is_file():
+        return None
+    from external_baselines.common.experiment_manifest import load_experiment_manifest
+
+    manifest = load_experiment_manifest(experiment_manifest)
+    freeze_path = manifest.get("freeze_manifest")
+    if not freeze_path:
+        return None
+    freeze_file = Path(str(freeze_path))
+    if not freeze_file.is_file():
+        root = Path(__file__).resolve().parents[3]
+        freeze_file = root / str(freeze_path)
+    if not freeze_file.is_file():
+        return None
+    return read_json(freeze_file)
+
+
+def _load_shared_model_config(experiment_manifest: Path | None) -> dict[str, Any]:
+    if experiment_manifest is None or not experiment_manifest.is_file():
+        return {}
+    from external_baselines.common.experiment_manifest import load_experiment_manifest
+
+    manifest = load_experiment_manifest(experiment_manifest)
+    shared_path = manifest.get("shared_model_config")
+    if not shared_path:
+        return {}
+    shared_file = Path(str(shared_path))
+    if not shared_file.is_file():
+        shared_file = Path(__file__).resolve().parents[3] / str(shared_path)
+    if not shared_file.is_file():
+        return {}
+    return read_yaml(shared_file)
+
+
+def _validate_runner_bundle_integrity(
+    bundle: dict[str, Any],
+    *,
+    formal: bool,
+    freeze: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not formal:
+        validation = validate_bundle_checksum(bundle)
+        return {
+            "ok": bool(validation.get("ok", True)),
+            "producer_declared_checksum": validation.get("producer_declared_checksum"),
+            "consumer_computed_hash": validation.get("consumer_computed_bundle_hash"),
+            "expected_frozen_checksum": None,
+            "input_cases_sha256": sha256_file(bundle.get("scenarios_path"))
+            if bundle.get("scenarios_path")
+            else None,
+            "expected_input_cases_sha256": None,
+            "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
+            "expected_prediction_schema_sha256": None,
+            "corpus_aggregate_sha256": (
+                (bundle.get("corpus_manifest") or {}).get("aggregate_sha256")
+                if isinstance(bundle.get("corpus_manifest"), dict)
+                else None
+            ),
+            "expected_corpus_aggregate_sha256": None,
+            "file_checksum_report_ok": bool((bundle.get("file_checksum_report") or {}).get("ok", True)),
+            "mismatches": [],
+            "errors": [],
+        }
+
+    frozen_identity = extract_frozen_runner_bundle_identity(freeze or {})
+    live = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen_identity)
+    if not live.get("input_cases_sha256") and bundle.get("scenarios_path"):
+        live["input_cases_sha256"] = sha256_file(bundle.get("scenarios_path"))
+    return live
+
+
+def _validate_ekell_prompts(
+    prompt_dir: Path,
+    *,
+    freeze: dict[str, Any] | None,
+    formal: bool,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    prompt_hashes: dict[str, str] = {}
+    for name in EKELL_REQUIRED_PROMPTS:
+        path = prompt_dir / name
+        if not path.is_file():
+            errors.append(f"ekell_prompt_missing:{name}")
+            continue
+        if path.stat().st_size == 0:
+            errors.append(f"ekell_prompt_empty:{name}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"ekell_prompt_not_utf8:{name}")
+            continue
+        if not text.strip():
+            errors.append(f"ekell_prompt_empty:{name}")
+            continue
+        prompt_hashes[name] = sha256_file(path)
+
+    frozen_prompt_hashes = {}
+    if isinstance(freeze, dict):
+        frozen_prompt_hashes = dict(freeze.get("ekell_prompt_hashes") or {})
+        prompt_tree = freeze.get("prompt_tree_sha256")
+        if formal and prompt_tree and prompt_hashes:
+            from external_baselines.common.freeze_manifest import prompt_tree_checksum
+
+            actual_tree = prompt_tree_checksum(prompt_dir)
+            if actual_tree and str(actual_tree) != str(prompt_tree):
+                errors.append("ekell_prompt_tree_hash_mismatch")
+    if formal and frozen_prompt_hashes:
+        for name, expected in frozen_prompt_hashes.items():
+            actual = prompt_hashes.get(name)
+            if actual and str(actual) != str(expected):
+                errors.append(f"ekell_prompt_hash_mismatch:{name}")
+
+    return {"ok": not errors, "prompt_dir": str(prompt_dir), "prompt_hashes": prompt_hashes, "errors": errors}
+
+
+def _validate_ekell_logical_components() -> list[str]:
+    errors: list[str] = []
+    for name, module_path, attr in EKELL_LOGICAL_COMPONENTS:
+        try:
+            module = importlib.import_module(module_path)
+            component = getattr(module, attr)
+            if not callable(component):
+                errors.append(f"ekell_component_not_callable:{name}")
+        except ImportError:
+            errors.append(f"ekell_component_import_failed:{name}")
+    return errors
+
+
+def _validate_kg_jsonl(corpus_dir: Path) -> list[str]:
+    errors: list[str] = []
+    for name in ("entities.jsonl", "relations.jsonl", "triples.jsonl"):
+        path = corpus_dir / name
+        if not path.is_file() or path.stat().st_size == 0:
+            errors.append(f"ekell_{name}_missing_or_empty")
+            continue
+        try:
+            rows = read_jsonl(path)
+        except ValueError:
+            errors.append(f"ekell_kg_jsonl_parse_error:{name}")
+            continue
+        if not rows:
+            errors.append(f"ekell_{name}_missing_or_empty")
+    triples_path = corpus_dir / "triples.jsonl"
+    if triples_path.is_file():
+        try:
+            triples = read_jsonl(triples_path)
+            for row in triples:
+                if not isinstance(row, dict):
+                    errors.append("ekell_triples_invalid_record")
+                    break
+                if not any(row.get(k) for k in ("head", "relation", "tail", "triple_id")):
+                    errors.append("ekell_triples_missing_fields")
+                    break
+        except ValueError:
+            errors.append("ekell_kg_jsonl_parse_error:triples.jsonl")
+    return errors
+
+
 def _preflight_llm_identity(config: dict[str, Any]) -> dict[str, Any]:
     llm = config.get("llm") or {}
     return {
         "provider": llm.get("provider"),
         "model": llm.get("model"),
         "model_version": llm.get("model_version") or llm.get("version"),
-        "api_key_env": llm.get("api_key_env"),
         "temperature": llm.get("temperature"),
         "top_p": llm.get("top_p"),
         "max_tokens": llm.get("max_tokens"),
         "seed": llm.get("seed"),
+        "enable_thinking": llm.get("enable_thinking"),
     }
 
 
@@ -71,6 +260,7 @@ def _preflight_method_resources(
     *,
     execution_stage: str,
     dense_config: dict[str, Any] | None = None,
+    freeze: dict[str, Any] | None = None,
 ) -> MethodPreflightResult:
     result = MethodPreflightResult(method_id=method_id)
     result.llm_identity = _preflight_llm_identity(config)
@@ -108,12 +298,15 @@ def _preflight_method_resources(
                 expected_model_version=str(dense.get("model_version") or ""),
                 expected_backend=str(dense.get("backend") or ""),
                 expected_dimension=int(dense.get("dimension") or dense.get("dim") or 0) or None,
+                require_explicit_embedding_evidence=formal,
             )
             result.index_identity = dict(payload.get("manifest") or payload)
             result.embedding_identity = {
                 "backend": payload.get("backend"),
                 "model_name": payload.get("model_name"),
                 "model_version": payload.get("model_version"),
+                "actual_embedding_used": (payload.get("manifest") or {}).get("actual_embedding_used"),
+                "smoke_fallback_used": (payload.get("manifest") or {}).get("smoke_fallback_used"),
             }
         except DenseIndexError as exc:
             result.errors.append(str(exc))
@@ -141,22 +334,23 @@ def _preflight_method_resources(
                 ),
                 expected_backend=str(dense_cfg.get("backend") or hybrid.get("dense_method") or ""),
                 expected_dimension=int(dense_cfg.get("dimension") or hybrid.get("dimension") or 0) or None,
+                require_explicit_embedding_evidence=formal,
             )
             result.index_identity = dict(payload.get("manifest") or payload)
             result.embedding_identity = {
                 "backend": payload.get("backend"),
                 "model_name": payload.get("model_name"),
                 "model_version": payload.get("model_version"),
+                "actual_embedding_used": (payload.get("manifest") or {}).get("actual_embedding_used"),
+                "smoke_fallback_used": (payload.get("manifest") or {}).get("smoke_fallback_used"),
             }
         except DenseIndexError as exc:
             result.errors.append(str(exc))
             return result
     elif method_id == "ekell_style_controlled_shared_llm":
-        for name in ("entities.jsonl", "relations.jsonl", "triples.jsonl"):
-            path = corpus_dir / name
-            if not path.is_file() or path.stat().st_size == 0:
-                result.errors.append(f"ekell_{name}_missing_or_empty")
-                return result
+        result.errors.extend(_validate_kg_jsonl(corpus_dir))
+        if result.errors:
+            return result
         vector = config.get("ekell_vector") or {}
         index_path = _resolve_path(config, str(vector.get("index_path") or ""))
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
@@ -176,16 +370,25 @@ def _preflight_method_resources(
                 "backend": manifest.get("backend"),
                 "model_name": manifest.get("model_name"),
                 "model_version": manifest.get("model_version"),
+                "actual_embedding_used": manifest.get("actual_embedding_used"),
+                "smoke_fallback_used": manifest.get("smoke_fallback_used"),
             }
         except VectorIndexError as exc:
             result.errors.append(str(exc))
             return result
-        prompt_dir = Path((config.get("ekell_style") or {}).get("prompt_dir") or "configs/prompts/controlled")
+        prompt_dir_raw = (config.get("ekell_style") or {}).get("prompt_dir") or "configs/prompts/controlled"
+        prompt_dir = Path(prompt_dir_raw)
+        if not prompt_dir.is_dir():
+            prompt_dir = Path(__file__).resolve().parents[3] / str(prompt_dir_raw)
         if not prompt_dir.is_dir():
             result.errors.append("ekell_prompt_dir_missing")
             return result
+        prompt_report = _validate_ekell_prompts(prompt_dir, freeze=freeze, formal=formal)
+        result.errors.extend(prompt_report.get("errors") or [])
+        result.warnings.append(json.dumps({"ekell_prompt_hashes": prompt_report.get("prompt_hashes") or {}}))
+        result.errors.extend(_validate_ekell_logical_components())
 
-    result.resources_valid = True
+    result.resources_valid = not result.errors
     return result
 
 
@@ -195,14 +398,21 @@ def preflight_decision_suite(
     method_configs: dict[str, dict[str, Any]],
     runner_bundle: Path,
     execution_stage: str,
+    experiment_manifest: Path | None = None,
 ) -> dict[str, Any]:
     """Validate all method resources before any LLM client initialization."""
     formal = execution_stage == "formal"
     bundle = load_runner_bundle(runner_bundle)
+    freeze = _load_freeze_manifest(experiment_manifest) if formal else None
     scenarios_path = bundle.get("scenarios_path")
     schema_path = bundle.get("prediction_schema_path")
     corpus_dir = bundle.get("corpus_dir")
     shared_errors: list[str] = []
+
+    bundle_integrity = _validate_runner_bundle_integrity(bundle, formal=formal, freeze=freeze)
+    if formal and not bundle_integrity.get("ok"):
+        shared_errors.extend(bundle_integrity.get("errors") or ["runner_bundle_integrity_failed"])
+
     if not scenarios_path or not Path(scenarios_path).is_file():
         shared_errors.append("runner_bundle_input_cases_missing")
     if not schema_path or not Path(schema_path).is_file():
@@ -218,9 +428,26 @@ def preflight_decision_suite(
         except Exception as exc:  # noqa: BLE001
             shared_errors.append(f"formal_alias_validation_failed:{exc}")
 
+    shared_model_cfg = _load_shared_model_config(experiment_manifest)
+    generation_identity = validate_shared_generation_identity(
+        method_ids=method_ids,
+        method_configs=method_configs,
+    )
+    if formal:
+        for method_id in method_ids:
+            overrides = detect_method_llm_overrides(
+                shared_config=shared_model_cfg,
+                method_config=method_configs.get(method_id) or {},
+            )
+            for item in overrides:
+                generation_identity["mismatches"].append({**item, "method_id": method_id})
+        generation_identity["ok"] = not generation_identity.get("mismatches")
+
     dense_cfg = method_configs.get("dense_rag")
     method_reports: dict[str, Any] = {}
-    all_ok = not shared_errors
+    all_ok = not shared_errors and bool(bundle_integrity.get("ok", True))
+    ekell_prompt_bundle_valid = True
+
     for method_id in method_ids:
         mid = canonicalize_method_id(method_id)
         cfg = method_configs.get(mid) or method_configs.get(method_id) or {}
@@ -229,18 +456,31 @@ def preflight_decision_suite(
             cfg,
             execution_stage=execution_stage,
             dense_config=dense_cfg if mid == "hybrid_rag" else None,
+            freeze=freeze,
         )
         if shared_errors:
             report.errors.extend(shared_errors)
             report.resources_valid = False
+        if mid == "ekell_style_controlled_shared_llm":
+            prompt_errors = [e for e in report.errors if e.startswith("ekell_prompt")]
+            if prompt_errors:
+                ekell_prompt_bundle_valid = False
         method_reports[mid] = report.to_dict()
         if not report.ok:
             all_ok = False
 
+    if formal:
+        ekell_prompt_bundle_valid = ekell_prompt_bundle_valid and not any(
+            e.startswith("ekell_prompt") for e in shared_errors
+        )
+
     return {
-        "ok": all_ok,
+        "ok": all_ok and generation_identity.get("ok", True),
         "execution_stage": execution_stage,
         "runner_bundle": str(runner_bundle),
         "shared_errors": shared_errors,
+        "runner_bundle_integrity": bundle_integrity,
+        "shared_generation_identity": generation_identity,
+        "ekell_prompt_bundle_valid": ekell_prompt_bundle_valid if formal else False,
         "methods": method_reports,
     }

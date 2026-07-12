@@ -95,13 +95,17 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 
 All five methods share the same Runner Bundle input and independently emit structured decision + natural-language response + per-method `firebench-interop-v1` JSONL. Natural language is for human review; decision fields are the primary comparison object for the main-project evaluator.
 
-**Execution modes:** Dry run allows `--limit`, heuristic LLM, smoke embedding fixtures, and optional temporary index rebuild for wiring tests (`formal_result=false`). DEV may use real config and optional `--enable-dev-aliases` on subsets; outputs remain non-formal. Formal requires a frozen non-`.example` experiment manifest, **forbids `--limit`**, processes the **complete** Runner Bundle case set, requires persisted **directory** indexes for Dense and E-KELL (no legacy JSON, no runtime build/migrate), runs **five-method resource preflight before any LLM call**, enforces strict JSON **array** types in decision parsing, and sets `formal_result` only from **runtime evidence** (real LLM, loaded indexes, full coverage).
+**Execution modes:** Dry run allows `--limit`, heuristic LLM, smoke embedding fixtures, and optional temporary index rebuild for wiring tests. **`formal_result` is always false** in dry run (technical diagnostics may still pass). DEV may use real config and optional `--enable-dev-aliases` on subsets; outputs remain non-formal. Formal requires a frozen non-`.example` experiment manifest, **validates the frozen Runner Bundle identity** (per-file checksums, input cases, prediction schema, corpus), **forbids `--limit`**, processes the **complete** Runner Bundle case set, enforces **one shared generation-model identity** across all five methods (provider, model, version, temperature, top_p, max_tokens, seed, enable_thinking), requires persisted **directory** indexes for Dense and E-KELL with **explicit** `actual_embedding_used=true` and `smoke_fallback_used=false`, runs **five-method resource preflight** (including all E-KELL prompt files and logical components) before any LLM call, enforces strict JSON **array** types in decision parsing, records separate **index checksum** vs **manifest-file SHA**, and publishes predictions **transactionally** (temp dir → atomic publish only after all methods pass). `formal_result=true` requires runtime evidence plus successful transactional publish.
 
 **Pre-formal contract checks (read-only main-project reference):**
 
 ```bash
 python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
 python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_comparison_readiness.py \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle path/to/frozen_runner_bundle \
+  --method-set comparison_suite
 python scripts/check_output_taxonomy.py --prediction-dir outputs/interop/test_public/predictions
 ```
 

@@ -46,6 +46,10 @@ python scripts/validate_formal_config.py \
 # Pre-formal contract checks (read-only main-project reference)
 python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
 python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_comparison_readiness.py \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle <frozen_runner_bundle> \
+  --method-set comparison_suite
 
 # 4) Five-method dry run (unified decision I/O — preferred for evaluator handoff)
 python scripts/run_decision_comparison_suite.py \
@@ -113,7 +117,7 @@ python scripts/run_interop_baselines.py \
   --manifest outputs/interop/comparison_suite_v1/run_manifest.json
 ```
 
-Formal stage forbids `--limit`, `--allow-partial`, and `--override-readiness-lock`. The decision comparison suite additionally requires persisted directory indexes (`index_manifest.json`, `documents.jsonl`, `embeddings.npy`) for Dense and E-KELL, unified preflight of all five methods before any LLM initialization, and derives `formal_compliance.formal_result` from runtime evidence rather than stage labels.
+Formal stage forbids `--limit`, `--allow-partial`, `--override-readiness-lock`, and `--enable-dev-aliases`. The decision comparison suite additionally validates the **frozen Runner Bundle identity**, enforces **one shared generation-model identity** across all five methods, requires persisted directory indexes (`index_manifest.json`, `documents.jsonl`, `embeddings.npy`) for Dense and E-KELL with explicit `actual_embedding_used=true` and `smoke_fallback_used=false`, unified preflight of all five methods (including E-KELL prompt files) before any LLM initialization, **transactional prediction publish** (no partial formal outputs on failure), and derives `formal_compliance.formal_result` from runtime evidence rather than stage labels. Dry-run method summaries always report `formal_result=false`.
 
 ## B. Main table only (3 methods)
 

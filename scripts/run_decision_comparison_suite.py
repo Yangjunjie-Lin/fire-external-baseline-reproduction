@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -193,6 +195,46 @@ def _interop_taxonomy_valid(interop_rows: list[dict[str, Any]]) -> bool:
     return True
 
 
+def _publish_formal_directory(src: Path, dst: Path) -> None:
+    if dst.exists():
+        backup = dst.with_name(f"{dst.name}.bak")
+        if backup.exists():
+            if backup.is_dir():
+                shutil.rmtree(backup)
+            else:
+                backup.unlink()
+        dst.rename(backup)
+    shutil.move(str(src), str(dst))
+
+
+def _cleanup_formal_temp(temp_root: Path) -> None:
+    if temp_root.exists():
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _write_formal_failed_marker(
+    *,
+    decision_parent: Path,
+    run_id: str,
+    stage: str,
+    method_id: str | None,
+    error_type: str,
+    error_message: str,
+    temporary_artifacts_path: str | None,
+) -> None:
+    marker = {
+        "execution_stage": "formal",
+        "run_id": run_id,
+        "stage": stage,
+        "method_id": method_id,
+        "error_type": error_type,
+        "error_message": error_message,
+        "temporary_artifacts_path": temporary_artifacts_path,
+        "formal_outputs_published": False,
+    }
+    write_json(decision_parent / "FORMAL_RUN_FAILED.json", marker)
+
+
 def _write_decision_artifacts(
     decision_dir: Path,
     method_id: str,
@@ -205,6 +247,7 @@ def _write_decision_artifacts(
     coverage_ok: bool = True,
     runtime_evidence: Any | None = None,
     method_compliance: dict[str, Any] | None = None,
+    execution_stage: str = "dry_run",
 ) -> dict[str, Any]:
     from external_baselines.common.firebench_taxonomy import alias_sha256, taxonomy_provenance, taxonomy_sha256
 
@@ -278,6 +321,7 @@ def _write_decision_artifacts(
         )
     summary = {
         "method_id": method_id,
+        "execution_stage": execution_stage,
         "case_count": len(interop_rows),
         "successful_count": len(interop_rows) - parsing_failures - schema_failures,
         "parsing_failure_count": parsing_failures,
@@ -316,8 +360,17 @@ def run_decision_suite(
     experiment_manifest: Path | None = None,
     methods: list[str] | None = None,
     dev_aliases_enabled: bool = False,
+    keep_failed_temp_artifacts: bool = False,
 ) -> dict[str, Any]:
     formal = execution_stage == "formal"
+    run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    temp_root: Path | None = None
+    write_prediction_dir = prediction_dir
+    write_decision_dir = decision_dir
+    if formal:
+        temp_root = decision_dir.parent / f".formal_tmp_{run_id}"
+        write_prediction_dir = ensure_dir(temp_root / "predictions")
+        write_decision_dir = ensure_dir(temp_root / "decisions")
     assert_no_evaluator_bundle_access(runner_bundle)
     method_ids = [canonicalize_method_id(m) for m in (methods or COMPARISON_METHODS)]
     validate_decision_suite_execution(
@@ -330,6 +383,7 @@ def run_decision_suite(
 
     load_limit = None if formal else limit
     coverage = inspect_runner_bundle_case_coverage(runner_bundle, limit=load_limit)
+    coverage_warning: str | None = None
     if formal:
         validate_formal_runner_bundle_coverage(coverage)
     elif (
@@ -395,23 +449,28 @@ def run_decision_suite(
         method_configs=method_configs,
         runner_bundle=runner_bundle,
         execution_stage=execution_stage,
+        experiment_manifest=experiment_manifest,
     )
     diagnostics_dir = ensure_dir(decision_dir.parent / "diagnostics")
     write_json(diagnostics_dir / "decision_suite_preflight.json", preflight)
     if formal and not preflight.get("ok"):
-        failed_marker = {
-            "execution_stage": execution_stage,
-            "stage": "preflight",
-            "runner_bundle": str(runner_bundle),
-            "preflight": preflight,
-        }
-        write_json(decision_dir.parent / "FORMAL_RUN_FAILED.json", failed_marker)
+        _write_formal_failed_marker(
+            decision_parent=decision_dir.parent,
+            run_id=run_id,
+            stage="preflight",
+            method_id=None,
+            error_type="PreflightError",
+            error_message="Formal decision suite preflight failed.",
+            temporary_artifacts_path=str(temp_root) if temp_root else None,
+        )
+        if temp_root and not keep_failed_temp_artifacts:
+            _cleanup_formal_temp(temp_root)
         raise SystemExit(
             f"Formal decision suite preflight failed. See {diagnostics_dir / 'decision_suite_preflight.json'}"
         )
 
-    ensure_dir(prediction_dir)
-    ensure_dir(decision_dir)
+    ensure_dir(write_prediction_dir)
+    ensure_dir(write_decision_dir)
     from external_baselines.common.firebench_taxonomy import (
         alias_sha256,
         formal_alias_sha256,
@@ -446,159 +505,180 @@ def run_decision_suite(
             method_evidences={},
             method_compliance={},
             dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+            runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
+            shared_generation_identity_match=bool(
+                (preflight.get("shared_generation_identity") or {}).get("ok")
+            ),
+            ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+            method_ids=method_ids,
         ),
     }
 
     method_evidences: dict[str, Any] = {}
     method_compliance_reports: dict[str, dict[str, Any]] = {}
     all_coverage_ok = True
+    suite_error: Exception | None = None
 
-    for method_id in method_ids:
-        method_config = method_configs[method_id]
-        llm = build_llm_client(method_config)
-        pipeline = resolve_pipeline(method_id)
-        runtime = prepare_method_runtime(method_id, method_config)
-        evidence = collect_method_runtime_evidence(
-            method_id=method_id,
-            config=method_config,
-            llm=llm,
-            runtime=runtime,
-        )
-        method_evidences[method_id] = evidence
-        accepts_runtime = pipeline_accepts_runtime(pipeline)
-        interop_rows: list[dict[str, Any]] = []
-        parsing_failures = 0
-        schema_failures = 0
-        t0 = time.perf_counter()
-        try:
-            for scenario in scenarios:
-                usage_before = (
-                    llm.usage_snapshot()
-                    if isinstance(llm, UsageTrackingLLMClient)
-                    else TokenUsage()
-                )
-                prediction_input = to_prediction_input(scenario, config=method_config)
-                assert_no_gold_in_prediction_input(prediction_input)
-                for forbidden in ("category", "severity", "gold", "expected", "annotation"):
-                    if forbidden in prediction_input:
-                        raise AssertionError(f"{forbidden} leaked into prediction input")
-                try:
-                    if accepts_runtime and runtime is not None:
-                        out = pipeline(prediction_input, config=method_config, llm=llm, runtime=runtime)
-                    else:
-                        out = pipeline(prediction_input, config=method_config, llm=llm)
-                except DecisionParseError:
-                    parsing_failures += 1
-                    if formal:
-                        raise
-                    continue
-                case_usage = (
-                    llm.usage_delta(usage_before)
-                    if isinstance(llm, UsageTrackingLLMClient)
-                    else TokenUsage()
-                )
-                ms = out.setdefault("method_specific", {})
-                runtime_block = ms.setdefault("runtime", {})
-                runtime_block.update(
-                    {
-                        "llm_calls": case_usage.llm_calls,
-                        "token_usage": case_usage.to_dict(),
-                    }
-                )
-                if ms.get("parsing_failure"):
-                    parsing_failures += 1
-                    if formal:
-                        raise SystemExit(
-                            f"Formal parsing failure for {method_id} case "
-                            f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
-                        )
-                interop = unified_row_to_interop(out)
-                interop["case_id"] = prediction_input["case_id"]
-                interop["method_id"] = method_id
-                interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
-                assert_canonical_interop_record(
-                    interop,
-                    dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
-                )
-                errors = validate_interop_record(
-                    interop,
-                    schema_path=schema_path,
-                    expected_schema_sha256=schema_sha,
-                )
-                if errors:
-                    schema_failures += 1
-                    if formal:
-                        raise SystemExit(
-                            f"Schema failure for {method_id} case "
-                            f"{prediction_input['case_id']}: {errors}"
-                        )
-                interop_rows.append(interop)
-        finally:
-            close_method_runtime(runtime)
-
-        pred_path = prediction_dir / f"{method_id}.jsonl"
-        write_jsonl(pred_path, interop_rows)
-        coverage_report = _assert_method_coverage(
-            case_ids=case_ids,
-            method_id=method_id,
-            rows=interop_rows,
-            formal=formal,
-        )
-        if coverage_report.get("errors"):
-            all_coverage_ok = False
-        taxonomy_valid = _interop_taxonomy_valid(interop_rows)
-        compliance = method_formal_compliance(
-            evidence,
-            method_id=method_id,
-            coverage_ok=not coverage_report.get("errors"),
-            parsing_failures=parsing_failures,
-            schema_failures=schema_failures,
-            taxonomy_valid=taxonomy_valid,
-        )
-        method_compliance_reports[method_id] = compliance
-        summary = _write_decision_artifacts(
-            decision_dir,
-            method_id,
-            interop_rows,
-            input_cases_sha256=input_cases_sha,
-            prediction_schema_sha256=schema_sha,
-            prediction_file=pred_path,
-            formal=formal,
-            coverage_ok=not coverage_report.get("errors"),
-            runtime_evidence=evidence,
-            method_compliance=compliance,
-        )
-        summary["execution_contract"] = {
-            "execution_stage": execution_stage,
-            "experiment_manifest_provided": bool(experiment_manifest),
-            "heuristic_llm_used": bool(evidence.llm_is_smoke),
-            "smoke_embedding_used": bool(evidence.smoke_fallback_used),
-            "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
-            "strict_required_fields": formal,
-            "canonical_output_only": True,
-        }
-        summary["parsing_failure_count"] = parsing_failures
-        summary["schema_failure_count"] = schema_failures
-        summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
-        write_json(decision_dir / method_id / "run_summary.json", summary)
-        suite_summary["method_summaries"][method_id] = summary
-        suite_summary["coverage"][method_id] = coverage_report
-        if not (summary.get("taxonomy_validation") or {}).get("valid", False):
-            suite_summary["taxonomy_contract"]["all_methods_valid"] = False
-        if formal and (parsing_failures or schema_failures):
-            failed_marker = {
-                "execution_stage": execution_stage,
-                "stage": "method_execution",
-                "method_id": method_id,
-                "parsing_failures": parsing_failures,
-                "schema_failures": schema_failures,
-            }
-            write_json(decision_dir.parent / "FORMAL_RUN_FAILED.json", failed_marker)
-            raise SystemExit(
-                f"Formal run failed for {method_id}: "
-                f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
+    try:
+        for method_id in method_ids:
+            method_config = method_configs[method_id]
+            llm = build_llm_client(method_config)
+            pipeline = resolve_pipeline(method_id)
+            runtime = prepare_method_runtime(method_id, method_config)
+            evidence = collect_method_runtime_evidence(
+                method_id=method_id,
+                config=method_config,
+                llm=llm,
+                runtime=runtime,
             )
+            method_evidences[method_id] = evidence
+            accepts_runtime = pipeline_accepts_runtime(pipeline)
+            interop_rows: list[dict[str, Any]] = []
+            parsing_failures = 0
+            schema_failures = 0
+            t0 = time.perf_counter()
+            try:
+                for scenario in scenarios:
+                    usage_before = (
+                        llm.usage_snapshot()
+                        if isinstance(llm, UsageTrackingLLMClient)
+                        else TokenUsage()
+                    )
+                    prediction_input = to_prediction_input(scenario, config=method_config)
+                    assert_no_gold_in_prediction_input(prediction_input)
+                    for forbidden in ("category", "severity", "gold", "expected", "annotation"):
+                        if forbidden in prediction_input:
+                            raise AssertionError(f"{forbidden} leaked into prediction input")
+                    try:
+                        if accepts_runtime and runtime is not None:
+                            out = pipeline(
+                                prediction_input, config=method_config, llm=llm, runtime=runtime
+                            )
+                        else:
+                            out = pipeline(prediction_input, config=method_config, llm=llm)
+                    except DecisionParseError:
+                        parsing_failures += 1
+                        if formal:
+                            raise
+                        continue
+                    case_usage = (
+                        llm.usage_delta(usage_before)
+                        if isinstance(llm, UsageTrackingLLMClient)
+                        else TokenUsage()
+                    )
+                    ms = out.setdefault("method_specific", {})
+                    runtime_block = ms.setdefault("runtime", {})
+                    runtime_block.update(
+                        {
+                            "llm_calls": case_usage.llm_calls,
+                            "token_usage": case_usage.to_dict(),
+                        }
+                    )
+                    if ms.get("parsing_failure"):
+                        parsing_failures += 1
+                        if formal:
+                            raise RuntimeError(
+                                f"Formal parsing failure for {method_id} case "
+                                f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
+                            )
+                    interop = unified_row_to_interop(out)
+                    interop["case_id"] = prediction_input["case_id"]
+                    interop["method_id"] = method_id
+                    interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
+                    assert_canonical_interop_record(
+                        interop,
+                        dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
+                    )
+                    errors = validate_interop_record(
+                        interop,
+                        schema_path=schema_path,
+                        expected_schema_sha256=schema_sha,
+                    )
+                    if errors:
+                        schema_failures += 1
+                        if formal:
+                            raise RuntimeError(
+                                f"Schema failure for {method_id} case "
+                                f"{prediction_input['case_id']}: {errors}"
+                            )
+                    interop_rows.append(interop)
+            finally:
+                close_method_runtime(runtime)
 
+            pred_path = write_prediction_dir / f"{method_id}.jsonl"
+            write_jsonl(pred_path, interop_rows)
+            coverage_report = _assert_method_coverage(
+                case_ids=case_ids,
+                method_id=method_id,
+                rows=interop_rows,
+                formal=formal,
+            )
+            if coverage_report.get("errors"):
+                all_coverage_ok = False
+            taxonomy_valid = _interop_taxonomy_valid(interop_rows)
+            compliance = method_formal_compliance(
+                evidence,
+                formal=formal,
+                method_id=method_id,
+                coverage_ok=not coverage_report.get("errors"),
+                parsing_failures=parsing_failures,
+                schema_failures=schema_failures,
+                taxonomy_valid=taxonomy_valid,
+            )
+            method_compliance_reports[method_id] = compliance
+            summary = _write_decision_artifacts(
+                write_decision_dir,
+                method_id,
+                interop_rows,
+                input_cases_sha256=input_cases_sha,
+                prediction_schema_sha256=schema_sha,
+                prediction_file=pred_path,
+                formal=formal,
+                coverage_ok=not coverage_report.get("errors"),
+                runtime_evidence=evidence,
+                method_compliance=compliance,
+                execution_stage=execution_stage,
+            )
+            summary["execution_contract"] = {
+                "execution_stage": execution_stage,
+                "experiment_manifest_provided": bool(experiment_manifest),
+                "heuristic_llm_used": bool(evidence.llm_is_smoke),
+                "smoke_embedding_used": bool(evidence.smoke_fallback_used),
+                "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
+                "strict_required_fields": formal,
+                "canonical_output_only": True,
+            }
+            summary["parsing_failure_count"] = parsing_failures
+            summary["schema_failure_count"] = schema_failures
+            summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
+            write_json(write_decision_dir / method_id / "run_summary.json", summary)
+            suite_summary["method_summaries"][method_id] = summary
+            suite_summary["coverage"][method_id] = coverage_report
+            if not (summary.get("taxonomy_validation") or {}).get("valid", False):
+                suite_summary["taxonomy_contract"]["all_methods_valid"] = False
+            if formal and (parsing_failures or schema_failures):
+                raise RuntimeError(
+                    f"Formal run failed for {method_id}: "
+                    f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
+                )
+    except Exception as exc:
+        suite_error = exc
+        if formal:
+            _write_formal_failed_marker(
+                decision_parent=decision_dir.parent,
+                run_id=run_id,
+                stage="method_execution",
+                method_id=method_id if "method_id" in locals() else None,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                temporary_artifacts_path=str(temp_root) if temp_root else None,
+            )
+            if temp_root and not keep_failed_temp_artifacts:
+                _cleanup_formal_temp(temp_root)
+            raise SystemExit(str(exc)) from exc
+        raise
+
+    transactional_publish_complete = False
     suite_summary["formal_compliance"] = compute_suite_formal_compliance(
         formal=formal,
         experiment_manifest_provided=experiment_manifest is not None,
@@ -608,12 +688,60 @@ def run_decision_suite(
         method_evidences=method_evidences,
         method_compliance=method_compliance_reports,
         dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+        runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
+        shared_generation_identity_match=bool(
+            (preflight.get("shared_generation_identity") or {}).get("ok")
+        ),
+        ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+        method_ids=method_ids,
     )
     suite_summary["runtime_evidence"] = {
         mid: evidence_to_summary_sections(ev) for mid, ev in method_evidences.items()
     }
 
-    write_json(decision_dir / "suite_summary.json", suite_summary)
+    if formal and suite_summary["formal_compliance"].get("formal_result"):
+        suite_summary["formal_compliance"] = compute_suite_formal_compliance(
+            formal=formal,
+            experiment_manifest_provided=experiment_manifest is not None,
+            limit_used=limit is not None,
+            preflight_ok=bool(preflight.get("ok")),
+            coverage_ok=all_coverage_ok,
+            method_evidences=method_evidences,
+            method_compliance=method_compliance_reports,
+            dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+            runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
+            shared_generation_identity_match=bool(
+                (preflight.get("shared_generation_identity") or {}).get("ok")
+            ),
+            ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+            method_ids=method_ids,
+            transactional_publish_complete=True,
+        )
+        _publish_formal_directory(write_prediction_dir, prediction_dir)
+        _publish_formal_directory(write_decision_dir, decision_dir)
+        transactional_publish_complete = True
+        if temp_root and temp_root.exists():
+            _cleanup_formal_temp(temp_root)
+    elif formal:
+        suite_summary["formal_compliance"]["formal_result"] = False
+        suite_summary["formal_compliance"]["transactional_publish_complete"] = False
+        _write_formal_failed_marker(
+            decision_parent=decision_dir.parent,
+            run_id=run_id,
+            stage="compliance",
+            method_id=None,
+            error_type="FormalComplianceError",
+            error_message="Formal compliance checks did not pass; outputs were not published.",
+            temporary_artifacts_path=str(temp_root) if temp_root and keep_failed_temp_artifacts else None,
+        )
+        if temp_root and not keep_failed_temp_artifacts:
+            _cleanup_formal_temp(temp_root)
+
+    write_json(
+        (decision_dir if not formal or transactional_publish_complete else write_decision_dir)
+        / "suite_summary.json",
+        suite_summary,
+    )
     return suite_summary
 
 
@@ -630,6 +758,11 @@ def main(argv: list[str] | None = None) -> None:
         "--enable-dev-aliases",
         action="store_true",
         help="Enable development-only taxonomy aliases (dry_run only).",
+    )
+    parser.add_argument(
+        "--keep-failed-temp-artifacts",
+        action="store_true",
+        help="Retain formal temporary directories when a formal run fails (debug only).",
     )
     args = parser.parse_args(argv)
 
@@ -650,6 +783,7 @@ def main(argv: list[str] | None = None) -> None:
         limit=args.limit,
         experiment_manifest=Path(args.experiment_manifest) if args.experiment_manifest else None,
         dev_aliases_enabled=bool(args.enable_dev_aliases),
+        keep_failed_temp_artifacts=bool(args.keep_failed_temp_artifacts),
     )
     print(json.dumps({"ok": True, "case_count": summary["case_count"], "methods": summary["methods"]}, indent=2))
 

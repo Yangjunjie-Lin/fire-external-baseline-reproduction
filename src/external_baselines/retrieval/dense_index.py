@@ -89,6 +89,18 @@ def _file_sha256(path: Path) -> str:
     return sha256_file(path)
 
 
+def require_dense_formal_embedding_manifest(manifest: dict[str, Any]) -> None:
+    """Strict formal embedding evidence checks (no defaults or loose bool coercion)."""
+    if "actual_embedding_used" not in manifest:
+        raise DenseIndexError("actual_embedding_used_missing")
+    if manifest["actual_embedding_used"] is not True:
+        raise DenseIndexError("actual_embedding_used_must_be_true")
+    if "smoke_fallback_used" not in manifest:
+        raise DenseIndexError("smoke_fallback_used_missing")
+    if manifest["smoke_fallback_used"] is not False:
+        raise DenseIndexError("smoke_fallback_used_must_be_false")
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     ensure_dir(path.parent)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name, dir=str(path.parent))
@@ -286,8 +298,7 @@ def load_dense_index(
         "smoke_hash_embedding",
         "deterministic_hash_smoke",
     }:
-        if not bool(manifest.get("actual_embedding_used", True)):
-            raise DenseIndexError("actual_embedding_used must be true for real dense indexes.")
+        require_dense_formal_embedding_manifest(manifest)
 
     if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
         raise DenseIndexError(
@@ -328,6 +339,7 @@ def validate_dense_index_directory(
     expected_corpus_checksum: str | None = None,
     expected_backend: str | None = None,
     expected_dimension: int | None = None,
+    require_explicit_embedding_evidence: bool = False,
 ) -> dict[str, Any]:
     """Validate a persisted dense index directory without building or migrating."""
     index_dir = Path(index_dir)
@@ -349,7 +361,7 @@ def validate_dense_index_directory(
         raise DenseIndexError("dense_index_embeddings_missing")
 
     if load_embeddings:
-        return load_dense_index(
+        payload = load_dense_index(
             index_dir,
             expected_model_name=expected_model_name,
             expected_model_version=expected_model_version,
@@ -357,6 +369,9 @@ def validate_dense_index_directory(
             expected_backend=expected_backend,
             expected_dimension=expected_dimension,
         )
+        if require_explicit_embedding_evidence:
+            require_dense_formal_embedding_manifest(dict(payload.get("manifest") or {}))
+        return payload
 
     manifest = read_json(manifest_path)
     documents = read_jsonl(docs_path)
@@ -372,9 +387,11 @@ def validate_dense_index_directory(
         raise DenseIndexError("embeddings.npy row count does not match documents.")
     if int(manifest.get("dimension") or 0) != dim:
         raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
-    if bool(manifest.get("smoke_fallback_used")):
+    if require_explicit_embedding_evidence:
+        require_dense_formal_embedding_manifest(manifest)
+    elif bool(manifest.get("smoke_fallback_used")):
         raise DenseIndexError("smoke_fallback_used=true is forbidden for formal dense indexes.")
-    if not bool(manifest.get("actual_embedding_used", True)):
+    elif manifest.get("actual_embedding_used") is not True:
         raise DenseIndexError("actual_embedding_used must be true for formal dense indexes.")
     if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
         raise DenseIndexError("model_name mismatch.")

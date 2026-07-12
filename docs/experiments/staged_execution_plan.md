@@ -172,11 +172,19 @@ Requires:
 - `real_dry_run_completed: true`
 - **no** `--limit` (complete Runner Bundle case coverage enforced)
 - **no** `--allow-partial`
-- persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild)
-- five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`)
+- **no** `--enable-dev-aliases`
+- frozen Runner Bundle identity validated against freeze manifest (per-file checksums)
+- one shared generation-model identity across all five comparison methods
+- persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
+- five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`; includes E-KELL prompt files)
+- **transactional** prediction publish (temp dir → atomic publish only when all methods pass; failures leave `FORMAL_RUN_FAILED.json`, no partial formal predictions)
 - output under `outputs/interop/` (or formal directory)
+- dry-run artifacts must never report `formal_result=true`
 
 ```bash
+python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+
 python scripts/check_comparison_readiness.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle <frozen_runner_bundle> \

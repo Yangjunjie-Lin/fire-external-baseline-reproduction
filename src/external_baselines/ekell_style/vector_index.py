@@ -32,6 +32,17 @@ class VectorIndexError(RuntimeError):
     pass
 
 
+def require_ekell_formal_embedding_manifest(manifest: dict[str, Any]) -> None:
+    if "actual_embedding_used" not in manifest:
+        raise VectorIndexError("actual_embedding_used_missing")
+    if manifest["actual_embedding_used"] is not True:
+        raise VectorIndexError("actual_embedding_used_must_be_true")
+    if "smoke_fallback_used" not in manifest:
+        raise VectorIndexError("smoke_fallback_used_missing")
+    if manifest["smoke_fallback_used"] is not False:
+        raise VectorIndexError("smoke_fallback_used_must_be_false")
+
+
 @dataclass
 class VectorDocument:
     document_id: str
@@ -391,7 +402,6 @@ class VectorIndex:
                 require_real_embedding=require_real_embedding,
             )
             return dict(loaded.metadata)
-        from external_baselines.common.checksums import sha256_file
         from external_baselines.common.io import read_json, read_jsonl
 
         docs_path = index_dir / "documents.jsonl"
@@ -418,10 +428,7 @@ class VectorIndex:
         if int(manifest.get("dimension") or 0) != dim:
             raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
         if require_real_embedding:
-            if bool(manifest.get("smoke_fallback_used")):
-                raise VectorIndexError("smoke_fallback_used=true is forbidden for real E-KELL indexes.")
-            if not bool(manifest.get("actual_embedding_used", False)):
-                raise VectorIndexError("actual_embedding_used must be true for real E-KELL indexes.")
+            require_ekell_formal_embedding_manifest(manifest)
         if expected_backend and str(manifest.get("backend")) != str(expected_backend):
             raise VectorIndexError("backend mismatch.")
         if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
@@ -525,10 +532,7 @@ class VectorIndex:
         if expected_corpus_checksum and str(manifest.get("corpus_checksum")) != str(expected_corpus_checksum):
             raise VectorIndexError("corpus_checksum mismatch.")
         if require_real_embedding:
-            if bool(manifest.get("smoke_fallback_used")):
-                raise VectorIndexError("smoke_fallback_used=true is forbidden for real E-KELL indexes.")
-            if not bool(manifest.get("actual_embedding_used", False)):
-                raise VectorIndexError("actual_embedding_used must be true for real E-KELL indexes.")
+            require_ekell_formal_embedding_manifest(manifest)
 
         metadata = {
             **manifest,

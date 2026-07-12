@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1058,6 +1059,7 @@ def test_method_summary_uses_null_for_non_applicable_index():
     evidence = RuntimeEvidence(method_id="direct_llm", llm_is_smoke=False, llm_initialized=True)
     compliance = method_formal_compliance(
         evidence,
+        formal=True,
         method_id="direct_llm",
         coverage_ok=True,
         parsing_failures=0,
@@ -1065,3 +1067,1132 @@ def test_method_summary_uses_null_for_non_applicable_index():
         taxonomy_valid=True,
     )
     assert compliance["real_index"] is None
+
+
+# --- Helpers for bundle integrity, generation identity, and transactional tests ---
+
+
+def _shared_generation_llm(**overrides) -> dict:
+    base = {
+        "provider": "openai_compatible",
+        "model": "gpt-real-shared",
+        "model_version": "v-shared",
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 1024,
+        "seed": 20260710,
+        "enable_thinking": False,
+    }
+    base.update(overrides)
+    return base
+
+
+def _finalize_bundle_checksums(bundle_dir: Path) -> dict:
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.bundle import load_runner_bundle, recompute_bundle_checksum
+
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files_map = manifest.get("files") or {}
+    checksums = {}
+    for rel in files_map.values():
+        file_path = bundle_dir / rel
+        if file_path.is_file():
+            checksums[str(rel)] = sha256_file(file_path)
+    manifest["checksums"] = checksums
+    manifest["bundle_checksum"] = recompute_bundle_checksum(bundle_dir)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return load_runner_bundle(bundle_dir)
+
+
+def _frozen_runner_bundle_identity(bundle: dict) -> dict:
+    from external_baselines.common.checksums import sha256_file
+
+    corpus_manifest = bundle.get("corpus_manifest") if isinstance(bundle.get("corpus_manifest"), dict) else {}
+    return {
+        "bundle_checksum": bundle.get("producer_declared_checksum") or bundle.get("consumer_computed_bundle_hash"),
+        "input_cases_sha256": sha256_file(bundle["scenarios_path"]),
+        "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
+        "corpus_aggregate_sha256": corpus_manifest.get("aggregate_sha256"),
+    }
+
+
+def _write_shared_model_config(tmp_path: Path, llm: dict | None = None) -> Path:
+    import yaml
+
+    path = tmp_path / "shared_model.yaml"
+    path.write_text(yaml.safe_dump({"llm": llm or _shared_generation_llm()}), encoding="utf-8")
+    return path
+
+
+def _write_experiment_manifest(tmp_path: Path, *, freeze_path: Path, shared_model_path: Path) -> Path:
+    import yaml
+
+    manifest = tmp_path / "experiment.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "experiment_id": "formal_test",
+                "freeze_manifest": str(freeze_path),
+                "shared_model_config": str(shared_model_path),
+                "paper_final": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _write_freeze_manifest(tmp_path: Path, bundle: dict, **overrides) -> Path:
+    freeze_body = _frozen_runner_bundle_identity(bundle)
+    freeze_body.update(overrides)
+    if "runner_bundle" in overrides:
+        freeze_body = overrides["runner_bundle"]
+    freeze_path = tmp_path / "freeze_manifest.json"
+    payload = {"runner_bundle": freeze_body} if "runner_bundle" not in overrides else overrides
+    if "runner_bundle" not in payload:
+        payload = {"runner_bundle": freeze_body}
+    for key, value in overrides.items():
+        if key != "runner_bundle":
+            payload[key] = value
+    freeze_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return freeze_path
+
+
+def _build_fake_dense_index(tmp_path: Path) -> Path:
+    from external_baselines.dense_rag.pipeline import build_dense_index
+    from tests.test_dense_real_index import FakeEmbeddingModel, _evidence
+
+    evidence = _evidence(tmp_path)
+    index_dir = tmp_path / "dense_idx"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=index_dir,
+        embedding_model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+    )
+    return index_dir
+
+
+def _formal_method_configs(
+    corpus_dir: str,
+    *,
+    dense_index: Path | None = None,
+    llm_overrides: dict | None = None,
+    method_llm_override: dict | None = None,
+) -> dict[str, dict]:
+    llm = _shared_generation_llm(**(llm_overrides or {}))
+    base = {
+        "execution_stage": "formal",
+        "unified_decision_output": True,
+        "strict_decision_parse": True,
+        "dev_aliases_enabled": False,
+        "paper_final": True,
+        "llm": dict(llm),
+        "paths": {"corpus_dir": corpus_dir},
+        "retrieval": {"top_k": 3},
+        "dense_rag": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(dense_index) if dense_index else str(Path(corpus_dir).parent / "missing"),
+            "reject_smoke": True,
+        },
+        "hybrid_rag": {"top_k": 3, "candidate_pool": 5, "reject_smoke": True},
+        "ekell_style": {"prompt_dir": str(ROOT / "configs/prompts/controlled"), "neighborhood_k_hop": 1},
+        "ekell_vector": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(dense_index) if dense_index else str(Path(corpus_dir).parent / "missing"),
+            "reject_smoke": True,
+        },
+        "scenario_parser": {"use_llm": False},
+        "normalization": {"infer_structured_safety_fields": False},
+    }
+    configs = {
+        "direct_llm": dict(base),
+        "bm25_rag": dict(base),
+        "dense_rag": dict(base),
+        "hybrid_rag": dict(base),
+        "ekell_style_controlled_shared_llm": dict(base),
+    }
+    if method_llm_override:
+        configs["bm25_rag"]["llm"] = {**llm, **method_llm_override}
+    return configs
+
+
+# --- Bundle checksum tests ---
+
+
+def test_formal_preflight_validates_bundle_checksum(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert result["ok"] is True
+    assert result["file_checksum_report_ok"] is True
+
+
+def test_formal_rejects_modified_input_cases(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    cases_path = Path(bundle["scenarios_path"])
+    cases_path.write_text(
+        cases_path.read_text(encoding="utf-8") + '{"case_id":"EXTRA","input":{"scenario":"x"}}\n',
+        encoding="utf-8",
+    )
+    bundle = load_runner_bundle(bundle_dir)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert result["ok"] is False
+    assert "input_cases_checksum_mismatch" in result["errors"]
+
+
+def test_formal_rejects_modified_prediction_schema(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    schema_path = Path(bundle["prediction_schema_path"])
+    schema_path.write_text(schema_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    bundle = load_runner_bundle(bundle_dir)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert result["ok"] is False
+    assert "prediction_schema_checksum_mismatch" in result["errors"]
+
+
+def test_formal_rejects_modified_corpus_file(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    corpus_dir = Path(bundle["corpus_dir"])
+    extra = corpus_dir / "evidence_chunks.jsonl"
+    extra.write_text(extra.read_text(encoding="utf-8") + '{"chunk_id":"c99","text":"extra"}\n', encoding="utf-8")
+    bundle = load_runner_bundle(bundle_dir)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert result["ok"] is False
+    assert "corpus_checksum_mismatch" in result["errors"]
+
+
+def test_formal_rejects_bundle_checksum_mismatch(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    frozen["bundle_checksum"] = "0" * 64
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert result["ok"] is False
+    assert "runner_bundle_checksum_mismatch" in result["errors"]
+
+
+def test_formal_rejects_missing_frozen_bundle_identity(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity={})
+    assert result["ok"] is False
+    assert "frozen_bundle_identity_missing" in result["errors"]
+
+
+def test_bundle_integrity_failure_prevents_llm_build(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    called = {"llm": False}
+
+    def _boom(*_args, **_kwargs):
+        called["llm"] = True
+        raise AssertionError("LLM must not initialize when bundle integrity fails")
+
+    monkeypatch.setattr(suite, "build_llm_client", _boom)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": False,
+            "runner_bundle_integrity": {"ok": False, "errors": ["input_cases_checksum_mismatch"]},
+            "methods": {},
+        },
+    )
+    with pytest.raises(SystemExit, match="preflight failed"):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=tmp_path / "pred",
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "formal_manifest.yaml",
+        )
+    assert called["llm"] is False
+
+
+# --- Shared generation identity tests ---
+
+
+def _generation_identity_configs(**method_overrides) -> dict[str, dict]:
+    llm = _shared_generation_llm()
+    configs = {mid: {"llm": dict(llm)} for mid in [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]}
+    for method_id, override in method_overrides.items():
+        configs[method_id]["llm"] = {**llm, **override}
+    return configs
+
+
+def test_formal_all_methods_share_provider():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(),
+    )
+    assert report["ok"] is True
+
+
+def test_formal_all_methods_share_model():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    configs = _generation_identity_configs(bm25_rag={"model": "other"})
+    report = validate_shared_generation_identity(
+        method_ids=list(configs.keys()),
+        method_configs=configs,
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "model" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_model_version():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"model_version": "v-other"}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "model_version" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_temperature():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"temperature": 0.5}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "temperature" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_top_p():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"top_p": 0.9}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "top_p" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_max_tokens():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"max_tokens": 1200}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "max_tokens" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_seed():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"seed": 1}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "seed" for m in report["mismatches"])
+
+
+def test_formal_all_methods_share_enable_thinking():
+    from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+    report = validate_shared_generation_identity(
+        method_ids=list(_generation_identity_configs().keys()),
+        method_configs=_generation_identity_configs(bm25_rag={"enable_thinking": True}),
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "enable_thinking" for m in report["mismatches"])
+
+
+def test_method_config_cannot_override_shared_llm_in_formal():
+    from external_baselines.common.generation_identity import detect_method_llm_overrides
+
+    shared = {"llm": _shared_generation_llm()}
+    method = {"llm": _shared_generation_llm(max_tokens=1200)}
+    overrides = detect_method_llm_overrides(shared_config=shared, method_config=method)
+    assert overrides
+    assert overrides[0]["field"] == "max_tokens"
+
+
+def test_generation_mismatch_prevents_any_llm_build(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    called = {"llm": False}
+
+    def _boom(*_args, **_kwargs):
+        called["llm"] = True
+        raise AssertionError("LLM must not initialize when generation identity mismatches")
+
+    monkeypatch.setattr(suite, "build_llm_client", _boom)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+
+    def _preflight(**kwargs):
+        from external_baselines.common.generation_identity import validate_shared_generation_identity
+
+        configs = kwargs["method_configs"]
+        for mid in configs:
+            configs[mid].setdefault("llm", _shared_generation_llm())
+        configs["bm25_rag"]["llm"]["max_tokens"] = 1200
+        gen = validate_shared_generation_identity(method_ids=kwargs["method_ids"], method_configs=configs)
+        return {"ok": False, "shared_generation_identity": gen, "runner_bundle_integrity": {"ok": True}, "methods": {}}
+
+    monkeypatch.setattr(suite, "preflight_decision_suite", _preflight)
+    bundle = _make_runner_bundle(tmp_path)
+    with pytest.raises(SystemExit, match="preflight failed"):
+        run_decision_suite(
+            runner_bundle=bundle,
+            prediction_dir=tmp_path / "pred",
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "formal_manifest.yaml",
+        )
+    assert called["llm"] is False
+
+
+def test_runtime_generation_identity_is_rechecked():
+    from external_baselines.common.generation_identity import validate_runtime_generation_identity
+
+    base = RuntimeEvidence(
+        method_id="direct_llm",
+        llm_provider="openai_compatible",
+        llm_model="gpt-real",
+        llm_model_version="v1",
+    )
+    other = RuntimeEvidence(
+        method_id="bm25_rag",
+        llm_provider="openai_compatible",
+        llm_model="gpt-other",
+        llm_model_version="v1",
+    )
+    report = validate_runtime_generation_identity(
+        method_ids=["direct_llm", "bm25_rag"],
+        method_evidences={"direct_llm": base, "bm25_rag": other},
+    )
+    assert report["ok"] is False
+
+
+# --- Dense embedding evidence tests ---
+
+
+def test_formal_dense_requires_actual_embedding_used_field():
+    from external_baselines.retrieval.dense_index import DenseIndexError, require_dense_formal_embedding_manifest
+
+    with pytest.raises(DenseIndexError, match="actual_embedding_used_missing"):
+        require_dense_formal_embedding_manifest({})
+
+
+def test_formal_dense_requires_actual_embedding_used_true():
+    from external_baselines.retrieval.dense_index import DenseIndexError, require_dense_formal_embedding_manifest
+
+    with pytest.raises(DenseIndexError, match="actual_embedding_used_must_be_true"):
+        require_dense_formal_embedding_manifest({"actual_embedding_used": False, "smoke_fallback_used": False})
+
+
+def test_formal_dense_requires_smoke_fallback_used_field():
+    from external_baselines.retrieval.dense_index import DenseIndexError, require_dense_formal_embedding_manifest
+
+    with pytest.raises(DenseIndexError, match="smoke_fallback_used_missing"):
+        require_dense_formal_embedding_manifest({"actual_embedding_used": True})
+
+
+def test_formal_dense_requires_smoke_fallback_used_false():
+    from external_baselines.retrieval.dense_index import DenseIndexError, require_dense_formal_embedding_manifest
+
+    with pytest.raises(DenseIndexError, match="smoke_fallback_used_must_be_false"):
+        require_dense_formal_embedding_manifest({"actual_embedding_used": True, "smoke_fallback_used": True})
+
+
+def test_dense_missing_embedding_flags_fails_preflight(tmp_path):
+    from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    manifest = json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+    manifest.pop("actual_embedding_used", None)
+    (index_dir / "index_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DenseIndexError, match="actual_embedding_used_missing"):
+        validate_dense_index_directory(index_dir, require_explicit_embedding_evidence=True)
+
+
+def test_dense_none_embedding_evidence_fails_compliance():
+    from external_baselines.common.runtime_evidence import method_formal_compliance
+
+    evidence = RuntimeEvidence(
+        method_id="dense_rag",
+        llm_is_smoke=False,
+        index_loaded=True,
+        index_built_during_run=False,
+        actual_embedding_used=None,
+        smoke_fallback_used=None,
+    )
+    compliance = method_formal_compliance(
+        evidence,
+        formal=True,
+        method_id="dense_rag",
+        coverage_ok=True,
+        parsing_failures=0,
+        schema_failures=0,
+        taxonomy_valid=True,
+    )
+    assert compliance["formal_result"] is False
+    assert compliance["real_index"] is False
+
+
+def test_hybrid_requires_explicit_real_dense_evidence():
+    from external_baselines.common.runtime_evidence import collect_hybrid_runtime_evidence
+
+    class DenseRuntime:
+        index_manifest = {"actual_embedding_used": True, "smoke_fallback_used": False, "index_checksum": "abc"}
+        dense_index = object()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    class HybridRuntime:
+        dense_runtime = DenseRuntime()
+        lexical_retriever = object()
+
+    evidence = collect_hybrid_runtime_evidence(
+        method_id="hybrid_rag",
+        config={"dense_rag": {"index_path": "/idx"}, "hybrid_rag": {"rrf_k": 60, "candidate_pool": 10}},
+        runtime=HybridRuntime(),
+    )
+    assert evidence.dense_dependency_actual_embedding_used is True
+    assert evidence.dense_dependency_smoke_fallback_used is False
+
+
+# --- Manifest SHA tests ---
+
+
+def test_runtime_evidence_records_real_manifest_file_sha(tmp_path):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.runtime_evidence import collect_dense_runtime_evidence
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    expected_sha = sha256_file(index_dir / "index_manifest.json")
+
+    class FakeRuntime:
+        index_manifest = json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+        index_manifest["index_dir"] = str(index_dir)
+        dense_index = type("I", (), {"index_dir": str(index_dir)})()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    evidence = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config={"dense_rag": {"index_path": str(index_dir)}},
+        runtime=FakeRuntime(),
+    )
+    assert evidence.index_manifest_sha256 == expected_sha
+
+
+def test_index_checksum_differs_from_manifest_file_sha_when_expected(tmp_path):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.runtime_evidence import collect_dense_runtime_evidence
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    manifest_sha = sha256_file(index_dir / "index_manifest.json")
+
+    class FakeRuntime:
+        index_manifest = json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+        index_manifest["index_dir"] = str(index_dir)
+        dense_index = type("I", (), {"index_dir": str(index_dir)})()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    evidence = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config={"dense_rag": {"index_path": str(index_dir)}},
+        runtime=FakeRuntime(),
+    )
+    assert evidence.index_checksum
+    assert evidence.index_manifest_sha256 == manifest_sha
+    assert evidence.index_checksum != evidence.index_manifest_sha256
+
+
+def test_dense_manifest_sha_matches_sha256_file(tmp_path):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.runtime_evidence import _manifest_file_sha
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    assert _manifest_file_sha(index_dir) == sha256_file(index_dir / "index_manifest.json")
+
+
+def test_ekell_manifest_sha_matches_sha256_file(tmp_path):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.runtime_evidence import _manifest_file_sha
+    from external_baselines.ekell_style.vector_index import VectorIndex
+
+    index_dir = tmp_path / "ekell_idx"
+    dense_dir = _build_fake_dense_index(tmp_path)
+    manifest = json.loads((dense_dir / "index_manifest.json").read_text(encoding="utf-8"))
+    manifest["index_type"] = "ekell_kg_vector_index"
+    index_dir.mkdir()
+    for name in ("index_manifest.json", "documents.jsonl", "embeddings.npy"):
+        shutil.copy(dense_dir / name, index_dir / name)
+    (index_dir / "index_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert _manifest_file_sha(index_dir) == sha256_file(index_dir / "index_manifest.json")
+    VectorIndex.validate_directory(index_dir, load_embeddings=False)
+
+
+def test_configured_and_resolved_index_paths_match(tmp_path):
+    from external_baselines.common.runtime_evidence import collect_dense_runtime_evidence
+
+    index_dir = _build_fake_dense_index(tmp_path)
+
+    class FakeRuntime:
+        index_manifest = json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+        index_manifest["index_dir"] = str(index_dir)
+        dense_index = type("I", (), {"index_dir": str(index_dir)})()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    evidence = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config={"dense_rag": {"index_path": str(index_dir)}},
+        runtime=FakeRuntime(),
+    )
+    assert Path(evidence.configured_index_path).resolve() == Path(evidence.resolved_index_path).resolve()
+    assert not evidence.errors
+
+
+# --- E-KELL preflight tests ---
+
+
+def _ekell_prompt_dir(tmp_path: Path) -> Path:
+    src = ROOT / "configs/prompts/controlled"
+    dst = tmp_path / "prompts"
+    shutil.copytree(src, dst)
+    return dst
+
+
+def test_ekell_preflight_requires_projection_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "stepwise_projection.txt").unlink()
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_missing:stepwise_projection.txt" in report["errors"]
+
+
+def test_ekell_preflight_requires_intersection_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "stepwise_intersection.txt").unlink()
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_missing:stepwise_intersection.txt" in report["errors"]
+
+
+def test_ekell_preflight_requires_union_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "stepwise_union.txt").unlink()
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_missing:stepwise_union.txt" in report["errors"]
+
+
+def test_ekell_preflight_requires_negation_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "stepwise_negation.txt").unlink()
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_missing:stepwise_negation.txt" in report["errors"]
+
+
+def test_ekell_preflight_requires_final_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "final_kg_grounded_response.txt").unlink()
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_missing:final_kg_grounded_response.txt" in report["errors"]
+
+
+def test_ekell_preflight_rejects_empty_prompt(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    (prompt_dir / "stepwise_projection.txt").write_text("   \n", encoding="utf-8")
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert "ekell_prompt_empty:stepwise_projection.txt" in report["errors"]
+
+
+def test_ekell_preflight_records_prompt_hashes(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    report = _validate_ekell_prompts(prompt_dir, freeze=None, formal=True)
+    assert report["ok"] is True
+    assert len(report["prompt_hashes"]) == 5
+
+
+def test_ekell_preflight_detects_prompt_hash_mismatch(tmp_path):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    prompt_dir = _ekell_prompt_dir(tmp_path)
+    actual = sha256_file(prompt_dir / "stepwise_projection.txt")
+    report = _validate_ekell_prompts(
+        prompt_dir,
+        freeze={"ekell_prompt_hashes": {"stepwise_projection.txt": "0" * 64}},
+        formal=True,
+    )
+    assert "ekell_prompt_hash_mismatch:stepwise_projection.txt" in report["errors"]
+    assert actual != "0" * 64
+
+
+def test_ekell_preflight_checks_logical_components():
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_logical_components
+
+    assert _validate_ekell_logical_components() == []
+
+
+def test_ekell_preflight_checks_kg_jsonl_parseability(tmp_path):
+    from external_baselines.common.decision_suite_preflight import _validate_kg_jsonl
+
+    corpus = _tiny_corpus_from_test_decision_suite(tmp_path)
+    assert _validate_kg_jsonl(corpus) == []
+
+
+def _tiny_corpus_from_test_decision_suite(tmp_path: Path) -> Path:
+    from tests.test_decision_comparison_suite import _tiny_corpus
+
+    return _tiny_corpus(tmp_path)
+
+
+# --- Dry-run formal result tests ---
+
+
+def test_dry_run_method_formal_result_is_always_false():
+    from external_baselines.common.runtime_evidence import method_formal_compliance
+
+    evidence = RuntimeEvidence(method_id="direct_llm", llm_is_smoke=False, llm_initialized=True)
+    compliance = method_formal_compliance(
+        evidence,
+        formal=False,
+        method_id="direct_llm",
+        coverage_ok=True,
+        parsing_failures=0,
+        schema_failures=0,
+        taxonomy_valid=True,
+    )
+    assert compliance["formal_result"] is False
+    assert compliance["reason"] == "execution_stage_not_formal"
+
+
+def test_dry_run_suite_and_method_summaries_are_consistent(tmp_path):
+    bundle = _make_runner_bundle(tmp_path)
+    summary = run_decision_suite(
+        runner_bundle=bundle,
+        prediction_dir=tmp_path / "pred",
+        decision_dir=tmp_path / "dec",
+        execution_stage="dry_run",
+        limit=1,
+    )
+    assert summary["formal_compliance"]["formal_result"] is False
+    for method_summary in summary["method_summaries"].values():
+        assert method_summary["formal_compliance"]["formal_result"] is False
+
+
+def test_formal_method_result_requires_formal_stage():
+    from external_baselines.common.runtime_evidence import method_formal_compliance
+
+    evidence = RuntimeEvidence(method_id="direct_llm", llm_is_smoke=False, llm_initialized=True)
+    dry = method_formal_compliance(
+        evidence,
+        formal=False,
+        method_id="direct_llm",
+        coverage_ok=True,
+        parsing_failures=0,
+        schema_failures=0,
+        taxonomy_valid=True,
+    )
+    formal = method_formal_compliance(
+        evidence,
+        formal=True,
+        method_id="direct_llm",
+        coverage_ok=True,
+        parsing_failures=0,
+        schema_failures=0,
+        taxonomy_valid=True,
+    )
+    assert dry["formal_result"] is False
+    assert formal["formal_result"] is True
+
+
+def test_technical_checks_passed_can_be_true_in_dry_run():
+    from external_baselines.common.runtime_evidence import method_formal_compliance
+
+    evidence = RuntimeEvidence(method_id="direct_llm", llm_is_smoke=False, llm_initialized=True)
+    compliance = method_formal_compliance(
+        evidence,
+        formal=False,
+        method_id="direct_llm",
+        coverage_ok=True,
+        parsing_failures=0,
+        schema_failures=0,
+        taxonomy_valid=True,
+    )
+    assert compliance["technical_checks_passed"] is True
+    assert compliance["formal_result"] is False
+
+
+# --- Transactional publishing tests ---
+
+
+def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    captured_dirs: list[Path] = []
+    orig_ensure = suite.ensure_dir
+
+    def _track(dir_path):
+        captured_dirs.append(Path(dir_path))
+        return orig_ensure(dir_path)
+
+    monkeypatch.setattr(suite, "ensure_dir", _track)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_llm(_config):
+        from external_baselines.common.llm_client import HeuristicLLMClient
+
+        return HeuristicLLMClient()
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        suite,
+        "collect_method_runtime_evidence",
+        lambda **kwargs: RuntimeEvidence(method_id=kwargs["method_id"], llm_is_smoke=False, llm_initialized=True),
+    )
+
+    bundle = _make_runner_bundle(tmp_path, n_cases=1)
+    pred_dir = tmp_path / "pred"
+    dec_dir = tmp_path / "dec"
+    run_decision_suite(
+        runner_bundle=bundle,
+        prediction_dir=pred_dir,
+        decision_dir=dec_dir,
+        execution_stage="formal",
+        experiment_manifest=tmp_path / "manifest.yaml",
+    )
+    assert any(".formal_tmp_" in str(p) for p in captured_dirs)
+
+
+def test_formal_preflight_failure_publishes_no_predictions(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    pred_dir = tmp_path / "pred"
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(SystemExit):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=pred_dir,
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    assert not any(pred_dir.glob("*.jsonl"))
+    assert (tmp_path / "FORMAL_RUN_FAILED.json").is_file()
+
+
+def test_formal_api_failure_publishes_no_predictions(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    pred_dir = tmp_path / "pred"
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+    monkeypatch.setattr(suite, "build_llm_client", lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("timeout")))
+
+    with pytest.raises(SystemExit):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=pred_dir,
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    assert not any(pred_dir.glob("*.jsonl"))
+
+
+def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    pred_dir = tmp_path / "pred"
+    call_count = {"n": 0}
+
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_llm(_config):
+        from external_baselines.common.llm_client import HeuristicLLMClient
+
+        return HeuristicLLMClient()
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise RuntimeError("third method failed")
+        from external_baselines.common.decision_output import parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return parsed.to_unified_row()
+
+    monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        suite,
+        "collect_method_runtime_evidence",
+        lambda **kwargs: RuntimeEvidence(method_id=kwargs["method_id"], llm_is_smoke=False, llm_initialized=True),
+    )
+
+    with pytest.raises(SystemExit):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
+            prediction_dir=pred_dir,
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    assert not any(pred_dir.glob("*.jsonl"))
+
+
+def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    pred_dir = tmp_path / "pred"
+    dec_dir = tmp_path / "dec"
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_llm(_config):
+        from external_baselines.common.llm_client import HeuristicLLMClient
+
+        return HeuristicLLMClient()
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        suite,
+        "collect_method_runtime_evidence",
+        lambda **kwargs: RuntimeEvidence(
+            method_id=kwargs["method_id"],
+            llm_is_smoke=False,
+            llm_initialized=True,
+            index_loaded=True,
+            index_built_during_run=False,
+            actual_embedding_used=True,
+            smoke_fallback_used=False,
+            dense_dependency_actual_embedding_used=True,
+            dense_dependency_smoke_fallback_used=False,
+            index_checksum="same",
+            dense_dependency_index_checksum="same",
+        ),
+    )
+    monkeypatch.setattr(
+        suite,
+        "compute_suite_formal_compliance",
+        lambda **kwargs: {
+            "formal_result": True,
+            "transactional_publish_complete": kwargs.get("transactional_publish_complete", False),
+        },
+    )
+
+    summary = run_decision_suite(
+        runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
+        prediction_dir=pred_dir,
+        decision_dir=dec_dir,
+        execution_stage="formal",
+        experiment_manifest=tmp_path / "manifest.yaml",
+    )
+    assert len(list(pred_dir.glob("*.jsonl"))) == 5
+    assert summary["formal_compliance"]["transactional_publish_complete"] is True
+
+
+def test_formal_failure_writes_failed_marker(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(SystemExit):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=tmp_path / "pred",
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    marker = json.loads((tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    assert marker["formal_outputs_published"] is False
+    assert marker["execution_stage"] == "formal"
+
+
+def test_formal_failure_marker_contains_no_secrets(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {"ok": False, "runner_bundle_integrity": {"ok": False}, "methods": {}},
+    )
+    with pytest.raises(SystemExit):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path),
+            prediction_dir=tmp_path / "pred",
+            decision_dir=tmp_path / "dec",
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    text = (tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8").lower()
+    for secret in ("api_key", "apikey", "bearer ", "sk-"):
+        assert secret not in text
+
+
+def test_dry_run_does_not_require_transactional_publish(tmp_path):
+    bundle = _make_runner_bundle(tmp_path)
+    pred_dir = tmp_path / "pred"
+    summary = run_decision_suite(
+        runner_bundle=bundle,
+        prediction_dir=pred_dir,
+        decision_dir=tmp_path / "dec",
+        execution_stage="dry_run",
+        limit=1,
+    )
+    assert summary["formal_compliance"]["transactional_publish_complete"] is False
+    assert any(pred_dir.glob("*.jsonl"))
