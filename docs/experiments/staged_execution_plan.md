@@ -210,9 +210,8 @@ python scripts/run_decision_comparison_suite.py \
   --runner-bundle <frozen_runner_bundle> \
   --method-set comparison_suite \
   --execution-stage formal \
-  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
-  --prediction-dir outputs/interop/test_public/predictions \
-  --decision-dir outputs/decision_runs/test_public
+  --formal-run-root outputs/formal/test_public \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
 ```
 
 Legacy combined runner (also no `--limit` in formal):

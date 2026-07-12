@@ -297,6 +297,50 @@ def resolve_formal_run_layout(
     )
 
 
+@dataclass(frozen=True)
+class ResolvedOutputPaths:
+    formal_run_root: Path | None
+    prediction_dir: Path
+    decision_dir: Path
+
+
+def resolve_cli_output_paths(args: argparse.Namespace) -> ResolvedOutputPaths:
+    pred_arg = Path(args.prediction_dir).expanduser() if args.prediction_dir else None
+    dec_arg = Path(args.decision_dir).expanduser() if args.decision_dir else None
+    root_arg = Path(args.formal_run_root).expanduser() if args.formal_run_root else None
+
+    if args.execution_stage == "formal":
+        if root_arg is not None:
+            expected_pred = root_arg / "predictions"
+            expected_dec = root_arg / "decisions"
+            if pred_arg is not None and pred_arg.resolve() != expected_pred.resolve():
+                raise FormalRunFailed(
+                    "formal_output_paths_conflict_with_formal_run_root",
+                    stage="cli_validation",
+                )
+            if dec_arg is not None and dec_arg.resolve() != expected_dec.resolve():
+                raise FormalRunFailed(
+                    "formal_output_paths_conflict_with_formal_run_root",
+                    stage="cli_validation",
+                )
+            return ResolvedOutputPaths(root_arg, expected_pred, expected_dec)
+        if pred_arg is None or dec_arg is None:
+            raise FormalRunFailed("formal_output_paths_incomplete", stage="cli_validation")
+        try:
+            layout = resolve_formal_run_layout(
+                formal_run_root=None,
+                prediction_dir=pred_arg,
+                decision_dir=dec_arg,
+            )
+        except FormalSuiteExecutionError as exc:
+            raise FormalRunFailed(str(exc.args[0]), stage="cli_validation") from exc
+        return ResolvedOutputPaths(None, layout.prediction_dir, layout.decision_dir)
+
+    if pred_arg is None or dec_arg is None:
+        raise SystemExit("Dry run requires --prediction-dir and --decision-dir.")
+    return ResolvedOutputPaths(None, pred_arg, dec_arg)
+
+
 def paths_same_filesystem(path_a: Path, path_b: Path) -> bool:
     a = path_a.resolve()
     b = path_b.resolve()
@@ -1947,8 +1991,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--method-set", choices=["comparison_suite"], default="comparison_suite")
     parser.add_argument("--execution-stage", choices=["dry_run", "formal"], default="dry_run")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--prediction-dir", required=True)
-    parser.add_argument("--decision-dir", required=True)
+    parser.add_argument("--prediction-dir", default=None)
+    parser.add_argument("--decision-dir", default=None)
     parser.add_argument(
         "--formal-run-root",
         default=None,
@@ -1967,22 +2011,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    prediction_dir = Path(args.prediction_dir)
-    decision_dir = Path(args.decision_dir)
-    formal_run_root = Path(args.formal_run_root) if args.formal_run_root else None
-    if args.execution_stage == "formal" and formal_run_root is not None:
-        prediction_dir = formal_run_root / "predictions"
-        decision_dir = formal_run_root / "decisions"
+
+    try:
+        validate_cli_args(args)
+        output_paths = resolve_cli_output_paths(args)
+    except FormalRunFailed as exc:
+        _emit_formal_cli_error(exc, control_root=None, run_id=run_id)
+
+    prediction_dir = output_paths.prediction_dir
+    decision_dir = output_paths.decision_dir
+    formal_run_root = output_paths.formal_run_root
     control_root = resolve_formal_control_root_from_paths(
         formal_run_root=formal_run_root,
         prediction_dir=prediction_dir,
         decision_dir=decision_dir,
     )
-
-    try:
-        validate_cli_args(args)
-    except FormalRunFailed as exc:
-        _emit_formal_cli_error(exc, control_root=control_root, run_id=run_id)
 
     try:
         summary = run_decision_suite(

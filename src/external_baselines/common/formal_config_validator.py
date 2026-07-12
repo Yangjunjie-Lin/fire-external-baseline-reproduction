@@ -116,20 +116,34 @@ def _is_placeholder(value: Any) -> bool:
     return False
 
 
-def _validate_positive_dimension(value: Any, *, allow_placeholders: bool = False) -> int:
+def _validate_positive_dimension(value: Any, *, allow_placeholders: bool = False, field: str = "ekell_vector.dimension") -> int:
     if allow_placeholders and _is_placeholder(value):
         return 0
     if _is_placeholder(value):
-        raise FormalConfigError(f"ekell_vector.dimension must be a positive integer (got placeholder {value!r}).")
-    try:
-        dim = int(value)
-    except (TypeError, ValueError) as exc:
-        raise FormalConfigError(
-            f"ekell_vector.dimension must be a positive integer (got {value!r})."
-        ) from exc
-    if dim <= 0:
-        raise FormalConfigError(f"ekell_vector.dimension must be > 0 (got {dim}).")
-    return dim
+        raise FormalConfigError(f"{field} must be a positive integer (got placeholder {value!r}).")
+    if type(value) is not int:
+        raise FormalConfigError(f"{field} must be a positive integer with exact YAML integer type (got {value!r}).")
+    if value <= 0:
+        raise FormalConfigError(f"{field} must be > 0 (got {value}).")
+    return value
+
+
+def _validate_exact_bool(
+    value: Any,
+    *,
+    field: str,
+    allow_placeholders: bool = False,
+    required: bool | None = None,
+) -> bool | None:
+    if allow_placeholders and _is_placeholder(value):
+        return None
+    if value is None:
+        raise FormalConfigError(f"{field} must be an exact boolean.")
+    if type(value) is not bool:
+        raise FormalConfigError(f"{field} must be an exact boolean (got {value!r}).")
+    if required is not None and value is not required:
+        raise FormalConfigError(f"{field} must be {str(required).lower()}.")
+    return value
 
 
 def _walk_strings(obj: Any, path: str = "") -> list[tuple[str, str]]:
@@ -184,14 +198,24 @@ def validate_llm_for_formal(
         for field in ("temperature", "top_p", "max_tokens", "seed"):
             if field not in llm:
                 raise FormalConfigError(f"Formal config requires llm.{field} to be set explicitly.")
+        if "enable_thinking" in llm:
+            _validate_exact_bool(llm.get("enable_thinking"), field="llm.enable_thinking")
         smoke_tokens = ("heuristic", "smoke", "fixture", "mock", "fake")
         model_lower = model.lower()
         if any(token in model_lower for token in smoke_tokens):
             raise FormalConfigError(f"Formal config rejects smoke/heuristic LLM model name: {model!r}")
-    if bool(config.get("paper_final", False)) and bool(llm.get("allow_model_env_override", False)):
-        raise FormalConfigError(
-            "paper_final=true forbids llm.allow_model_env_override=true; "
-            "formal model identity must come from YAML."
+    if type(config.get("paper_final", False)) is bool and config.get("paper_final") is True:
+        override = llm.get("allow_model_env_override", False)
+        if type(override) is bool and override is True:
+            raise FormalConfigError(
+                "paper_final=true forbids llm.allow_model_env_override=true; "
+                "formal model identity must come from YAML."
+            )
+    elif not allow_placeholders and stage == "formal":
+        _validate_exact_bool(
+            llm.get("allow_model_env_override", False),
+            field="llm.allow_model_env_override",
+            required=False,
         )
 
 def validate_dense_config_for_real_run(
@@ -206,23 +230,27 @@ def validate_dense_config_for_real_run(
     backend = str(dense.get("backend", "smoke")).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal Dense RAG rejects smoke/hash backend: {backend!r}")
-    if not bool(dense.get("reject_smoke", False)):
-        raise FormalConfigError("Formal Dense RAG requires dense_rag.reject_smoke=true.")
+    _validate_exact_bool(dense.get("reject_smoke", False), field="dense_rag.reject_smoke", required=True)
     for field in ("model_name", "model_version"):
         value = dense.get(field)
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal Dense RAG requires dense_rag.{field} (non-placeholder).")
     dim = dense.get("dimension", dense.get("dim"))
-    if allow_placeholders and _is_placeholder(dim):
-        pass
-    else:
-        try:
-            if int(dim) <= 0:
-                raise FormalConfigError(f"dense_rag.dimension must be > 0 (got {dim}).")
-        except (TypeError, ValueError) as exc:
-            raise FormalConfigError(f"dense_rag.dimension must be a positive integer (got {dim!r}).") from exc
+    if not (allow_placeholders and _is_placeholder(dim)):
+        _validate_positive_dimension(dim, allow_placeholders=allow_placeholders, field="dense_rag.dimension")
     if "normalize_embeddings" not in dense and not allow_placeholders:
         raise FormalConfigError("Formal Dense RAG requires dense_rag.normalize_embeddings to be set.")
+    elif "normalize_embeddings" in dense and not allow_placeholders:
+        _validate_exact_bool(
+            dense.get("normalize_embeddings"),
+            field="dense_rag.normalize_embeddings",
+        )
+    if "allow_index_rebuild" in dense and not allow_placeholders:
+        _validate_exact_bool(
+            dense.get("allow_index_rebuild"),
+            field="dense_rag.allow_index_rebuild",
+            required=False,
+        )
     index_path = dense.get("index_path")
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Dense RAG requires non-placeholder dense_rag.index_path.")
@@ -266,8 +294,8 @@ def validate_hybrid_config_for_real_run(
     ).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal Hybrid RAG rejects smoke/hash dense backend: {backend!r}")
-    if not bool(hybrid.get("reject_smoke", dense.get("reject_smoke", False))):
-        raise FormalConfigError("Formal Hybrid RAG requires reject_smoke=true.")
+    hybrid_reject = hybrid.get("reject_smoke", dense.get("reject_smoke", False))
+    _validate_exact_bool(hybrid_reject, field="hybrid_rag.reject_smoke", required=True)
     model_name = dense.get("model_name") or hybrid.get("dense_model_name")
     model_version = dense.get("model_version") or hybrid.get("dense_model_version")
     for field, value in (("model_name", model_name), ("model_version", model_version)):
@@ -275,11 +303,7 @@ def validate_hybrid_config_for_real_run(
             raise FormalConfigError(f"Formal Hybrid RAG requires dense {field} (non-placeholder).")
     dim = dense.get("dimension", hybrid.get("dimension"))
     if not (allow_placeholders and _is_placeholder(dim)):
-        try:
-            if int(dim) <= 0:
-                raise FormalConfigError(f"hybrid dense dimension must be > 0 (got {dim}).")
-        except (TypeError, ValueError) as exc:
-            raise FormalConfigError(f"hybrid dense dimension must be a positive integer (got {dim!r}).") from exc
+        _validate_positive_dimension(dim, allow_placeholders=allow_placeholders, field="hybrid_rag.dimension")
     try:
         top_k = int(hybrid.get("top_k", (config.get("retrieval") or {}).get("top_k", 5)))
         candidate_pool = int(hybrid.get("candidate_pool", top_k))
@@ -328,13 +352,16 @@ def validate_ekell_vector_for_formal(
     backend = str(vector.get("backend", "smoke")).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal E-KELL rejects smoke/hash backend: {backend!r}")
-    if not bool(vector.get("reject_smoke", False)):
-        raise FormalConfigError("Formal E-KELL requires ekell_vector.reject_smoke=true.")
+    _validate_exact_bool(vector.get("reject_smoke", False), field="ekell_vector.reject_smoke", required=True)
     for field in ("model_name", "model_version"):
         value = vector.get(field)
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal E-KELL requires ekell_vector.{field} (non-placeholder).")
-    _validate_positive_dimension(vector.get("dimension"), allow_placeholders=allow_placeholders)
+    _validate_positive_dimension(
+        vector.get("dimension"),
+        allow_placeholders=allow_placeholders,
+        field="ekell_vector.dimension",
+    )
     index_path = vector.get("index_path")
     if not index_path:
         if not allow_placeholders:
@@ -526,6 +553,8 @@ def validate_experiment_manifest(
 
     if not bool(raw.get("paper_final", False)):
         errors.append("paper_final must be true for formal experiment manifest.")
+    elif type(raw.get("paper_final")) is not bool:
+        errors.append("paper_final must be an exact boolean for formal experiment manifest.")
 
     for key in (
         "require_bundle_checksum",
@@ -536,7 +565,8 @@ def validate_experiment_manifest(
         "fail_on_missing_case",
         "fail_on_extra_case",
     ):
-        if not bool(raw.get(key, False)):
+        flag = raw.get(key, False)
+        if type(flag) is not bool or flag is not True:
             errors.append(f"{key} must be true for formal manifest.")
 
     freeze_status = str(raw.get("freeze_status", "")).lower()

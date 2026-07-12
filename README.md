@@ -106,7 +106,7 @@ python scripts/check_comparison_readiness.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle path/to/frozen_runner_bundle \
   --method-set comparison_suite
-python scripts/check_output_taxonomy.py --prediction-dir outputs/interop/test_public/predictions
+python scripts/check_output_taxonomy.py --prediction-dir outputs/formal/test_public/predictions
 ```
 
 ```bash
@@ -124,8 +124,30 @@ python scripts/run_decision_comparison_suite.py \
   --runner-bundle path/to/frozen_runner_bundle \
   --method-set comparison_suite \
   --execution-stage formal \
-  --prediction-dir outputs/interop/test_public/predictions \
-  --decision-dir outputs/decision_runs/test_public \
+  --formal-run-root outputs/formal/test_public \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
+```
+
+Formal run root layout:
+
+```text
+outputs/formal/test_public/
+├── predictions/
+├── decisions/
+├── suite_summary.json
+├── run_manifest.json
+└── diagnostics/
+```
+
+Legacy layout (same parent required):
+
+```bash
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle path/to/frozen_runner_bundle \
+  --method-set comparison_suite \
+  --execution-stage formal \
+  --prediction-dir outputs/formal/test_public/predictions \
+  --decision-dir outputs/formal/test_public/decisions \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
 ```
 

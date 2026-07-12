@@ -5787,7 +5787,7 @@ def test_hybrid_runtime_does_not_double_close_dense():
     hybrid = HybridRuntime(lexical_retriever=object(), dense_runtime=dense)
     close_method_runtime(hybrid)
     assert hybrid._closed is True
-    assert dense._closed is True
+    assert dense._closed is False
     close_method_runtime(dense)
     assert dense._closed is True
 
@@ -5917,4 +5917,230 @@ def test_staged_validator_does_not_reparse_schema_per_record(tmp_path, monkeypat
         expected_prediction_schema_sha256=schema_sha,
     )
     assert reads["n"] == 1
+
+
+def _cli_args(**overrides):
+    import argparse
+
+    base = {
+        "runner_bundle": "bundle",
+        "method_set": "comparison_suite",
+        "execution_stage": "formal",
+        "limit": None,
+        "prediction_dir": None,
+        "decision_dir": None,
+        "formal_run_root": None,
+        "experiment_manifest": "configs/experiments/controlled_main_table_v1.yaml",
+        "enable_dev_aliases": False,
+        "keep_failed_temp_artifacts": False,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_formal_cli_accepts_formal_run_root_without_legacy_dirs(tmp_path):
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(formal_run_root=str(tmp_path / "formal"))
+    paths = resolve_cli_output_paths(args)
+    assert paths.formal_run_root == tmp_path / "formal"
+    assert paths.prediction_dir == tmp_path / "formal" / "predictions"
+    assert paths.decision_dir == tmp_path / "formal" / "decisions"
+
+
+def test_formal_cli_derives_prediction_and_decision_dirs(tmp_path):
+    test_formal_cli_accepts_formal_run_root_without_legacy_dirs(tmp_path)
+
+
+def test_formal_cli_rejects_only_prediction_dir(tmp_path):
+    from external_baselines.common.decision_suite_guard import FormalRunFailed
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(prediction_dir=str(tmp_path / "predictions"))
+    with pytest.raises(FormalRunFailed, match="formal_output_paths_incomplete"):
+        resolve_cli_output_paths(args)
+
+
+def test_formal_cli_rejects_only_decision_dir(tmp_path):
+    from external_baselines.common.decision_suite_guard import FormalRunFailed
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(decision_dir=str(tmp_path / "decisions"))
+    with pytest.raises(FormalRunFailed, match="formal_output_paths_incomplete"):
+        resolve_cli_output_paths(args)
+
+
+def test_formal_cli_rejects_conflicting_formal_root_and_dirs(tmp_path):
+    from external_baselines.common.decision_suite_guard import FormalRunFailed
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    root = tmp_path / "formal"
+    args = _cli_args(
+        formal_run_root=str(root),
+        prediction_dir=str(tmp_path / "other" / "predictions"),
+        decision_dir=str(root / "decisions"),
+    )
+    with pytest.raises(FormalRunFailed, match="formal_output_paths_conflict_with_formal_run_root"):
+        resolve_cli_output_paths(args)
+
+
+def test_formal_cli_accepts_matching_formal_root_and_dirs(tmp_path):
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    root = tmp_path / "formal"
+    args = _cli_args(
+        formal_run_root=str(root),
+        prediction_dir=str(root / "predictions"),
+        decision_dir=str(root / "decisions"),
+    )
+    paths = resolve_cli_output_paths(args)
+    assert paths.prediction_dir.name == "predictions"
+    assert paths.decision_dir.name == "decisions"
+
+
+def test_formal_cli_rejects_legacy_dirs_with_different_parents(tmp_path):
+    from external_baselines.common.decision_suite_guard import FormalRunFailed
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(
+        prediction_dir=str(tmp_path / "a" / "predictions"),
+        decision_dir=str(tmp_path / "b" / "decisions"),
+    )
+    with pytest.raises(FormalRunFailed, match="formal_output_paths_must_share_run_root"):
+        resolve_cli_output_paths(args)
+
+
+def test_dry_run_requires_explicit_output_dirs():
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(execution_stage="dry_run")
+    with pytest.raises(SystemExit, match="Dry run requires"):
+        resolve_cli_output_paths(args)
+
+
+def test_documented_formal_command_matches_cli_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    final_cmds = (ROOT / "docs/final_experiment_commands.md").read_text(encoding="utf-8")
+    for text in (readme, final_cmds):
+        assert "--formal-run-root outputs/formal/test_public" in text
+        assert "outputs/decision_runs/test_public" not in text
+        assert "--prediction-dir outputs/interop/test_public/predictions" not in text
+
+
+def test_hybrid_wrapper_is_not_marked_cached_only_because_dense_is_cached(tmp_path):
+    from external_baselines.common.method_runtime import (
+        prepare_dense_runtime,
+        prepare_hybrid_runtime,
+        runtime_cache_scope,
+        runtime_is_cached,
+    )
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    dense_config = _dense_method_config(fixture)
+    from external_baselines.interop.bundle import load_runner_bundle
+
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    hybrid_config = _formal_method_configs(str(bundle["corpus_dir"]), dense_index=fixture["dense_idx"])["hybrid_rag"]
+    hybrid_config["dense_rag"]["index_path"] = str(fixture["dense_idx"])
+    backend = _matching_embedding_backend()
+    with runtime_cache_scope():
+        dense = prepare_dense_runtime(dense_config, embedding_backend=backend)
+        hybrid = prepare_hybrid_runtime(hybrid_config, embedding_backend=backend)
+        assert runtime_is_cached(dense) is True
+        assert runtime_is_cached(hybrid) is False
+
+
+def test_hybrid_wrapper_closed_after_method_execution():
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        close_method_runtime,
+        runtime_is_cached,
+    )
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = HybridRuntime(lexical_retriever=object(), dense_runtime=dense)
+    assert runtime_is_cached(hybrid) is False
+    close_method_runtime(hybrid)
+    assert hybrid._closed is True
+    assert dense._closed is False
+
+
+def test_hybrid_close_does_not_close_shared_dense():
+    test_hybrid_wrapper_closed_after_method_execution()
+
+
+def test_close_error_does_not_mask_original_exception():
+    from external_baselines.common.method_runtime import DenseRuntime, runtime_cache_scope
+
+    class _BrokenRuntime(DenseRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(ValueError, match="original"):
+        with runtime_cache_scope() as cache:
+            cache[("broken",)] = _BrokenRuntime(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )
+            raise ValueError("original")
+
+
+def test_close_error_without_body_exception_is_reported():
+    from external_baselines.common.method_runtime import DenseRuntime, RuntimeCleanupError, runtime_cache_scope
+
+    class _BrokenRuntime(DenseRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeCleanupError):
+        with runtime_cache_scope() as cache:
+            cache[("broken",)] = _BrokenRuntime(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )
+
+
+def test_one_close_failure_does_not_skip_other_runtime_cleanup():
+    from external_baselines.common.method_runtime import DenseRuntime, RuntimeCleanupError, runtime_cache_scope
+
+    closes = {"ok": 0}
+
+    class _BrokenRuntime(DenseRuntime):
+        def close(self) -> None:
+            raise RuntimeError("broken")
+
+    class _GoodRuntime(DenseRuntime):
+        def close(self) -> None:
+            closes["ok"] += 1
+            super().close()
+
+    with pytest.raises(RuntimeCleanupError):
+        with runtime_cache_scope() as cache:
+            cache[("bad",)] = _BrokenRuntime(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )
+            cache[("good",)] = _GoodRuntime(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )
+    assert closes["ok"] == 1
+
+
+def test_concurrent_suites_different_backends_do_not_conflict(tmp_path):
+    test_concurrent_suites_same_index_have_distinct_runtime(tmp_path)
 

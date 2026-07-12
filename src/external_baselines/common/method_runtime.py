@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from external_baselines.common.checksums import sha256_file
+from external_baselines.common.decision_suite_guard import sanitize_error_message
 from external_baselines.interop.schema import canonicalize_method_id
 from external_baselines.retrieval.embedding_backends import (
     EmbeddingBackendError,
@@ -64,8 +66,16 @@ class HybridRuntime:
         if self._closed:
             return
         self._closed = True
-        if self.dense_runtime is not None and not self.dense_runtime._closed:
-            self.dense_runtime.close()
+        closer = getattr(self.lexical_retriever, "close", None)
+        if callable(closer):
+            closer()
+
+
+class RuntimeCleanupError(RuntimeError):
+    """Raised when runtime cache cleanup fails without a suite body exception."""
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -509,15 +519,7 @@ def runtime_is_cached(runtime: Any | None) -> bool:
     if runtime is None:
         return False
     cache = _current_runtime_cache()
-    for cached in cache.values():
-        if cached is runtime:
-            return True
-        if isinstance(cached, HybridRuntime) and cached.dense_runtime is runtime:
-            return True
-    if isinstance(runtime, HybridRuntime) and runtime.dense_runtime is not None:
-        if runtime.dense_runtime in cache.values():
-            return True
-    return False
+    return any(cached is runtime for cached in cache.values())
 
 
 def close_method_runtime(runtime: Any | None) -> None:
@@ -528,29 +530,42 @@ def close_method_runtime(runtime: Any | None) -> None:
         closer()
 
 
-def _close_cache_runtimes(cache: dict[tuple[str, ...], Any]) -> None:
-    seen_dense: set[int] = set()
+def _close_cache_runtimes_safely(cache: dict[tuple[str, ...], Any]) -> list[str]:
+    errors: list[str] = []
+    seen: set[int] = set()
     for runtime in cache.values():
-        if isinstance(runtime, HybridRuntime):
+        runtime_id = id(runtime)
+        if runtime_id in seen:
+            continue
+        seen.add(runtime_id)
+        try:
             close_method_runtime(runtime)
-            if runtime.dense_runtime is not None:
-                seen_dense.add(id(runtime.dense_runtime))
-            continue
-        if id(runtime) in seen_dense:
-            continue
-        close_method_runtime(runtime)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(sanitize_error_message(str(exc)))
+    return errors
 
 
 @contextmanager
 def runtime_cache_scope() -> Iterator[dict[tuple[str, ...], Any]]:
     cache: dict[tuple[str, ...], Any] = {}
     token = _ACTIVE_RUNTIME_CACHE.set(cache)
+    body_exception: BaseException | None = None
     try:
         yield cache
+    except BaseException as exc:
+        body_exception = exc
+        raise
     finally:
-        _close_cache_runtimes(cache)
+        close_errors = _close_cache_runtimes_safely(cache)
         cache.clear()
         _ACTIVE_RUNTIME_CACHE.reset(token)
+        if close_errors:
+            for message in close_errors:
+                logger.warning("runtime_cache_close_failed: %s", message)
+            if body_exception is None:
+                raise RuntimeCleanupError(
+                    "; ".join(close_errors) or "runtime_cache_close_failed"
+                ) from None
 
 
 def pipeline_accepts_runtime(pipeline: Callable[..., Any]) -> bool:

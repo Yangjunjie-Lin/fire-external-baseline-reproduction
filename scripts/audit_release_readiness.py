@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -16,13 +17,50 @@ sys.path.insert(0, str(ROOT / "src"))
 OUT_JSON = ROOT / "outputs" / "diagnostics" / "release_readiness.json"
 OUT_MD = ROOT / "outputs" / "diagnostics" / "release_readiness.md"
 
+ENGINEERING_GATE_KEYS = (
+    "method_registry_converged",
+    "formal_manifest_unique",
+    "canonical_method_ids_only",
+    "legacy_isolated",
+    "formal_config_validator_present",
+    "smoke_config_separated",
+    "gold_isolation_tests_present",
+    "schema_authority_clear",
+    "external_schema_required",
+    "checksum_policy_enabled",
+    "interop_contract_tests_present",
+    "cross_repository_contract_tool_ready",
+    "environment_dependency_spec_present",
+    "artifact_packager_present",
+    "data_card_templates_present",
+    "model_card_templates_present",
+    "run_card_templates_present",
+    "ci_workflow_config_present",
+)
+
+EMPIRICAL_GATE_KEYS = (
+    "cross_repo_contract_verified",
+    "real_shared_llm_run",
+    "real_chatglm_run",
+    "actual_lightrag",
+    "actual_microsoft_graphrag",
+    "expert_evaluation",
+    "formal_statistics",
+)
+
+PAPER_GATE_KEYS = ("paper_ready",)
+
 
 def _exists(rel: str) -> bool:
     return (ROOT / rel).is_file()
 
 
-def _glob_one(pattern: str) -> bool:
-    return bool(list(ROOT.glob(pattern)))
+def _read_deprecated(path: str) -> bool:
+    p = ROOT / path
+    if not p.is_file():
+        return True
+    text = p.read_text(encoding="utf-8")
+    return "deprecated: true" in text
 
 
 def _git(cmd: list[str]) -> str:
@@ -32,18 +70,8 @@ def _git(cmd: list[str]) -> str:
         return ""
 
 
-def build_gates() -> dict[str, Any]:
-    cross_repo_path = ROOT / "outputs/diagnostics/cross_repo_contract.json"
-    cross_verified = False
-    if cross_repo_path.is_file():
-        try:
-            cross_verified = bool(json.loads(cross_repo_path.read_text(encoding="utf-8")).get(
-                "cross_repository_contract_verified"
-            ))
-        except json.JSONDecodeError:
-            cross_verified = False
-
-    gates = {
+def _engineering_gate_values() -> dict[str, bool]:
+    return {
         "method_registry_converged": _exists("src/external_baselines/method_registry.py"),
         "formal_manifest_unique": _exists("configs/experiments/controlled_main_table_v1.yaml.example")
         and _read_deprecated("configs/experiments/paper_main_table_v1.yaml.example"),
@@ -56,69 +84,110 @@ def build_gates() -> dict[str, Any]:
         "external_schema_required": True,
         "checksum_policy_enabled": True,
         "interop_contract_tests_present": _exists("tests/interop/test_main_project_contract.py"),
-        "cross_repo_contract_verified": cross_verified,
         "cross_repository_contract_tool_ready": _exists("scripts/verify_cross_repo_contract.py"),
-        "environment_lock_present": _exists("constraints.txt") or _exists("requirements.lock"),
+        "environment_dependency_spec_present": _exists("constraints.txt") or _exists("requirements.lock"),
         "artifact_packager_present": _exists("scripts/package_reproducibility_artifact.py"),
         "data_card_templates_present": _exists("docs/cards/data_card_template.md"),
         "model_card_templates_present": _exists("docs/cards/model_card_template.md"),
         "run_card_templates_present": _exists("docs/cards/run_card_template.md"),
-        "ci_present": _exists(".github/workflows/ci.yml"),
-        "ci_status_known": True,
+        "ci_workflow_config_present": _exists(".github/workflows/ci.yml"),
+    }
+
+
+def _empirical_gate_values() -> dict[str, bool]:
+    cross_repo_path = ROOT / "outputs/diagnostics/cross_repo_contract.json"
+    cross_verified = False
+    if cross_repo_path.is_file():
+        try:
+            cross_verified = bool(
+                json.loads(cross_repo_path.read_text(encoding="utf-8")).get(
+                    "cross_repository_contract_verified"
+                )
+            )
+        except json.JSONDecodeError:
+            cross_verified = False
+    return {
+        "cross_repo_contract_verified": cross_verified,
         "real_shared_llm_run": False,
         "real_chatglm_run": False,
         "actual_lightrag": False,
         "actual_microsoft_graphrag": False,
         "expert_evaluation": False,
         "formal_statistics": False,
-        "paper_ready": False,
     }
-    engineering = [
-        k
-        for k, v in gates.items()
-        if k
-        not in {
-            "real_shared_llm_run",
-            "real_chatglm_run",
-            "actual_lightrag",
-            "actual_microsoft_graphrag",
-            "expert_evaluation",
-            "formal_statistics",
-            "paper_ready",
-            "cross_repo_contract_verified",
-        }
-        and v
-    ]
+
+
+def build_report() -> dict[str, Any]:
+    engineering_gates = _engineering_gate_values()
+    empirical_gates = _empirical_gate_values()
+    paper_gates = {"paper_ready": False}
+    engineering_failed = [key for key, value in engineering_gates.items() if not value]
+    engineering_passed = sum(1 for value in engineering_gates.values() if value)
+    engineering_total = len(engineering_gates)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_head": _git(["log", "-1", "--oneline"]),
-        "gates": gates,
-        "engineering_gates_passed": len(engineering),
-        "engineering_gates_total": 17,
+        "ci_result_verified_externally": False,
+        "engineering": {
+            "ready": not engineering_failed,
+            "passed": engineering_passed,
+            "total": engineering_total,
+            "failed_gates": engineering_failed,
+            "gates": engineering_gates,
+        },
+        "empirical": {
+            "ready": all(empirical_gates.values()),
+            "gates": empirical_gates,
+        },
+        "paper": {
+            "ready": all(paper_gates.values()),
+            "gates": paper_gates,
+        },
     }
 
 
-def _read_deprecated(path: str) -> bool:
-    p = ROOT / path
-    if not p.is_file():
-        return True
-    text = p.read_text(encoding="utf-8")
-    return "deprecated: true" in text
-
-
 def render_md(report: dict[str, Any]) -> str:
-    lines = ["# Release readiness", "", f"Generated: `{report['generated_at']}`", ""]
-    for key, value in report["gates"].items():
-        lines.append(f"- `{key}`: **{value}**")
+    lines = [
+        "# Release readiness",
+        "",
+        f"Generated: `{report['generated_at']}`",
+        "",
+        "## Engineering",
+        f"- ready: **{report['engineering']['ready']}**",
+        f"- passed: **{report['engineering']['passed']}/{report['engineering']['total']}**",
+        "",
+        "## Empirical",
+        f"- ready: **{report['empirical']['ready']}**",
+        "",
+        "## Paper",
+        f"- ready: **{report['paper']['ready']}**",
+        "",
+    ]
+    for key, value in report["engineering"]["gates"].items():
+        lines.append(f"- engineering `{key}`: **{value}**")
+    for key, value in report["empirical"]["gates"].items():
+        lines.append(f"- empirical `{key}`: **{value}**")
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    report = build_gates()
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Audit release readiness")
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Write the report but always exit 0.",
+    )
+    args = parser.parse_args(argv)
+    report = build_report()
     OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     OUT_MD.write_text(render_md(report), encoding="utf-8")
     print(json.dumps(report, indent=2))
+    if args.report_only:
+        raise SystemExit(0)
+    if not report["engineering"]["ready"]:
+        raise SystemExit(1)
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":

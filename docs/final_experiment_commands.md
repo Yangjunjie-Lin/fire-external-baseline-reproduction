@@ -106,7 +106,7 @@ python scripts/run_decision_comparison_suite.py \
 
 # 8) Taxonomy contract check before handing predictions to the main-project evaluator
 python scripts/check_output_taxonomy.py \
-  --prediction-dir outputs/interop/test_public/predictions
+  --prediction-dir outputs/formal/test_public/predictions
 
 python scripts/check_firebench_contract_snapshot.py \
   --main-repo ../fire-agent-demo
@@ -196,7 +196,8 @@ outputs/formal/
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (drive-qualified, root-relative, UNC, device namespace, traversal, symlink escape) and must resolve inside the staged run root.
 - The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
-- Runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects.
-- GitHub Actions performs offline compile, lint, test, and repository-hygiene checks.
+- Formal 推荐使用 `--formal-run-root`；提供 formal run root 时无需额外 `--prediction-dir` / `--decision-dir`。
+- Legacy 双目录模式仅允许共享同一 run root；`jsonschema` 为核心运行依赖；Hybrid wrapper 不拥有共享 Dense runtime 的关闭权。
+- Engineering readiness 与 empirical/paper readiness 分离；CI 不声称远程 workflow 已通过。
 - Offline Formal E2E injects only LLM transport and embedding-compute boundaries.
 - Post-commit warning failures are printed and returned, but never mutate or invalidate the committed run.

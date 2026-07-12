@@ -213,7 +213,11 @@ def test_rejects_negative_dimension():
 
 def test_accepts_real_dimension():
     assert _validate_positive_dimension(768, allow_placeholders=False) == 768
-    assert _validate_positive_dimension("768", allow_placeholders=False) == 768
+
+
+def test_rejects_string_dimension():
+    with pytest.raises(FormalConfigError, match="exact YAML integer"):
+        _validate_positive_dimension("768", allow_placeholders=False)
 
 
 # --- .example protection ---
