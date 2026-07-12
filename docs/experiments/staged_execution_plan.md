@@ -48,13 +48,16 @@ python scripts/build_comparison_indexes.py \
 python scripts/check_firebench_contract_snapshot.py \
   --main-repo ../fire-agent-demo
 
+python scripts/check_firebench_taxonomy_snapshot.py \
+  --main-repo ../fire-agent-demo
+
 # Offline decision-suite + taxonomy wiring (heuristic LLM; temporary fixtures)
 python -m pytest tests/test_decision_comparison_suite.py tests/test_firebench_taxonomy.py -q
 ```
 
 **Not allowed:** real LLM calls, embedding download, full index build, cross-repo dry run, formal experiment.
 
-Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Normalization is character-level + exact aliases only. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
+Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Formal aliases mirror main-project `taxonomy.py` (commit `f228867480eb369c2b55cde3185af548965a23a5`). DEV-only aliases require explicit enable and are forbidden in formal runs. Final prediction JSONL must contain canonical IDs only; parser requires all decision/response/action fields to be explicitly present in formal mode. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
 
 ---
 

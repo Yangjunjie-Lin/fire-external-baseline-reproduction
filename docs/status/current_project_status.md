@@ -13,7 +13,23 @@ formal experiment not yet executed
 
 Five methods share one Runner Bundle input protocol and independently emit taxonomy-compliant structured decision JSON, natural-language response, and per-method `firebench-interop-v1` prediction JSONL. Native retrieval/reasoning designs are preserved. Formal evaluation remains owned by `fire-agent-demo`.
 
-Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench_taxonomy_v1.json`). Character-level normalization and exact aliases only; free-form natural language stays in human-readable text fields. Unknown/unmapped IDs fail formal validation.
+Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench_taxonomy_v1.json`). Formal aliases mirror main-project `taxonomy.py` at commit `f228867480eb369c2b55cde3185af548965a23a5`. Development-only aliases live in `configs/contracts/firebench_taxonomy_dev_aliases_v1.json` and are disabled in formal runs. Character-level normalization and exact aliases only; final prediction JSONL must contain canonical IDs only. Unknown/unmapped IDs fail formal validation.
+
+## Execution modes
+
+| Mode | Heuristic/smoke | Dev aliases | Manifest | Output IDs |
+|---|---|---|---|---|
+| Dry run | allowed (fixtures) | optional (`--enable-dev-aliases`) | optional | canonical only |
+| DEV | real or experimental config | explicit enable only | recommended | canonical only |
+| Formal | forbidden | forbidden | required (non-`.example`, frozen) | canonical only; all decision fields explicit |
+
+Formal pre-checks (read-only against main project):
+
+```bash
+python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_output_taxonomy.py --prediction-dir outputs/interop/test_public/predictions
+```
 
 ## Valid claim
 
@@ -28,7 +44,10 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 | Shared real LLM config | prepared (env vars only; gitignored) |
 | `main_table` + `comparison_suite` method sets | implemented |
 | Unified `DecisionOutput` + strict formal parser | implemented |
-| FireBench taxonomy snapshot + exact aliases | `configs/contracts/firebench_taxonomy_v1.json` |
+| FireBench taxonomy snapshot + formal aliases | `configs/contracts/firebench_taxonomy_v1.json`, `firebench_taxonomy_aliases_v1.json` |
+| DEV-only taxonomy aliases | `configs/contracts/firebench_taxonomy_dev_aliases_v1.json` |
+| Taxonomy snapshot parity checker | `scripts/check_firebench_taxonomy_snapshot.py` |
+| Formal decision suite guard | `src/external_baselines/common/decision_suite_guard.py` |
 | Taxonomy normalizer (character-level only) | `src/external_baselines/common/taxonomy_normalizer.py` |
 | Output taxonomy checker | `scripts/check_output_taxonomy.py` |
 | Schema snapshot checker | `scripts/check_firebench_contract_snapshot.py` |

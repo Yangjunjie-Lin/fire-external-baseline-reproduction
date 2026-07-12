@@ -12,8 +12,21 @@ from external_baselines.common.checksums import sha256_file
 ROOT = Path(__file__).resolve().parents[3]
 TAXONOMY_PATH = ROOT / "configs" / "contracts" / "firebench_taxonomy_v1.json"
 ALIASES_PATH = ROOT / "configs" / "contracts" / "firebench_taxonomy_aliases_v1.json"
+DEV_ALIASES_PATH = ROOT / "configs" / "contracts" / "firebench_taxonomy_dev_aliases_v1.json"
 
 TAXONOMY_VERSION = "firebench-taxonomy-v1"
+FORMAL_ALIAS_KEYS = (
+    "risk_signals",
+    "recommended_action_ids",
+    "blocked_action_ids",
+    "confirmation_ids",
+)
+DEV_ALIAS_KEYS = (
+    "final_decision_gates",
+    "final_response_statuses",
+    "risk_levels",
+    "priorities",
+)
 
 
 class TaxonomyError(ValueError):
@@ -30,12 +43,43 @@ def load_taxonomy() -> dict[str, Any]:
 
 
 @lru_cache(maxsize=1)
-def load_aliases() -> dict[str, Any]:
+def load_formal_aliases() -> dict[str, Any]:
     if not ALIASES_PATH.is_file():
-        raise TaxonomyError(f"Missing alias table: {ALIASES_PATH}")
+        raise TaxonomyError(f"Missing formal alias table: {ALIASES_PATH}")
     data = json.loads(ALIASES_PATH.read_text(encoding="utf-8"))
-    _validate_alias_payload(data, load_taxonomy())
+    _validate_alias_payload(data, load_taxonomy(), allowed_keys=FORMAL_ALIAS_KEYS)
     return data
+
+
+@lru_cache(maxsize=1)
+def load_dev_aliases() -> dict[str, Any]:
+    if not DEV_ALIASES_PATH.is_file():
+        return {"alias_version": "firebench-taxonomy-dev-aliases-v1"}
+    data = json.loads(DEV_ALIASES_PATH.read_text(encoding="utf-8"))
+    _validate_alias_payload(
+        data,
+        load_taxonomy(),
+        allowed_keys=FORMAL_ALIAS_KEYS + DEV_ALIAS_KEYS,
+        require_all_formal_keys=False,
+    )
+    return data
+
+
+def load_aliases(*, dev_aliases_enabled: bool = False) -> dict[str, Any]:
+    """Return effective alias table (formal only, or formal + dev when enabled)."""
+    formal = load_formal_aliases()
+    if not dev_aliases_enabled:
+        return formal
+    dev = load_dev_aliases()
+    merged = dict(formal)
+    for key in FORMAL_ALIAS_KEYS + DEV_ALIAS_KEYS:
+        block = dict(formal.get(key) or {})
+        for source, target in (dev.get(key) or {}).items():
+            if source not in block:
+                block[source] = target
+        if block:
+            merged[key] = block
+    return merged
 
 
 def taxonomy_sha256() -> str:
@@ -46,7 +90,26 @@ def alias_sha256() -> str:
     return sha256_file(ALIASES_PATH)
 
 
-def taxonomy_provenance() -> dict[str, Any]:
+def formal_alias_sha256() -> str:
+    return sha256_file(ALIASES_PATH)
+
+
+def dev_alias_sha256() -> str:
+    return sha256_file(DEV_ALIASES_PATH) if DEV_ALIASES_PATH.is_file() else ""
+
+
+def taxonomy_alias_source() -> dict[str, Any]:
+    formal = load_formal_aliases()
+    source = formal.get("taxonomy_alias_source") or {}
+    return {
+        "repository": source.get("repository"),
+        "branch": source.get("branch"),
+        "commit": source.get("commit"),
+        "path": source.get("path"),
+    }
+
+
+def taxonomy_provenance(*, dev_aliases_enabled: bool = False) -> dict[str, Any]:
     tax = load_taxonomy()
     return {
         "taxonomy_version": tax.get("taxonomy_version") or TAXONOMY_VERSION,
@@ -58,8 +121,13 @@ def taxonomy_provenance() -> dict[str, Any]:
         "taxonomy_source_commit": tax.get("taxonomy_source_commit"),
         "taxonomy_sha256": taxonomy_sha256(),
         "alias_sha256": alias_sha256(),
+        "formal_alias_sha256": formal_alias_sha256(),
+        "dev_alias_sha256": dev_alias_sha256(),
+        "taxonomy_alias_source": taxonomy_alias_source(),
+        "dev_aliases_enabled": bool(dev_aliases_enabled),
         "taxonomy_path": str(TAXONOMY_PATH.as_posix()),
         "alias_path": str(ALIASES_PATH.as_posix()),
+        "dev_alias_path": str(DEV_ALIASES_PATH.as_posix()),
     }
 
 
@@ -88,8 +156,8 @@ def membership_set(kind: str) -> frozenset[str]:
     return frozenset(ordered_ids(kind))
 
 
-def alias_map(kind: str) -> dict[str, str]:
-    aliases = load_aliases()
+def alias_map(kind: str, *, dev_aliases_enabled: bool = False) -> dict[str, str]:
+    aliases = load_aliases(dev_aliases_enabled=dev_aliases_enabled)
     key = {
         "risk_signals": "risk_signals",
         "recommended_action_ids": "recommended_action_ids",
@@ -106,7 +174,11 @@ def alias_map(kind: str) -> dict[str, str]:
     block = aliases.get(key) or {}
     if not isinstance(block, dict):
         raise TaxonomyError(f"Alias block must be object: {key}")
-    return {str(k): str(v) for k, v in block.items()}
+    expanded: dict[str, str] = {}
+    for source, target in block.items():
+        for variant in {str(source), str(source).lower(), str(source).upper()}:
+            expanded.setdefault(variant, str(target))
+    return expanded
 
 
 def taxonomy_prompt_block() -> str:
@@ -173,7 +245,13 @@ def _validate_taxonomy_payload(data: dict[str, Any]) -> None:
             raise TaxonomyError(f"blocked action must be uppercase: {blocked}")
 
 
-def _validate_alias_payload(aliases: dict[str, Any], taxonomy: dict[str, Any]) -> None:
+def _validate_alias_payload(
+    aliases: dict[str, Any],
+    taxonomy: dict[str, Any],
+    *,
+    allowed_keys: tuple[str, ...],
+    require_all_formal_keys: bool = True,
+) -> None:
     mapping = {
         "risk_signals": "risk_signals",
         "recommended_action_ids": "recommended_action_ids",
@@ -184,7 +262,13 @@ def _validate_alias_payload(aliases: dict[str, Any], taxonomy: dict[str, Any]) -
         "risk_levels": "risk_levels",
         "priorities": "priorities",
     }
+    if require_all_formal_keys:
+        for alias_key in FORMAL_ALIAS_KEYS:
+            if alias_key not in aliases:
+                raise TaxonomyError(f"formal alias block missing: {alias_key}")
     for alias_key, tax_key in mapping.items():
+        if alias_key not in allowed_keys:
+            continue
         block = aliases.get(alias_key) or {}
         if not isinstance(block, dict):
             raise TaxonomyError(f"alias block must be object: {alias_key}")
@@ -203,26 +287,37 @@ def _validate_alias_payload(aliases: dict[str, Any], taxonomy: dict[str, Any]) -
                 )
 
 
-def validate_alias_table() -> dict[str, Any]:
+def validate_alias_table(*, dev_aliases_enabled: bool = False) -> dict[str, Any]:
     """Return alias integrity report (raises TaxonomyError on conflict)."""
     tax = load_taxonomy()
-    aliases = load_aliases()
-    _validate_alias_payload(aliases, tax)
+    aliases = load_aliases(dev_aliases_enabled=dev_aliases_enabled)
+    _validate_alias_payload(
+        aliases,
+        tax,
+        allowed_keys=FORMAL_ALIAS_KEYS + DEV_ALIAS_KEYS,
+        require_all_formal_keys=not dev_aliases_enabled,
+    )
     counts = {
         key: len(aliases.get(key) or {})
-        for key in (
-            "risk_signals",
-            "recommended_action_ids",
-            "blocked_action_ids",
-            "confirmation_ids",
-            "final_decision_gates",
-            "final_response_statuses",
-        )
+        for key in FORMAL_ALIAS_KEYS + DEV_ALIAS_KEYS
     }
     return {
         "ok": True,
         "alias_counts": counts,
         "alias_total": sum(counts.values()),
+        "dev_aliases_enabled": bool(dev_aliases_enabled),
         "conflicts": [],
         "all_targets_valid": True,
+    }
+
+
+def validate_formal_alias_table() -> dict[str, Any]:
+    """Validate formal alias snapshot only (no dev aliases)."""
+    tax = load_taxonomy()
+    aliases = load_formal_aliases()
+    _validate_alias_payload(aliases, tax, allowed_keys=FORMAL_ALIAS_KEYS)
+    return {
+        "ok": True,
+        "formal_alias_sha256": formal_alias_sha256(),
+        "taxonomy_alias_source": taxonomy_alias_source(),
     }

@@ -142,6 +142,7 @@ def parse_decision_output(
     case_id: str,
     method_id: str,
     strict: bool = True,
+    dev_aliases_enabled: bool = False,
     retrieved_contexts: list[dict[str, Any]] | None = None,
 ) -> DecisionOutput:
     """Parse LLM/native output into DecisionOutput with FireBench taxonomy checks."""
@@ -179,7 +180,7 @@ def parse_decision_output(
             safety_violations=violations,
             raw_output=raw_output,
             retrieved_contexts=list(retrieved_contexts or []),
-            method_metadata={"taxonomy_provenance": taxonomy_provenance()},
+            method_metadata={"taxonomy_provenance": taxonomy_provenance(dev_aliases_enabled=dev_aliases_enabled)},
         )
 
     decision = parsed.get("decision")
@@ -194,8 +195,31 @@ def parse_decision_output(
     decision = decision if isinstance(decision, dict) else {}
     response = response if isinstance(response, dict) else {}
 
+    if strict:
+        for key, err_name in (
+            ("risk_signals", "missing_risk_signals"),
+            ("risk_level", "missing_risk_level"),
+            ("recommended_actions", "missing_recommended_actions"),
+            ("blocked_actions", "missing_blocked_actions"),
+            ("missing_confirmations", "missing_missing_confirmations"),
+            ("human_review_required", "missing_human_review_required"),
+            ("final_decision_gate", "missing_final_decision_gate"),
+        ):
+            if key not in decision:
+                errors.append(err_name)
+        for key, err_name in (
+            ("status", "missing_response_status"),
+            ("text", "missing_response_text"),
+            ("citations", "missing_response_citations"),
+        ):
+            if key not in response:
+                errors.append(err_name)
+        if strict and errors:
+            raise DecisionParseError("; ".join(errors))
+
     if "human_review_required" not in decision:
-        errors.append("missing_human_review_required")
+        if not strict:
+            errors.append("missing_human_review_required")
         human_review = False
     elif not isinstance(decision.get("human_review_required"), bool):
         errors.append("human_review_required_not_boolean")
@@ -203,120 +227,160 @@ def parse_decision_output(
     else:
         human_review = bool(decision["human_review_required"])
 
-    raw_gate = decision.get("final_decision_gate")
+    raw_gate = decision.get("final_decision_gate") if "final_decision_gate" in decision else None
     if raw_gate in (None, ""):
-        errors.append("invalid_or_missing_final_decision_gate")
-        gate = "unknown"
+        if "final_decision_gate" in decision:
+            errors.append("invalid_or_missing_final_decision_gate")
+        gate = "unknown" if not strict else None
     else:
-        gate = normalize_final_gate(str(raw_gate), strict=False, report=report)
+        gate = normalize_final_gate(
+            str(raw_gate), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+        )
         if gate is None:
             errors.append("invalid_or_missing_final_decision_gate")
-            gate = "unknown"
+            gate = "unknown" if not strict else None
 
-    raw_status = response.get("status")
+    raw_status = response.get("status") if "status" in response else None
     if raw_status in (None, ""):
-        errors.append("invalid_or_missing_response_status")
-        status = "unknown"
+        if "status" in response:
+            errors.append("invalid_or_missing_response_status")
+        status = "unknown" if not strict else None
     else:
-        status = normalize_response_status(str(raw_status), strict=False, report=report)
+        status = normalize_response_status(
+            str(raw_status), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+        )
         if status is None:
             errors.append("invalid_or_missing_response_status")
-            status = "unknown"
+            status = "unknown" if not strict else None
 
-    raw_risk_level = decision.get("risk_level")
+    raw_risk_level = decision.get("risk_level") if "risk_level" in decision else None
     if raw_risk_level in (None, ""):
-        risk_level = "unknown"
+        if "risk_level" in decision:
+            errors.append("invalid_risk_level")
+        risk_level = "unknown" if not strict else None
     else:
-        risk_level = normalize_risk_level(str(raw_risk_level), strict=False, report=report)
+        risk_level = normalize_risk_level(
+            str(raw_risk_level), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+        )
         if risk_level is None:
             errors.append("invalid_risk_level")
-            risk_level = "unknown"
+            risk_level = "unknown" if not strict else None
 
-    nl_text = response.get("text")
+    nl_text = response.get("text") if "text" in response else None
     if not isinstance(nl_text, str) or not nl_text.strip():
-        errors.append("missing_response_text")
-        nl_text = ""
+        if "text" in response:
+            errors.append("missing_response_text")
+        nl_text = "" if not strict else ""
 
     risk_signals: list[str] = []
-    for item in as_list(decision.get("risk_signals")):
-        if item in (None, ""):
-            continue
-        mapped = normalize_risk_signal(str(item), strict=False, report=report)
-        if mapped is None:
-            errors.append(f"invalid_risk_signal:{item}")
-        else:
-            risk_signals.append(mapped)
-    risk_signals = sort_by_taxonomy_order(risk_signals, "risk_signals")
+    if "risk_signals" in decision:
+        for item in as_list(decision.get("risk_signals")):
+            if item in (None, ""):
+                continue
+            mapped = normalize_risk_signal(
+                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+            )
+            if mapped is None:
+                errors.append(f"invalid_risk_signal:{item}")
+            else:
+                risk_signals.append(mapped)
+        risk_signals = sort_by_taxonomy_order(risk_signals, "risk_signals")
 
     blocked_actions: list[str] = []
-    for item in as_list(decision.get("blocked_actions")):
-        if item in (None, ""):
-            continue
-        mapped = normalize_blocked_action_id(str(item), strict=False, report=report)
-        if mapped is None:
-            errors.append(f"invalid_blocked_action_id:{item}")
-        else:
-            blocked_actions.append(mapped)
-    blocked_actions = sort_by_taxonomy_order(blocked_actions, "blocked_action_ids")
+    if "blocked_actions" in decision:
+        for item in as_list(decision.get("blocked_actions")):
+            if item in (None, ""):
+                continue
+            mapped = normalize_blocked_action_id(
+                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+            )
+            if mapped is None:
+                errors.append(f"invalid_blocked_action_id:{item}")
+            else:
+                blocked_actions.append(mapped)
+        blocked_actions = sort_by_taxonomy_order(blocked_actions, "blocked_action_ids")
 
     missing_confirmations: list[str] = []
-    for item in as_list(decision.get("missing_confirmations")):
-        if item in (None, ""):
-            continue
-        mapped = normalize_confirmation_id(str(item), strict=False, report=report)
-        if mapped is None:
-            errors.append(f"invalid_confirmation_id:{item}")
-        else:
-            missing_confirmations.append(mapped)
-    missing_confirmations = sort_by_taxonomy_order(missing_confirmations, "confirmation_ids")
+    if "missing_confirmations" in decision:
+        for item in as_list(decision.get("missing_confirmations")):
+            if item in (None, ""):
+                continue
+            mapped = normalize_confirmation_id(
+                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+            )
+            if mapped is None:
+                errors.append(f"invalid_confirmation_id:{item}")
+            else:
+                missing_confirmations.append(mapped)
+        missing_confirmations = sort_by_taxonomy_order(missing_confirmations, "confirmation_ids")
 
     actions: list[dict[str, Any]] = []
     seen_action_ids: set[str] = set()
-    for item in as_list(decision.get("recommended_actions")):
-        if not isinstance(item, dict):
-            errors.append("recommended_action_not_object")
-            continue
-        raw_action_id = item.get("action_id")
-        text = item.get("text")
-        if not isinstance(raw_action_id, str) or not raw_action_id.strip():
-            errors.append("missing_action_id")
-            continue
-        mapped_id = normalize_action_id(raw_action_id, strict=False, report=report)
-        if mapped_id is None:
-            errors.append(f"invalid_action_id:{raw_action_id}")
-            continue
-        if mapped_id in seen_action_ids:
-            continue
-        seen_action_ids.add(mapped_id)
-        if not isinstance(text, str) or not text.strip():
-            errors.append("missing_action_text")
-            if strict:
+    if "recommended_actions" in decision:
+        for item in as_list(decision.get("recommended_actions")):
+            if not isinstance(item, dict):
+                errors.append("recommended_action_not_object")
                 continue
-            text = ""
-        raw_priority = item.get("priority")
-        if raw_priority in (None, ""):
-            priority = "unknown"
-        else:
-            priority = normalize_priority(str(raw_priority), strict=False, report=report)
-            if priority is None:
-                errors.append(f"invalid_priority:{raw_priority}")
-                priority = "unknown"
-        refs_raw = [normalize_evidence_id(r) for r in as_list(item.get("evidence_refs"))]
-        refs = dedupe_preserve_order([r for r in refs_raw if r])
-        actions.append(
-            {
-                "action_id": mapped_id,
-                "text": str(text).strip() if text is not None else "",
-                "priority": priority,
-                "evidence_refs": refs,
-            }
-        )
+            raw_action_id = item.get("action_id")
+            text = item.get("text")
+            if "action_id" not in item or not isinstance(raw_action_id, str) or not raw_action_id.strip():
+                errors.append("missing_action_id")
+                continue
+            mapped_id = normalize_action_id(
+                raw_action_id, strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+            )
+            if mapped_id is None:
+                errors.append(f"invalid_action_id:{raw_action_id}")
+                continue
+            if mapped_id in seen_action_ids:
+                continue
+            seen_action_ids.add(mapped_id)
+            if "text" not in item or not isinstance(text, str) or not text.strip():
+                errors.append("missing_action_text")
+                if strict:
+                    continue
+                text = ""
+            raw_priority = item.get("priority") if "priority" in item else None
+            if raw_priority in (None, ""):
+                if "priority" in item:
+                    errors.append("invalid_priority:")
+                priority = "unknown" if not strict else None
+            else:
+                priority = normalize_priority(
+                    str(raw_priority), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                )
+                if priority is None:
+                    errors.append(f"invalid_priority:{raw_priority}")
+                    priority = "unknown" if not strict else None
+            if "priority" not in item:
+                errors.append("missing_action_priority")
+                priority = "unknown" if not strict else None
+            if "evidence_refs" not in item:
+                errors.append("missing_action_evidence_refs")
+                refs_raw: list[str | None] = []
+            else:
+                refs_raw = [normalize_evidence_id(r) for r in as_list(item.get("evidence_refs"))]
+            refs = dedupe_preserve_order([r for r in refs_raw if r])
+            if priority is None or gate is None or status is None or risk_level is None:
+                if strict:
+                    raise DecisionParseError("; ".join(errors) if errors else "strict_field_parse_failed")
+                continue
+            actions.append(
+                {
+                    "action_id": mapped_id,
+                    "text": str(text).strip() if text is not None else "",
+                    "priority": priority,
+                    "evidence_refs": refs,
+                }
+            )
 
     if strict and errors:
         raise DecisionParseError("; ".join(errors))
+    if strict and any(v is None for v in (gate, status, risk_level)):
+        raise DecisionParseError("; ".join(errors) if errors else "strict_field_parse_failed")
 
     allowed_ids = _allowed_evidence_ids(retrieved_contexts or [])
-    citations_raw = [normalize_evidence_id(c) for c in as_list(response.get("citations"))]
+    citations_raw = [normalize_evidence_id(c) for c in as_list(response.get("citations") if "citations" in response else [])]
     citations = dedupe_preserve_order([c for c in citations_raw if c])
     invalid_citations: list[str] = []
     if allowed_ids is not None:
@@ -347,9 +411,10 @@ def parse_decision_output(
                 evidence_refs.append({"evidence_id": ref})
 
     meta: dict[str, Any] = {
-        "taxonomy_provenance": taxonomy_provenance(),
+        "taxonomy_provenance": taxonomy_provenance(dev_aliases_enabled=dev_aliases_enabled),
         "taxonomy_aliases_applied": list(report.aliases_applied),
         "taxonomy_unmapped": list(report.unmapped),
+        "dev_aliases_enabled": bool(dev_aliases_enabled),
     }
     if violations:
         meta["safety_violations"] = violations
@@ -370,15 +435,15 @@ def parse_decision_output(
         case_id=case_id,
         method_id=method_id,
         risk_signals=risk_signals,
-        risk_level=risk_level,
+        risk_level=str(risk_level or "unknown"),
         recommended_actions=actions,
         blocked_actions=blocked_actions,
         missing_confirmations=missing_confirmations,
         evidence_refs=evidence_refs,
         human_review_required=human_review,
-        final_decision_gate=gate,
+        final_decision_gate=str(gate or "unknown"),
         natural_language_response=str(nl_text).strip(),
-        final_response_status=status,
+        final_response_status=str(status or "unknown"),
         raw_output=raw_output,
         retrieved_contexts=list(retrieved_contexts or []),
         parsing_failure=parsing_failure,
@@ -437,8 +502,8 @@ def decision_output_to_interop(decision: DecisionOutput) -> dict[str, Any]:
                 {
                     "action_id": a["action_id"],
                     "text": a["text"],
-                    "priority": a.get("priority") or "unknown",
-                    "evidence_refs": list(a.get("evidence_refs") or []),
+                    "priority": a["priority"],
+                    "evidence_refs": list(a["evidence_refs"]),
                 }
                 for a in decision.recommended_actions
             ],

@@ -83,4 +83,3 @@ def test_llm_summary_records_resolved_model(monkeypatch) -> None:
     )
     assert summary["model"] == "yaml/canonical"
     assert summary["model_source"] == "yaml_config"
-    assert summary["model"] != DEFAULT_SILICONFLOW_MODEL or True

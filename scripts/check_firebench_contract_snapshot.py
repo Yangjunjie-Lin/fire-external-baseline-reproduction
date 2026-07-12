@@ -36,12 +36,27 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.main_repo:
         main_root = Path(args.main_repo)
+        if not main_root.is_dir():
+            print(
+                json.dumps(
+                    {"ok": False, "error": "explicit_main_repo_missing", "path": str(main_root)},
+                    indent=2,
+                )
+            )
+            return 1
         main_schema = main_root / "schemas" / "firebench_interop_v1" / "prediction_schema.json"
         if not main_schema.is_file():
-            result["ok"] = True
-            result["warning"] = "main_schema_missing_using_local_snapshot"
-            print(json.dumps(result, indent=2))
-            return 0
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "explicit_main_schema_missing",
+                        "path": str(main_schema),
+                    },
+                    indent=2,
+                )
+            )
+            return 1
         main_sha = sha256_file(main_schema)
         result["main_repo_present"] = True
         result["main_schema"] = str(main_schema)

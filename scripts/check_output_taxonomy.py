@@ -18,14 +18,8 @@ from external_baselines.common.firebench_taxonomy import (  # noqa: E402
 )
 from external_baselines.common.io import ensure_dir, read_jsonl, write_json  # noqa: E402
 from external_baselines.common.taxonomy_normalizer import (  # noqa: E402
-    normalize_action_id,
-    normalize_blocked_action_id,
-    normalize_confirmation_id,
-    normalize_final_gate,
-    normalize_priority,
-    normalize_response_status,
-    normalize_risk_level,
-    normalize_risk_signal,
+    normalize_identifier_characters,
+    validate_canonical_interop_record,
 )
 
 
@@ -46,72 +40,121 @@ def validate_prediction_file(path: Path) -> dict[str, Any]:
     method_ids = set()
     for idx, row in enumerate(rows, start=1):
         if row.get("schema_version") != "firebench-interop-v1":
-            errors.append({"line": idx, "error": "invalid_schema_version", "value": row.get("schema_version")})
-        method_ids.add(str(row.get("method_id") or ""))
-        pred = row.get("prediction") or {}
-        case_id = row.get("case_id")
-
-        for signal in pred.get("risk_signals") or []:
-            if normalize_risk_signal(str(signal), strict=False) is None:
-                errors.append({"line": idx, "case_id": case_id, "field": "risk_signals", "value": signal})
-            if _looks_like_natural_language(str(signal)):
-                errors.append({"line": idx, "case_id": case_id, "field": "risk_signals_nl", "value": signal})
-
-        if normalize_risk_level(str(pred.get("risk_level") or ""), strict=False) is None:
-            errors.append({"line": idx, "case_id": case_id, "field": "risk_level", "value": pred.get("risk_level")})
-
-        for action in pred.get("recommended_actions") or []:
-            if not isinstance(action, dict):
-                errors.append({"line": idx, "case_id": case_id, "field": "recommended_actions", "value": action})
-                continue
-            aid = action.get("action_id")
-            if normalize_action_id(str(aid or ""), strict=False) is None:
-                errors.append({"line": idx, "case_id": case_id, "field": "action_id", "value": aid})
-            if _looks_like_natural_language(str(aid or "")):
-                errors.append({"line": idx, "case_id": case_id, "field": "action_id_nl", "value": aid})
-            if normalize_priority(str(action.get("priority") or "unknown"), strict=False) is None:
-                errors.append(
-                    {"line": idx, "case_id": case_id, "field": "priority", "value": action.get("priority")}
-                )
-
-        for blocked in pred.get("blocked_actions") or []:
-            if normalize_blocked_action_id(str(blocked), strict=False) is None:
-                errors.append({"line": idx, "case_id": case_id, "field": "blocked_actions", "value": blocked})
-            if _looks_like_natural_language(str(blocked)):
-                errors.append({"line": idx, "case_id": case_id, "field": "blocked_actions_nl", "value": blocked})
-            if str(blocked) != str(blocked).upper() and str(blocked).upper() in membership_set("blocked_action_ids"):
-                errors.append({"line": idx, "case_id": case_id, "field": "blocked_actions_case", "value": blocked})
-
-        for conf in pred.get("missing_confirmations") or []:
-            if normalize_confirmation_id(str(conf), strict=False) is None:
-                errors.append({"line": idx, "case_id": case_id, "field": "missing_confirmations", "value": conf})
-            if _looks_like_natural_language(str(conf)):
-                errors.append(
-                    {"line": idx, "case_id": case_id, "field": "missing_confirmations_nl", "value": conf}
-                )
-
-        if normalize_final_gate(str(pred.get("final_decision_gate") or ""), strict=False) is None:
             errors.append(
                 {
                     "line": idx,
-                    "case_id": case_id,
-                    "field": "final_decision_gate",
-                    "value": pred.get("final_decision_gate"),
+                    "error": "invalid_schema_version",
+                    "value": row.get("schema_version"),
                 }
             )
-        fr = pred.get("final_response") or {}
-        if normalize_response_status(str(fr.get("status") or ""), strict=False) is None:
-            errors.append({"line": idx, "case_id": case_id, "field": "final_response.status", "value": fr.get("status")})
+        method_ids.add(str(row.get("method_id") or ""))
+        case_id = row.get("case_id")
+        pred = row.get("prediction") or {}
+
+        canonical_errors = validate_canonical_interop_record(row, line=idx, dev_aliases_enabled=False)
+        errors.extend(canonical_errors)
+
+        for signal in pred.get("risk_signals") or []:
+            if _looks_like_natural_language(str(signal)):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "risk_signals",
+                        "value": signal,
+                        "error": "natural_language_in_id_field",
+                    }
+                )
+
+        for action in pred.get("recommended_actions") or []:
+            if not isinstance(action, dict):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "recommended_actions",
+                        "value": action,
+                        "error": "invalid_taxonomy_id",
+                    }
+                )
+                continue
+            aid = action.get("action_id")
+            if _looks_like_natural_language(str(aid or "")):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "recommended_actions.action_id",
+                        "value": aid,
+                        "error": "natural_language_in_id_field",
+                    }
+                )
+
+        for blocked in pred.get("blocked_actions") or []:
+            if _looks_like_natural_language(str(blocked)):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "blocked_actions",
+                        "value": blocked,
+                        "error": "natural_language_in_id_field",
+                    }
+                )
+            raw = str(blocked)
+            chars = normalize_identifier_characters(raw, case="upper")
+            if chars != raw and chars in membership_set("blocked_action_ids"):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "blocked_actions",
+                        "value": blocked,
+                        "canonical_value": chars,
+                        "error": "noncanonical_character_form",
+                    }
+                )
+
+        for conf in pred.get("missing_confirmations") or []:
+            if _looks_like_natural_language(str(conf)):
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": "missing_confirmations",
+                        "value": conf,
+                        "error": "natural_language_in_id_field",
+                    }
+                )
 
         for field_name in ("risk_signals", "blocked_actions", "missing_confirmations"):
             values = [str(v) for v in (pred.get(field_name) or [])]
             if len(values) != len(set(values)):
-                errors.append({"line": idx, "case_id": case_id, "field": f"{field_name}_duplicate"})
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": field_name,
+                        "error": "duplicate_taxonomy_id",
+                    }
+                )
             if any(v.strip() == "" for v in values):
-                errors.append({"line": idx, "case_id": case_id, "field": f"{field_name}_empty"})
+                errors.append(
+                    {
+                        "line": idx,
+                        "case_id": case_id,
+                        "field": field_name,
+                        "error": "invalid_taxonomy_id",
+                    }
+                )
 
     if len(method_ids) != 1 or "" in method_ids:
-        errors.append({"error": "prediction_file_must_contain_single_method_id", "method_ids": sorted(method_ids)})
+        errors.append(
+            {
+                "error": "prediction_file_must_contain_single_method_id",
+                "method_ids": sorted(method_ids),
+            }
+        )
 
     return {
         "path": str(path),
@@ -146,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     file_reports = [validate_prediction_file(p) for p in paths]
     report = {
         "ok": all(r["ok"] for r in file_reports),
-        "taxonomy_provenance": taxonomy_provenance(),
+        "taxonomy_provenance": taxonomy_provenance(dev_aliases_enabled=False),
         "files": file_reports,
         "error_count": sum(int(r["error_count"]) for r in file_reports),
     }

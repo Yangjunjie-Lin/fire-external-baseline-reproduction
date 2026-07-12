@@ -23,6 +23,11 @@ from external_baselines.common.decision_output import (  # noqa: E402
     DecisionParseError,
     unified_row_to_interop,
 )
+from external_baselines.common.decision_suite_guard import (  # noqa: E402
+    assert_formal_smoke_config_forbidden,
+    validate_decision_suite_execution,
+    validate_formal_method_configs,
+)
 from external_baselines.common.io import (  # noqa: E402
     assert_no_gold_in_prediction_input,
     ensure_dir,
@@ -41,6 +46,7 @@ from external_baselines.common.method_runtime import (  # noqa: E402
     pipeline_accepts_runtime,
     prepare_method_runtime,
 )
+from external_baselines.common.taxonomy_normalizer import assert_canonical_interop_record  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
     assert_no_evaluator_bundle_access,
     load_runner_bundle,
@@ -56,10 +62,12 @@ COMPARISON_METHODS = list(comparison_suite_methods())
 
 
 def _base_smoke_config(corpus_dir: str | Path | None, *, execution_stage: str) -> dict[str, Any]:
+    assert_formal_smoke_config_forbidden(execution_stage=execution_stage)
     return {
         "execution_stage": execution_stage,
         "unified_decision_output": True,
         "strict_decision_parse": execution_stage == "formal",
+        "dev_aliases_enabled": False,
         "paper_final": False,
         "llm": {
             "provider": "heuristic",
@@ -279,9 +287,23 @@ def run_decision_suite(
     limit: int | None = None,
     experiment_manifest: Path | None = None,
     methods: list[str] | None = None,
+    dev_aliases_enabled: bool = False,
 ) -> dict[str, Any]:
     formal = execution_stage == "formal"
     assert_no_evaluator_bundle_access(runner_bundle)
+    method_ids = [canonicalize_method_id(m) for m in (methods or COMPARISON_METHODS)]
+    validate_decision_suite_execution(
+        execution_stage=execution_stage,
+        experiment_manifest=experiment_manifest,
+        method_ids=method_ids,
+        runner_bundle=runner_bundle,
+    )
+    if formal:
+        validate_formal_method_configs(
+            method_ids=method_ids,
+            experiment_manifest=experiment_manifest,  # type: ignore[arg-type]
+            runner_bundle=runner_bundle,
+        )
     bundle = load_runner_bundle(runner_bundle)
     scenarios_path = Path(bundle["scenarios_path"])
     schema_path = Path(bundle.get("prediction_schema_path") or SCHEMA_PATH)
@@ -291,14 +313,29 @@ def run_decision_suite(
     input_cases_sha = sha256_file(scenarios_path)
     schema_sha = sha256_file(schema_path) if schema_path.is_file() else None
 
-    method_ids = [canonicalize_method_id(m) for m in (methods or COMPARISON_METHODS)]
-    base = _base_smoke_config(corpus_dir, execution_stage=execution_stage)
+    if formal:
+        base: dict[str, Any] = {
+            "execution_stage": "formal",
+            "unified_decision_output": True,
+            "strict_decision_parse": True,
+            "dev_aliases_enabled": False,
+            "paper_final": True,
+            "normalization": {"infer_structured_safety_fields": False},
+        }
+    else:
+        base = _base_smoke_config(corpus_dir, execution_stage=execution_stage)
+        if dev_aliases_enabled:
+            base["dev_aliases_enabled"] = True
     if corpus_dir:
-        base["paths"]["corpus_dir"] = str(corpus_dir)
+        base.setdefault("paths", {})["corpus_dir"] = str(corpus_dir)
 
     ensure_dir(prediction_dir)
     ensure_dir(decision_dir)
-    from external_baselines.common.firebench_taxonomy import alias_sha256, taxonomy_sha256
+    from external_baselines.common.firebench_taxonomy import (
+        alias_sha256,
+        formal_alias_sha256,
+        taxonomy_sha256,
+    )
 
     suite_summary: dict[str, Any] = {
         "execution_stage": execution_stage,
@@ -312,7 +349,19 @@ def run_decision_suite(
             "taxonomy_version": "firebench-taxonomy-v1",
             "taxonomy_sha256": taxonomy_sha256(),
             "alias_sha256": alias_sha256(),
+            "formal_alias_sha256": formal_alias_sha256(),
             "all_methods_valid": True,
+            "dev_aliases_enabled": bool(dev_aliases_enabled and not formal),
+        },
+        "formal_compliance": {
+            "real_manifest": bool(formal and experiment_manifest is not None),
+            "real_llm": formal,
+            "real_dense_index": formal,
+            "real_ekell_index": formal,
+            "formal_aliases_only": formal,
+            "canonical_ids_only": True,
+            "explicit_required_fields": formal,
+            "formal_result": formal,
         },
     }
 
@@ -327,6 +376,7 @@ def run_decision_suite(
         method_config["unified_decision_output"] = True
         method_config["strict_decision_parse"] = formal
         method_config["execution_stage"] = execution_stage
+        method_config["dev_aliases_enabled"] = bool(dev_aliases_enabled and not formal)
 
         llm = build_llm_client(method_config)
         pipeline = resolve_pipeline(method_id)
@@ -384,6 +434,10 @@ def run_decision_suite(
                 interop["method_id"] = method_id
                 # Always enforce canonical safety boundary.
                 interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
+                assert_canonical_interop_record(
+                    interop,
+                    dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
+                )
                 errors = validate_interop_record(
                     interop,
                     schema_path=schema_path,
@@ -417,6 +471,15 @@ def run_decision_suite(
             prediction_file=pred_path,
             formal=formal,
         )
+        summary["execution_contract"] = {
+            "execution_stage": execution_stage,
+            "experiment_manifest_provided": bool(experiment_manifest),
+            "heuristic_llm_used": not formal,
+            "smoke_embedding_used": not formal,
+            "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
+            "strict_required_fields": formal,
+            "canonical_output_only": True,
+        }
         summary["parsing_failure_count"] = parsing_failures
         summary["schema_failure_count"] = schema_failures
         summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
@@ -431,6 +494,9 @@ def run_decision_suite(
                 f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
             )
 
+    if not formal:
+        suite_summary["formal_compliance"]["formal_result"] = False
+
     write_json(decision_dir / "suite_summary.json", suite_summary)
     return suite_summary
 
@@ -444,7 +510,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--prediction-dir", required=True)
     parser.add_argument("--decision-dir", required=True)
     parser.add_argument("--experiment-manifest", default=None)
+    parser.add_argument(
+        "--enable-dev-aliases",
+        action="store_true",
+        help="Enable development-only taxonomy aliases (dry_run only).",
+    )
     args = parser.parse_args(argv)
+
+    if args.execution_stage == "formal" and args.enable_dev_aliases:
+        raise SystemExit("Formal execution forbids --enable-dev-aliases.")
 
     if args.method_set != "comparison_suite":
         raise SystemExit("Only comparison_suite is supported for the decision suite.")
@@ -456,6 +530,7 @@ def main(argv: list[str] | None = None) -> None:
         execution_stage=args.execution_stage,
         limit=args.limit,
         experiment_manifest=Path(args.experiment_manifest) if args.experiment_manifest else None,
+        dev_aliases_enabled=bool(args.enable_dev_aliases),
     )
     print(json.dumps({"ok": True, "case_count": summary["case_count"], "methods": summary["methods"]}, indent=2))
 

@@ -1,0 +1,69 @@
+{
+  "alias_version": "firebench-taxonomy-dev-aliases-v1",
+  "notes": [
+    "Development-only aliases. Disabled in formal execution unless explicitly enabled."
+  ],
+  "risk_signals": {
+    "electrical_hazard": "electrical_risk",
+    "unknown_power_status": "power_cutoff_unknown",
+    "unknown_route": "route_status_unknown"
+  },
+  "recommended_action_ids": {
+    "check_power_isolation": "verify_power_isolation",
+    "verify_power_cutoff": "verify_power_isolation",
+    "confirm_route_status": "confirm_evacuation_route",
+    "prepare_scba": "prepare_respiratory_protection",
+    "ask_for_human_confirmation": "request_human_confirmation",
+    "act_electrical_power_check": "verify_power_isolation",
+    "act_rescue_prepare": "confirm_trapped_people_status",
+    "act_route_avoid_blocked": "confirm_evacuation_route",
+    "act_smoke_protection_check": "prepare_respiratory_protection",
+    "act_refresh_dynamic_state": "refresh_dynamic_state",
+    "confirm_hitl": "request_human_confirmation",
+    "act_request_human_confirmation": "request_human_confirmation",
+    "act_retrieve_rule_evidence": "retrieve_rule_or_sop_evidence",
+    "act_retrieve_graph_evidence": "retrieve_graphrag_evidence",
+    "act_surface_capability_gap": "surface_capability_gap",
+    "act_evidence_grounded_briefing": "compose_safety_bounded_briefing"
+  },
+  "blocked_action_ids": {
+    "block_unverified_water_use": "BLOCK_UNVERIFIED_WATER_SUPPRESSION",
+    "block_water_before_power_isolation": "BLOCK_UNVERIFIED_WATER_SUPPRESSION",
+    "block_unprotected_entry": "BLOCK_ENTRY_WITHOUT_RESPIRATORY_PROTECTION",
+    "block_real_world_execution": "BLOCK_REAL_WORLD_EXECUTION",
+    "block_hitl_bypass": "BLOCK_BYPASS_HITL",
+    "block_field_actuation": "BLOCK_AUTONOMOUS_FIELD_ACTUATION",
+    "block_autonomous_execution": "BLOCK_AUTONOMOUS_FIELD_ACTUATION",
+    "block_execution": "BLOCK_REAL_WORLD_EXECUTION",
+    "block_use_stale_route": "BLOCK_RELY_ON_STALE_ROUTE"
+  },
+  "confirmation_ids": {
+    "power_status": "power_cutoff_status",
+    "power_isolation_status": "power_cutoff_status",
+    "trapped_people": "trapped_people_status",
+    "evacuation_route_status": "route_status",
+    "scba_status": "respiratory_protection_status",
+    "confirm_electrical_power_status": "power_cutoff_status",
+    "confirm_power_cutoff": "power_cutoff_status",
+    "confirm_trapped_people": "trapped_people_status",
+    "confirm_route_status": "route_status",
+    "confirm_smoke_level": "smoke_level",
+    "confirm_respiratory_protection": "respiratory_protection_status",
+    "confirm_sensor_freshness": "sensor_freshness",
+    "confirm_equipment_status": "equipment_status",
+    "confirm_policy_level_hitl": "human_authority_check",
+    "confirm_building_plan_availability": "building_plan_availability",
+    "confirm_visual_input_availability": "visual_input_availability"
+  },
+  "final_decision_gates": {
+    "allow": "allow_response",
+    "await_confirmation": "await_human_confirmation",
+    "require_human_confirmation": "await_human_confirmation",
+    "block": "block_response"
+  },
+  "final_response_statuses": {
+    "complete": "provided",
+    "waiting_for_human": "awaiting_human_confirmation",
+    "rejected": "blocked"
+  }
+}

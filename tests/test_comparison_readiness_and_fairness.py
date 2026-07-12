@@ -531,7 +531,9 @@ def test_formal_accepts_complete_frozen_configuration(tmp_path: Path) -> None:
 
     shared = tmp_path / "shared.yaml"
     shared.write_text(
-        "llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n",
+        "llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n"
+        "  api_key_env: SILICONFLOW_API_KEY\n  temperature: 0.0\n  top_p: 1.0\n"
+        "  max_tokens: 1024\n  seed: 1\n",
         encoding="utf-8",
     )
     method = tmp_path / "direct.yaml"

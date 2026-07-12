@@ -43,6 +43,10 @@ python scripts/validate_formal_config.py \
   --method-set comparison_suite \
   --config configs/experiments/controlled_main_table_v1.yaml
 
+# Pre-formal contract checks (read-only main-project reference)
+python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+
 # 4) Five-method dry run (unified decision I/O — preferred for evaluator handoff)
 python scripts/run_decision_comparison_suite.py \
   --runner-bundle <runner_bundle> \
@@ -94,6 +98,9 @@ python scripts/check_output_taxonomy.py \
   --prediction-dir outputs/interop/test_public/predictions
 
 python scripts/check_firebench_contract_snapshot.py \
+  --main-repo ../fire-agent-demo
+
+python scripts/check_firebench_taxonomy_snapshot.py \
   --main-repo ../fire-agent-demo
 
 # Optional: legacy combined JSONL

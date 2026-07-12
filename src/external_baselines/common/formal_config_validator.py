@@ -157,18 +157,37 @@ def _llm_block(config: dict[str, Any]) -> dict[str, Any]:
     return dict(llm) if isinstance(llm, dict) else {}
 
 
-def validate_llm_for_formal(config: dict[str, Any], *, allow_placeholders: bool = False) -> None:
+def validate_llm_for_formal(
+    config: dict[str, Any],
+    *,
+    allow_placeholders: bool = False,
+    validation_stage: str = "formal",
+) -> None:
     llm = _llm_block(config)
     provider = str(llm.get("provider", "heuristic")).lower().strip()
     model = str(llm.get("model") or "").strip()
     model_version = str(llm.get("model_version") or llm.get("version") or "").strip()
+    api_key_env = str(llm.get("api_key_env") or "").strip()
+    stage = str(validation_stage or "formal").strip().lower()
 
     if provider in SMOKE_LLM_PROVIDERS:
         raise FormalConfigError(f"Formal config rejects smoke LLM provider: {provider!r}")
+    if stage == "formal" and not provider:
+        raise FormalConfigError("Formal config requires llm.provider (non-empty).")
     if _is_placeholder(model) and not allow_placeholders:
         raise FormalConfigError("Formal config requires llm.model (non-placeholder).")
     if _is_placeholder(model_version) and not allow_placeholders:
         raise FormalConfigError("Formal config requires llm.model_version (non-placeholder).")
+    if stage == "formal" and not allow_placeholders and not api_key_env:
+        raise FormalConfigError("Formal config requires llm.api_key_env (non-empty).")
+    if stage == "formal" and not allow_placeholders:
+        for field in ("temperature", "top_p", "max_tokens", "seed"):
+            if field not in llm:
+                raise FormalConfigError(f"Formal config requires llm.{field} to be set explicitly.")
+        smoke_tokens = ("heuristic", "smoke", "fixture", "mock", "fake")
+        model_lower = model.lower()
+        if any(token in model_lower for token in smoke_tokens):
+            raise FormalConfigError(f"Formal config rejects smoke/heuristic LLM model name: {model!r}")
     if bool(config.get("paper_final", False)) and bool(llm.get("allow_model_env_override", False)):
         raise FormalConfigError(
             "paper_final=true forbids llm.allow_model_env_override=true; "
@@ -369,7 +388,11 @@ def validate_method_config(
     formal_ids = FORMAL_METHOD_IDS | COMPARISON_FORMAL_METHOD_IDS
     if require_formal or paper_final:
         if "llm" in config and _llm_block(config):
-            validate_llm_for_formal(config, allow_placeholders=allow_placeholders)
+            validate_llm_for_formal(
+                config,
+                allow_placeholders=allow_placeholders,
+                validation_stage=validation_stage,
+            )
         elif mid in formal_ids and not allow_placeholders:
             raise FormalConfigError(
                 f"Formal method {mid!r} requires llm block in merged config (from shared_model_config)."

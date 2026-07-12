@@ -55,6 +55,7 @@ def finalize_llm_decision(
             case_id=case_id,
             method_id=method_id,
             strict=strict,
+            dev_aliases_enabled=bool(config.get("dev_aliases_enabled", False)),
             retrieved_contexts=retrieved_contexts,
         )
     except DecisionParseError as exc:

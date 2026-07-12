@@ -95,6 +95,16 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 
 All five methods share the same Runner Bundle input and independently emit structured decision + natural-language response + per-method `firebench-interop-v1` JSONL. Natural language is for human review; decision fields are the primary comparison object for the main-project evaluator.
 
+**Execution modes:** Dry run allows heuristic LLM and smoke embedding fixtures for wiring tests. DEV may use real config and optional `--enable-dev-aliases`. Formal requires a frozen non-`.example` experiment manifest, rejects heuristic/smoke/dev aliases, requires explicit decision fields from the model, and emits canonical taxonomy IDs only.
+
+**Pre-formal contract checks (read-only main-project reference):**
+
+```bash
+python scripts/check_firebench_contract_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_firebench_taxonomy_snapshot.py --main-repo ../fire-agent-demo
+python scripts/check_output_taxonomy.py --prediction-dir outputs/interop/test_public/predictions
+```
+
 ```bash
 # Dry run (heuristic/smoke OK for local wiring checks)
 python scripts/run_decision_comparison_suite.py \

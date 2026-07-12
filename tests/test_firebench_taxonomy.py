@@ -9,7 +9,6 @@ import pytest
 
 from external_baselines.common.decision_output import DecisionParseError, parse_decision_output
 from external_baselines.common.firebench_taxonomy import (
-    alias_map,
     load_aliases,
     load_taxonomy,
     membership_set,
@@ -165,7 +164,7 @@ def test_risk_ids_are_lowercase():
 
 def test_blocked_action_ids_are_uppercase():
     assert (
-        normalize_blocked_action_id("block real world execution", strict=True)
+        normalize_blocked_action_id("block execution", strict=True)
         == "BLOCK_REAL_WORLD_EXECUTION"
     )
 
@@ -263,13 +262,16 @@ def test_invalid_confirmation_fails():
 
 
 def test_exact_alias_maps_to_standard_id():
-    assert normalize_risk_signal("electrical_hazard", strict=True) == "electrical_risk"
-    assert normalize_action_id("check_power_isolation", strict=True) == "verify_power_isolation"
+    assert normalize_risk_signal("active_or_suspected_fire", strict=True) == "fire_detected"
+    assert normalize_action_id("ACT_ELECTRICAL_POWER_CHECK", strict=True) == "verify_power_isolation"
 
 
 def test_alias_application_is_recorded():
     report = TaxonomyNormalizeReport()
-    assert normalize_risk_signal("high_smoke", strict=True, report=report) == "high_smoke_detected"
+    assert (
+        normalize_risk_signal("high_smoke_confirmed", strict=True, report=report)
+        == "high_smoke_detected"
+    )
     assert report.aliases_applied
     assert report.aliases_applied[0]["target"] == "high_smoke_detected"
 
@@ -279,8 +281,11 @@ def test_unknown_alias_is_not_guessed():
 
 
 def test_alias_table_has_no_duplicate_sources():
+    from external_baselines.common.firebench_taxonomy import DEV_ALIAS_KEYS, FORMAL_ALIAS_KEYS
+
     aliases = load_aliases()
-    for key, block in aliases.items():
+    for key in FORMAL_ALIAS_KEYS + DEV_ALIAS_KEYS:
+        block = aliases.get(key) or {}
         if not isinstance(block, dict):
             continue
         assert len(block) == len(set(block.keys())), key
@@ -362,8 +367,8 @@ def test_character_variants_normalize_identically():
         _valid_payload(
             decision={
                 **_valid_payload()["decision"],
-                "risk_signals": [" Electrical-Risk ", "high_smoke"],
-                "blocked_actions": ["block_unverified_water_use"],
+                "risk_signals": [" Electrical-Risk ", "high_smoke_confirmed"],
+                "blocked_actions": ["rely_on_stale_route"],
             }
         ),
         case_id="c1",
@@ -373,7 +378,7 @@ def test_character_variants_normalize_identically():
     assert a.risk_signals == sort_by_taxonomy_order(
         ["electrical_risk", "high_smoke_detected"], "risk_signals"
     )
-    assert a.blocked_actions == ["BLOCK_UNVERIFIED_WATER_SUPPRESSION"]
+    assert a.blocked_actions == ["BLOCK_RELY_ON_STALE_ROUTE"]
 
 
 # --- file output ---
@@ -485,4 +490,4 @@ def test_taxonomy_snapshot_loads():
     tax = load_taxonomy()
     assert "electrical_risk" in tax["risk_signals"]
     assert "BLOCK_REAL_WORLD_EXECUTION" in tax["blocked_action_ids"]
-    assert "verify_power_isolation" in alias_map("recommended_action_ids").values() or True
+    assert "verify_power_isolation" in membership_set("recommended_action_ids")
