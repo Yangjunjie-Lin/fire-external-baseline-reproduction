@@ -135,11 +135,13 @@ def _method_config(
     if experiment_manifest and experiment_manifest.is_file():
         from external_baselines.common.experiment_manifest import (
             build_method_config,
+            get_method_entry,
             load_experiment_manifest,
         )
 
         experiment = load_experiment_manifest(experiment_manifest)
-        cfg = build_method_config(experiment, method_id)
+        method_entry = get_method_entry(experiment, method_id)
+        cfg = build_method_config(experiment, method_entry)
         cfg["execution_stage"] = base.get("execution_stage", "dry_run")
         cfg["unified_decision_output"] = True
         cfg["strict_decision_parse"] = base.get("execution_stage") == "formal"
@@ -195,16 +197,80 @@ def _interop_taxonomy_valid(interop_rows: list[dict[str, Any]]) -> bool:
     return True
 
 
-def _publish_formal_directory(src: Path, dst: Path) -> None:
-    if dst.exists():
-        backup = dst.with_name(f"{dst.name}.bak")
-        if backup.exists():
-            if backup.is_dir():
-                shutil.rmtree(backup)
-            else:
-                backup.unlink()
-        dst.rename(backup)
+def _integrity_flags_from_preflight(preflight: dict[str, Any]) -> dict[str, bool]:
+    integrity = preflight.get("runner_bundle_integrity") or {}
+    return {
+        "runner_bundle_integrity_ok": integrity.get("ok") is True,
+        "input_cases_integrity_ok": integrity.get("input_cases_integrity") is True,
+        "prediction_schema_integrity_ok": integrity.get("prediction_schema_integrity") is True,
+        "corpus_integrity_ok": integrity.get("corpus_integrity") is True,
+    }
+
+
+def _prepare_directory_backup(dst: Path) -> Path | None:
+    if not dst.exists():
+        return None
+    backup = dst.with_name(f"{dst.name}.bak")
+    if backup.exists():
+        if backup.is_dir():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink()
+    dst.rename(backup)
+    return backup
+
+
+def _publish_temp_directory(src: Path, dst: Path) -> None:
+    if not src.exists():
+        raise FileNotFoundError(f"Formal temp directory missing: {src}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
+
+
+def _restore_directory_backup(dst: Path, backup: Path | None) -> None:
+    if backup is None or not backup.exists():
+        return
+    if dst.exists():
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    backup.rename(dst)
+
+
+def _remove_directory_backup(backup: Path | None) -> None:
+    if backup is None or not backup.exists():
+        return
+    if backup.is_dir():
+        shutil.rmtree(backup)
+    else:
+        backup.unlink()
+
+
+def publish_formal_artifacts_transactionally(
+    *,
+    temp_prediction_dir: Path,
+    final_prediction_dir: Path,
+    temp_decision_dir: Path,
+    final_decision_dir: Path,
+) -> None:
+    """Publish predictions and decisions atomically with rollback on any failure."""
+    pred_backup = _prepare_directory_backup(final_prediction_dir)
+    dec_backup = _prepare_directory_backup(final_decision_dir)
+    predictions_published = False
+    try:
+        _publish_temp_directory(temp_prediction_dir, final_prediction_dir)
+        predictions_published = True
+        _publish_temp_directory(temp_decision_dir, final_decision_dir)
+        _remove_directory_backup(pred_backup)
+        _remove_directory_backup(dec_backup)
+    except Exception:
+        if predictions_published:
+            _restore_directory_backup(final_prediction_dir, pred_backup)
+        else:
+            _restore_directory_backup(final_prediction_dir, pred_backup)
+        _restore_directory_backup(final_decision_dir, dec_backup)
+        raise
 
 
 def _cleanup_formal_temp(temp_root: Path) -> None:
@@ -221,6 +287,9 @@ def _write_formal_failed_marker(
     error_type: str,
     error_message: str,
     temporary_artifacts_path: str | None,
+    rollback_attempted: bool = False,
+    rollback_succeeded: bool = False,
+    published_targets: list[str] | None = None,
 ) -> None:
     marker = {
         "execution_stage": "formal",
@@ -231,6 +300,9 @@ def _write_formal_failed_marker(
         "error_message": error_message,
         "temporary_artifacts_path": temporary_artifacts_path,
         "formal_outputs_published": False,
+        "rollback_attempted": rollback_attempted,
+        "rollback_succeeded": rollback_succeeded,
+        "published_targets": list(published_targets or []),
     }
     write_json(decision_parent / "FORMAL_RUN_FAILED.json", marker)
 
@@ -477,6 +549,7 @@ def run_decision_suite(
         taxonomy_sha256,
     )
 
+    integrity_flags = _integrity_flags_from_preflight(preflight)
     suite_summary: dict[str, Any] = {
         "execution_stage": execution_stage,
         "formal": formal,
@@ -505,12 +578,13 @@ def run_decision_suite(
             method_evidences={},
             method_compliance={},
             dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
-            runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
             shared_generation_identity_match=bool(
                 (preflight.get("shared_generation_identity") or {}).get("ok")
             ),
             ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
             method_ids=method_ids,
+            phase="pre_publish",
+            **integrity_flags,
         ),
     }
 
@@ -688,18 +762,51 @@ def run_decision_suite(
         method_evidences=method_evidences,
         method_compliance=method_compliance_reports,
         dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
-        runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
         shared_generation_identity_match=bool(
             (preflight.get("shared_generation_identity") or {}).get("ok")
         ),
         ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
         method_ids=method_ids,
+        phase="pre_publish",
+        **integrity_flags,
     )
     suite_summary["runtime_evidence"] = {
         mid: evidence_to_summary_sections(ev) for mid, ev in method_evidences.items()
     }
 
-    if formal and suite_summary["formal_compliance"].get("formal_result"):
+    pre_publish_passed = bool(suite_summary["formal_compliance"].get("pre_publish_compliance_passed"))
+
+    if formal and pre_publish_passed:
+        try:
+            publish_formal_artifacts_transactionally(
+                temp_prediction_dir=write_prediction_dir,
+                final_prediction_dir=prediction_dir,
+                temp_decision_dir=write_decision_dir,
+                final_decision_dir=decision_dir,
+            )
+            transactional_publish_complete = True
+            failed_marker = decision_dir.parent / "FORMAL_RUN_FAILED.json"
+            if failed_marker.is_file():
+                failed_marker.unlink()
+            if temp_root and temp_root.exists():
+                _cleanup_formal_temp(temp_root)
+        except Exception as exc:
+            _write_formal_failed_marker(
+                decision_parent=decision_dir.parent,
+                run_id=run_id,
+                stage="transactional_publish",
+                method_id=None,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                temporary_artifacts_path=str(temp_root) if temp_root and keep_failed_temp_artifacts else None,
+                rollback_attempted=True,
+                rollback_succeeded=True,
+                published_targets=[],
+            )
+            if temp_root and not keep_failed_temp_artifacts:
+                _cleanup_formal_temp(temp_root)
+            raise SystemExit(f"Formal transactional publish failed: {exc}") from exc
+
         suite_summary["formal_compliance"] = compute_suite_formal_compliance(
             formal=formal,
             experiment_manifest_provided=experiment_manifest is not None,
@@ -709,19 +816,15 @@ def run_decision_suite(
             method_evidences=method_evidences,
             method_compliance=method_compliance_reports,
             dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
-            runner_bundle_integrity_ok=bool((preflight.get("runner_bundle_integrity") or {}).get("ok")),
             shared_generation_identity_match=bool(
                 (preflight.get("shared_generation_identity") or {}).get("ok")
             ),
             ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
             method_ids=method_ids,
+            phase="final",
             transactional_publish_complete=True,
+            **integrity_flags,
         )
-        _publish_formal_directory(write_prediction_dir, prediction_dir)
-        _publish_formal_directory(write_decision_dir, decision_dir)
-        transactional_publish_complete = True
-        if temp_root and temp_root.exists():
-            _cleanup_formal_temp(temp_root)
     elif formal:
         suite_summary["formal_compliance"]["formal_result"] = False
         suite_summary["formal_compliance"]["transactional_publish_complete"] = False
@@ -731,7 +834,7 @@ def run_decision_suite(
             stage="compliance",
             method_id=None,
             error_type="FormalComplianceError",
-            error_message="Formal compliance checks did not pass; outputs were not published.",
+            error_message="Pre-publish compliance checks did not pass; outputs were not published.",
             temporary_artifacts_path=str(temp_root) if temp_root and keep_failed_temp_artifacts else None,
         )
         if temp_root and not keep_failed_temp_artifacts:

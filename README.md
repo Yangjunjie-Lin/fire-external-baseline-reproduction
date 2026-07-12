@@ -215,6 +215,13 @@ python scripts/validate_formal_config.py \
 | Schema authority | Bundle `prediction_schema.json` (+ checksum) |
 | Scoring authority | `fire-agent-demo` shared evaluator |
 
+**Formal comparison suite compliance (offline-tested):**
+
+- Manifest method entries are resolved before config merge (`get_method_entry` → `build_method_config`).
+- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → transactional publish → `formal_result`.
+- Runner Bundle integrity is fail-closed; complete freeze includes `runner_bundle.input_cases_sha256`.
+- Predictions and decisions publish as one rollback-safe transaction; generated files under `outputs/` are never tracked.
+
 Heuristic smoke (no paid API):
 
 ```bash

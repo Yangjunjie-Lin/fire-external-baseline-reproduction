@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.common.generation_identity import (
@@ -44,6 +44,11 @@ class RuntimeEvidence:
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_model_version: str | None = None
+    llm_temperature: float | None = None
+    llm_top_p: float | None = None
+    llm_max_tokens: int | None = None
+    llm_seed: int | None = None
+    llm_enable_thinking: bool | None = None
     llm_is_smoke: bool | None = None
     llm_initialized: bool = False
 
@@ -107,11 +112,19 @@ def collect_llm_evidence(
     summary = llm_config_summary(config, llm)
     provider = str(summary.get("provider") or "")
     model = str(summary.get("model") or "")
+    seed_raw = summary.get("seed")
+    seed = int(seed_raw) if seed_raw is not None and str(seed_raw).strip() != "" else None
+    enable_thinking = summary.get("enable_thinking")
     evidence = RuntimeEvidence(
         method_id=method_id,
         llm_provider=provider,
         llm_model=model,
         llm_model_version=str(summary.get("model_version") or ""),
+        llm_temperature=float(summary.get("temperature") if summary.get("temperature") is not None else 0.0),
+        llm_top_p=float(summary.get("top_p") if summary.get("top_p") is not None else 1.0),
+        llm_max_tokens=int(summary.get("max_tokens") if summary.get("max_tokens") is not None else 0),
+        llm_seed=seed,
+        llm_enable_thinking=bool(enable_thinking) if enable_thinking is not None else False,
         llm_is_smoke=_is_smoke_llm(provider, model),
         llm_initialized=llm is not None,
     )
@@ -254,6 +267,11 @@ def collect_method_runtime_evidence(
         evidence.llm_provider = llm_part.llm_provider
         evidence.llm_model = llm_part.llm_model
         evidence.llm_model_version = llm_part.llm_model_version
+        evidence.llm_temperature = llm_part.llm_temperature
+        evidence.llm_top_p = llm_part.llm_top_p
+        evidence.llm_max_tokens = llm_part.llm_max_tokens
+        evidence.llm_seed = llm_part.llm_seed
+        evidence.llm_enable_thinking = llm_part.llm_enable_thinking
         evidence.llm_is_smoke = llm_part.llm_is_smoke
         evidence.llm_initialized = True
     return evidence
@@ -309,12 +327,16 @@ def compute_suite_formal_compliance(
     method_compliance: dict[str, dict[str, Any]],
     dev_aliases_enabled: bool,
     runner_bundle_integrity_ok: bool = False,
+    input_cases_integrity_ok: bool = False,
+    prediction_schema_integrity_ok: bool = False,
+    corpus_integrity_ok: bool = False,
     shared_generation_identity_match: bool = False,
     runtime_generation_identity_match: bool = False,
     hybrid_dense_identity_match: bool = False,
     ekell_prompt_bundle_valid: bool = False,
     transactional_publish_complete: bool = False,
     method_ids: list[str] | None = None,
+    phase: Literal["pre_publish", "final"] = "pre_publish",
 ) -> dict[str, Any]:
     llm_methods = [e for e in method_evidences.values() if e.llm_is_smoke is not None]
     dense_ev = method_evidences.get("dense_rag")
@@ -343,10 +365,13 @@ def compute_suite_formal_compliance(
             and hybrid_ev.dense_dependency_smoke_fallback_used is False
         )
 
-    formal_result = bool(
+    pre_publish_compliance_passed = bool(
         formal
         and preflight_ok
         and runner_bundle_integrity_ok
+        and input_cases_integrity_ok
+        and prediction_schema_integrity_ok
+        and corpus_integrity_ok
         and not limit_used
         and coverage_ok
         and all_method_formal
@@ -358,16 +383,22 @@ def compute_suite_formal_compliance(
         and hybrid_dense_identity_match
         and ekell_prompt_bundle_valid
         and no_runtime_build
-        and transactional_publish_complete
     )
     if not formal:
-        formal_result = False
+        pre_publish_compliance_passed = False
+
+    formal_result = bool(
+        pre_publish_compliance_passed and transactional_publish_complete
+    ) if phase == "final" else False
+
+    publish_complete = transactional_publish_complete if formal and phase == "final" else False
+
     return {
         "real_manifest": bool(formal and experiment_manifest_provided),
         "runner_bundle_integrity": runner_bundle_integrity_ok if formal else False,
-        "input_cases_integrity": runner_bundle_integrity_ok if formal else False,
-        "prediction_schema_integrity": runner_bundle_integrity_ok if formal else False,
-        "corpus_integrity": runner_bundle_integrity_ok if formal else False,
+        "input_cases_integrity": input_cases_integrity_ok if formal else False,
+        "prediction_schema_integrity": prediction_schema_integrity_ok if formal else False,
+        "corpus_integrity": corpus_integrity_ok if formal else False,
         "shared_generation_identity_match": shared_generation_identity_match if formal else False,
         "runtime_generation_identity_match": runtime_generation_identity_match if formal else False,
         "real_llm": real_llm if formal else False,
@@ -380,7 +411,8 @@ def compute_suite_formal_compliance(
         "explicit_required_fields": formal,
         "complete_case_coverage": coverage_ok if formal else False,
         "no_runtime_index_build": no_runtime_build if formal else False,
-        "transactional_publish_complete": transactional_publish_complete if formal else False,
+        "pre_publish_compliance_passed": pre_publish_compliance_passed if formal else False,
+        "transactional_publish_complete": publish_complete,
         "preflight_ok": preflight_ok,
         "limit_used": limit_used,
         "formal_result": formal_result,
@@ -392,6 +424,11 @@ def evidence_to_summary_sections(evidence: RuntimeEvidence) -> dict[str, Any]:
         "provider": evidence.llm_provider,
         "model": evidence.llm_model,
         "model_version": evidence.llm_model_version,
+        "temperature": evidence.llm_temperature,
+        "top_p": evidence.llm_top_p,
+        "max_tokens": evidence.llm_max_tokens,
+        "seed": evidence.llm_seed,
+        "enable_thinking": evidence.llm_enable_thinking,
         "is_smoke": evidence.llm_is_smoke,
         "initialized": evidence.llm_initialized,
     }

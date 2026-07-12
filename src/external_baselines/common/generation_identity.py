@@ -95,6 +95,24 @@ def validate_shared_generation_identity(
     }
 
 
+def runtime_identity_from_evidence(evidence: Any) -> GenerationIdentity:
+    seed_raw = getattr(evidence, "llm_seed", None)
+    seed = int(seed_raw) if seed_raw is not None and str(seed_raw).strip() != "" else None
+    top_p = getattr(evidence, "llm_top_p", None)
+    max_tokens = getattr(evidence, "llm_max_tokens", None)
+    temperature = getattr(evidence, "llm_temperature", None)
+    return GenerationIdentity(
+        provider=str(getattr(evidence, "llm_provider", None) or ""),
+        model=str(getattr(evidence, "llm_model", None) or ""),
+        model_version=str(getattr(evidence, "llm_model_version", None) or ""),
+        temperature=float(temperature if temperature is not None else 0.0),
+        top_p=float(top_p if top_p is not None else 1.0),
+        max_tokens=int(max_tokens if max_tokens is not None else 0),
+        seed=seed,
+        enable_thinking=bool(getattr(evidence, "llm_enable_thinking", False)),
+    )
+
+
 def validate_runtime_generation_identity(
     *,
     method_ids: list[str],
@@ -107,32 +125,32 @@ def validate_runtime_generation_identity(
 
     ref_id = reference_method_id or method_ids[0]
     ref_ev = method_evidences.get(ref_id)
-    reference = {
-        "provider": getattr(ref_ev, "llm_provider", None) if ref_ev else None,
-        "model": getattr(ref_ev, "llm_model", None) if ref_ev else None,
-        "model_version": getattr(ref_ev, "llm_model_version", None) if ref_ev else None,
-    }
+    reference = runtime_identity_from_evidence(ref_ev).to_dict() if ref_ev else None
     by_method: dict[str, dict[str, Any]] = {}
     mismatches: list[dict[str, Any]] = []
 
     for method_id in method_ids:
         ev = method_evidences.get(method_id)
-        current = {
-            "provider": getattr(ev, "llm_provider", None) if ev else None,
-            "model": getattr(ev, "llm_model", None) if ev else None,
-            "model_version": getattr(ev, "llm_model_version", None) if ev else None,
-        }
+        current = runtime_identity_from_evidence(ev).to_dict() if ev else None
         by_method[method_id] = current
-        for field in ("provider", "model", "model_version"):
-            if current[field] != reference[field]:
+        if reference is None or current is None:
+            mismatches.append(
+                {
+                    "error": "runtime_generation_identity_missing",
+                    "method_id": method_id,
+                }
+            )
+            continue
+        for field in GENERATION_IDENTITY_FIELDS:
+            if current.get(field) != reference.get(field):
                 mismatches.append(
                     {
                         "error": "runtime_generation_identity_mismatch",
                         "field": field,
                         "reference_method": ref_id,
-                        "reference_value": reference[field],
+                        "reference_value": reference.get(field),
                         "method_id": method_id,
-                        "method_value": current[field],
+                        "method_value": current.get(field),
                     }
                 )
 

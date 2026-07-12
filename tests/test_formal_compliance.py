@@ -1178,6 +1178,72 @@ def _build_fake_dense_index(tmp_path: Path) -> Path:
     return index_dir
 
 
+def _build_fake_ekell_index(tmp_path: Path) -> Path:
+    from external_baselines.ekell_style.embedding_backends import create_embedding_backend
+    from external_baselines.ekell_style.kg_loader import FireKG
+    from external_baselines.ekell_style.vector_index import VectorIndex
+    from tests.test_ekell_index_persistence import FakeEmbeddingModel
+
+    fake = FakeEmbeddingModel(8)
+    backend = create_embedding_backend(
+        "text2vec",
+        model_name="fake/bge",
+        model_version="v-test",
+        dimension=8,
+        model=fake,
+        reject_smoke=True,
+    )
+    kg = FireKG(
+        entities=[{"entity_id": "e1", "name": "hose"}],
+        relations=[{"relation_id": "r1", "name": "used_for"}],
+        triples=[{"head": "hose", "relation": "used_for", "tail": "fire", "source_id": "t1"}],
+        evidence_chunks=[{"chunk_id": "c1", "text": "fire hose near exit", "source_id": "s1"}],
+    )
+    index = VectorIndex.from_kg(kg, backend, reject_smoke=True)
+    index_dir = tmp_path / "ekell_idx"
+    index.save_directory(index_dir)
+    return index_dir
+
+
+def _passing_formal_method_evidences() -> dict[str, RuntimeEvidence]:
+    method_ids = [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]
+    evidences: dict[str, RuntimeEvidence] = {}
+    for mid in method_ids:
+        needs_index = mid in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"}
+        evidences[mid] = RuntimeEvidence(
+            method_id=mid,
+            llm_provider="local_contract_provider",
+            llm_model="contract-generation-v1",
+            llm_model_version="v1",
+            llm_temperature=0.0,
+            llm_top_p=1.0,
+            llm_max_tokens=1024,
+            llm_seed=20260710,
+            llm_enable_thinking=False,
+            llm_is_smoke=False,
+            llm_initialized=True,
+            index_loaded=needs_index,
+            index_built_during_run=False,
+            actual_embedding_used=True if needs_index else None,
+            smoke_fallback_used=False if needs_index else None,
+            dense_dependency_actual_embedding_used=True if mid == "hybrid_rag" else None,
+            dense_dependency_smoke_fallback_used=False if mid == "hybrid_rag" else None,
+            index_checksum="same" if needs_index else None,
+            dense_dependency_index_checksum="same" if mid == "hybrid_rag" else None,
+        )
+    return evidences
+
+
+def _passing_method_compliance() -> dict[str, dict]:
+    return {mid: {"formal_result": True} for mid in _passing_formal_method_evidences()}
+
+
 def _formal_method_configs(
     corpus_dir: str,
     *,
@@ -2074,7 +2140,12 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
         "preflight_decision_suite",
         lambda **kwargs: {
             "ok": True,
-            "runner_bundle_integrity": {"ok": True},
+            "runner_bundle_integrity": {
+                "ok": True,
+                "input_cases_integrity": True,
+                "prediction_schema_integrity": True,
+                "corpus_integrity": True,
+            },
             "shared_generation_identity": {"ok": True},
             "ekell_prompt_bundle_valid": True,
             "methods": {},
@@ -2097,35 +2168,36 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
         )
         return decision_output_to_legacy_row(parsed)
 
+    def _runtime_evidence(**kwargs):
+        mid = kwargs["method_id"]
+        needs_index = mid in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"}
+        return RuntimeEvidence(
+            method_id=mid,
+            llm_provider="local_contract_provider",
+            llm_model="contract-generation-v1",
+            llm_model_version="v1",
+            llm_temperature=0.0,
+            llm_top_p=1.0,
+            llm_max_tokens=1024,
+            llm_seed=20260710,
+            llm_enable_thinking=False,
+            llm_is_smoke=False,
+            llm_initialized=True,
+            index_loaded=needs_index,
+            index_built_during_run=False,
+            actual_embedding_used=True if needs_index else None,
+            smoke_fallback_used=False if needs_index else None,
+            dense_dependency_actual_embedding_used=True if mid == "hybrid_rag" else None,
+            dense_dependency_smoke_fallback_used=False if mid == "hybrid_rag" else None,
+            index_checksum="same" if needs_index else None,
+            dense_dependency_index_checksum="same" if mid == "hybrid_rag" else None,
+        )
+
     monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        suite,
-        "collect_method_runtime_evidence",
-        lambda **kwargs: RuntimeEvidence(
-            method_id=kwargs["method_id"],
-            llm_is_smoke=False,
-            llm_initialized=True,
-            index_loaded=True,
-            index_built_during_run=False,
-            actual_embedding_used=True,
-            smoke_fallback_used=False,
-            dense_dependency_actual_embedding_used=True,
-            dense_dependency_smoke_fallback_used=False,
-            index_checksum="same",
-            dense_dependency_index_checksum="same",
-        ),
-    )
-    monkeypatch.setattr(
-        suite,
-        "compute_suite_formal_compliance",
-        lambda **kwargs: {
-            "formal_result": True,
-            "transactional_publish_complete": kwargs.get("transactional_publish_complete", False),
-        },
-    )
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
     summary = run_decision_suite(
         runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
@@ -2135,7 +2207,9 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
         experiment_manifest=tmp_path / "manifest.yaml",
     )
     assert len(list(pred_dir.glob("*.jsonl"))) == 5
+    assert summary["formal_compliance"]["pre_publish_compliance_passed"] is True
     assert summary["formal_compliance"]["transactional_publish_complete"] is True
+    assert summary["formal_compliance"]["formal_result"] is True
 
 
 def test_formal_failure_writes_failed_marker(tmp_path, monkeypatch):
@@ -2196,3 +2270,525 @@ def test_dry_run_does_not_require_transactional_publish(tmp_path):
     )
     assert summary["formal_compliance"]["transactional_publish_complete"] is False
     assert any(pred_dir.glob("*.jsonl"))
+
+
+def test_decision_suite_builds_all_five_method_configs_from_real_manifest(tmp_path):
+    from external_baselines.common.experiment_manifest import (
+        build_method_config,
+        get_method_entry,
+        load_experiment_manifest,
+    )
+
+    shared = tmp_path / "shared.yaml"
+    shared.write_text(
+        "llm:\n  provider: local_contract_provider\n  model: contract-generation-v1\n"
+        "  model_version: v1\n  temperature: 0.0\n  top_p: 1.0\n  max_tokens: 1024\n  seed: 20260710\n",
+        encoding="utf-8",
+    )
+    method_paths = {}
+    for mid in [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]:
+        path = tmp_path / f"{mid}.yaml"
+        path.write_text("execution_stage: formal\n", encoding="utf-8")
+        method_paths[mid] = path
+    exp = tmp_path / "formal_manifest.yaml"
+    lines = [
+        "experiment_id: formal_offline",
+        f"shared_model_config: {shared.as_posix()}",
+        "base_config: configs/default.yaml",
+        "freeze_status: frozen",
+        "paper_final: true",
+        "methods:",
+    ]
+    for mid, path in method_paths.items():
+        lines.append(f"  - method_id: {mid}")
+        lines.append(f"    config: {path.as_posix()}")
+        lines.append("    enabled: true")
+    exp.write_text("\n".join(lines), encoding="utf-8")
+    manifest = load_experiment_manifest(exp)
+    configs = {}
+    for mid in method_paths:
+        entry = get_method_entry(manifest, mid)
+        configs[mid] = build_method_config(manifest, entry)
+    assert len(configs) == 5
+    assert all(cfg["llm"]["model"] == "contract-generation-v1" for cfg in configs.values())
+
+
+def test_pre_publish_compliance_does_not_require_publish_complete():
+    compliance = compute_suite_formal_compliance(
+        formal=True,
+        experiment_manifest_provided=True,
+        limit_used=False,
+        preflight_ok=True,
+        coverage_ok=True,
+        method_evidences=_passing_formal_method_evidences(),
+        method_compliance=_passing_method_compliance(),
+        dev_aliases_enabled=False,
+        runner_bundle_integrity_ok=True,
+        input_cases_integrity_ok=True,
+        prediction_schema_integrity_ok=True,
+        corpus_integrity_ok=True,
+        shared_generation_identity_match=True,
+        runtime_generation_identity_match=True,
+        ekell_prompt_bundle_valid=True,
+        transactional_publish_complete=False,
+        phase="pre_publish",
+    )
+    assert compliance["pre_publish_compliance_passed"] is True
+    assert compliance["transactional_publish_complete"] is False
+    assert compliance["formal_result"] is False
+
+
+def test_final_formal_result_requires_publish_complete():
+    base = dict(
+        formal=True,
+        experiment_manifest_provided=True,
+        limit_used=False,
+        preflight_ok=True,
+        coverage_ok=True,
+        method_evidences=_passing_formal_method_evidences(),
+        method_compliance=_passing_method_compliance(),
+        dev_aliases_enabled=False,
+        runner_bundle_integrity_ok=True,
+        input_cases_integrity_ok=True,
+        prediction_schema_integrity_ok=True,
+        corpus_integrity_ok=True,
+        shared_generation_identity_match=True,
+        runtime_generation_identity_match=True,
+        ekell_prompt_bundle_valid=True,
+    )
+    pre = compute_suite_formal_compliance(**base, transactional_publish_complete=False, phase="pre_publish")
+    final = compute_suite_formal_compliance(**base, transactional_publish_complete=True, phase="final")
+    assert pre["pre_publish_compliance_passed"] is True
+    assert pre["formal_result"] is False
+    assert final["formal_result"] is True
+
+
+def test_bundle_validation_failure_cannot_be_overridden_by_default_file_report(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    frozen = _frozen_runner_bundle_identity(bundle)
+    bundle["producer_declared_checksum"] = "f" * 64
+    bundle["file_checksum_report"] = {"ok": True}
+    broken = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
+    assert broken["ok"] is False
+    assert broken["bundle_checksum_ok"] is False
+
+
+def test_missing_file_checksum_report_does_not_default_to_pass(tmp_path):
+    from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
+
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = load_runner_bundle(bundle_dir)
+    result = validate_formal_runner_bundle_integrity(bundle, frozen_identity={})
+    assert result["ok"] is False
+    assert "frozen_bundle_identity_missing" in result["errors"]
+
+
+def test_complete_freeze_requires_input_cases_sha(tmp_path):
+    from external_baselines.common.formal_config_validator import FormalConfigError
+    from external_baselines.common.freeze_manifest import build_freeze_manifest_payload, validate_freeze_manifest
+    from external_baselines.method_registry import comparison_suite_methods
+
+    shared = ROOT / "configs/deterministic_heuristic_smoke.yaml"
+    method_paths = {
+        mid: tmp_path / f"{mid}.yaml"
+        for mid in comparison_suite_methods()
+    }
+    for path in method_paths.values():
+        path.write_text("execution_stage: formal\npaper_final: true\n", encoding="utf-8")
+    method_entries = [
+        {"method_id": mid, "config": str(path), "enabled": True}
+        for mid, path in method_paths.items()
+    ]
+    manifest = tmp_path / "m.yaml"
+    manifest.write_text(
+        "experiment_id: x\n"
+        f"shared_model_config: {shared.as_posix()}\n"
+        "methods:\n"
+        + "\n".join(
+            f"  - method_id: {entry['method_id']}\n    config: {entry['config']}\n    enabled: true"
+            for entry in method_entries
+        ),
+        encoding="utf-8",
+    )
+    dev_evidence = tmp_path / "selected_dev_run.json"
+    dev_evidence.write_text('{"selected": true}\n', encoding="utf-8")
+    payload = build_freeze_manifest_payload(
+        experiment_manifest_path=manifest,
+        experiment_raw={"shared_model_config": str(shared), "methods": method_entries},
+        selected_dev_run=dev_evidence,
+        bundle_checksum="0" * 64,
+        corpus_checksum="0" * 64,
+        schema_checksum="0" * 64,
+        method_config_paths={mid: str(path) for mid, path in method_paths.items()},
+        indexes={
+            "dense": {"index_checksum": "a"},
+            "hybrid_dense_dependency": {"index_checksum": "a"},
+            "ekell": {"index_checksum": "b"},
+        },
+    )
+    payload["runner_bundle"].pop("input_cases_sha256", None)
+    payload.pop("input_cases_sha256", None)
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FormalConfigError, match="input_cases_sha256"):
+        validate_freeze_manifest(
+            freeze,
+            experiment_manifest_path=manifest,
+            experiment_raw={"shared_model_config": str(shared), "methods": method_entries},
+            require_complete=True,
+        )
+
+
+def test_runtime_identity_checks_all_generation_fields():
+    from external_baselines.common.generation_identity import validate_runtime_generation_identity
+
+    base = RuntimeEvidence(
+        method_id="direct_llm",
+        llm_provider="local_contract_provider",
+        llm_model="contract-generation-v1",
+        llm_model_version="v1",
+        llm_temperature=0.0,
+        llm_top_p=1.0,
+        llm_max_tokens=1024,
+        llm_seed=20260710,
+        llm_enable_thinking=False,
+    )
+    other = RuntimeEvidence(
+        method_id="bm25_rag",
+        llm_provider="local_contract_provider",
+        llm_model="contract-generation-v1",
+        llm_model_version="v1",
+        llm_temperature=0.5,
+        llm_top_p=1.0,
+        llm_max_tokens=1024,
+        llm_seed=20260710,
+        llm_enable_thinking=False,
+    )
+    report = validate_runtime_generation_identity(
+        method_ids=["direct_llm", "bm25_rag"],
+        method_evidences={"direct_llm": base, "bm25_rag": other},
+    )
+    assert report["ok"] is False
+    assert any(m["field"] == "temperature" for m in report["mismatches"])
+
+
+def test_integrity_summary_fields_are_independent():
+    compliance = compute_suite_formal_compliance(
+        formal=True,
+        experiment_manifest_provided=True,
+        limit_used=False,
+        preflight_ok=True,
+        coverage_ok=True,
+        method_evidences={},
+        method_compliance={},
+        dev_aliases_enabled=False,
+        runner_bundle_integrity_ok=True,
+        input_cases_integrity_ok=False,
+        prediction_schema_integrity_ok=True,
+        corpus_integrity_ok=True,
+        phase="pre_publish",
+    )
+    assert compliance["runner_bundle_integrity"] is True
+    assert compliance["input_cases_integrity"] is False
+    assert compliance["prediction_schema_integrity"] is True
+
+
+def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    pred_dir = tmp_path / "pred"
+    dec_dir = tmp_path / "dec"
+    pred_dir.mkdir()
+    dec_dir.mkdir()
+    (pred_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
+    (dec_dir / "old.jsonl").write_text('{"old": true}\n', encoding="utf-8")
+    calls = {"n": 0}
+
+    def _publish_temp(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("decisions publish failed")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {
+                "ok": True,
+                "input_cases_integrity": True,
+                "prediction_schema_integrity": True,
+                "corpus_integrity": True,
+            },
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+    monkeypatch.setattr(suite, "_publish_temp_directory", _publish_temp)
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", lambda _c: object())
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        suite,
+        "collect_method_runtime_evidence",
+        lambda **kwargs: RuntimeEvidence(
+            method_id=kwargs["method_id"],
+            llm_provider="local_contract_provider",
+            llm_model="contract-generation-v1",
+            llm_model_version="v1",
+            llm_temperature=0.0,
+            llm_top_p=1.0,
+            llm_max_tokens=1024,
+            llm_seed=20260710,
+            llm_enable_thinking=False,
+            llm_is_smoke=False,
+            llm_initialized=True,
+            index_loaded=kwargs["method_id"] in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"},
+            index_built_during_run=False,
+            actual_embedding_used=True,
+            smoke_fallback_used=False,
+            dense_dependency_actual_embedding_used=True,
+            dense_dependency_smoke_fallback_used=False,
+            index_checksum="same",
+            dense_dependency_index_checksum="same",
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="transactional publish failed"):
+        run_decision_suite(
+            runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
+            prediction_dir=pred_dir,
+            decision_dir=dec_dir,
+            execution_stage="formal",
+            experiment_manifest=tmp_path / "manifest.yaml",
+        )
+    assert (pred_dir / "old.jsonl").is_file()
+    assert (dec_dir / "old.jsonl").is_file()
+    marker = json.loads((tmp_path / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    assert marker["rollback_succeeded"] is True
+
+
+def test_formal_decision_suite_end_to_end_with_real_manifest_fixture(tmp_path, monkeypatch):
+    """Offline formal E2E using a real non-.example manifest and freeze fixture."""
+    from scripts import run_decision_comparison_suite as suite
+
+    bundle_dir = _make_runner_bundle(tmp_path, n_cases=2)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    dense_idx = _build_fake_dense_index(tmp_path)
+    ekell_idx = _build_fake_ekell_index(tmp_path)
+
+    shared = tmp_path / "shared.yaml"
+    shared.write_text(
+        "llm:\n  provider: local_contract_provider\n  model: contract-generation-v1\n"
+        "  model_version: v1\n  temperature: 0.0\n  top_p: 1.0\n  max_tokens: 1024\n"
+        "  seed: 20260710\n  enable_thinking: false\n  api_key_env: LOCAL_CONTRACT_API_KEY\n",
+        encoding="utf-8",
+    )
+    dense_block = (
+        f"dense_rag:\n  backend: text2vec\n  model_name: fake/bge\n  model_version: v-test\n"
+        f"  dimension: 8\n  normalize_embeddings: true\n  index_path: {dense_idx.as_posix()}\n"
+        f"  reject_smoke: true\n"
+        f"hybrid_rag:\n  reject_smoke: true\n  top_k: 3\n  candidate_pool: 5\n"
+    )
+    ekell_block = (
+        f"ekell_vector:\n  backend: text2vec\n  model_name: fake/bge\n  model_version: v-test\n"
+        f"  dimension: 8\n  normalize_embeddings: true\n  index_path: {ekell_idx.as_posix()}\n"
+        f"  reject_smoke: true\n"
+        f"ekell_style:\n  prompt_dir: {(ROOT / 'configs/prompts/controlled').as_posix()}\n"
+    )
+    method_cfgs = {}
+    for mid in [
+        "direct_llm",
+        "bm25_rag",
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]:
+        path = tmp_path / f"{mid}_cfg.yaml"
+        extra = ""
+        if mid in {"dense_rag", "hybrid_rag"}:
+            extra = dense_block
+        if mid == "ekell_style_controlled_shared_llm":
+            extra = ekell_block
+        path.write_text(
+            f"execution_stage: formal\npaper_final: true\n"
+            f"paths:\n  corpus_dir: {bundle['corpus_dir']}\n{extra}",
+            encoding="utf-8",
+        )
+        method_cfgs[mid] = path
+
+    identity = _frozen_runner_bundle_identity(bundle)
+    freeze_path = tmp_path / "freeze_manifest.json"
+    dev_evidence = tmp_path / "selected_dev_run.json"
+    dev_evidence.write_text('{"selected": true}\n', encoding="utf-8")
+    freeze_path.write_text(
+        json.dumps(
+            {
+                "freeze_status": "frozen",
+                "selected_dev_run_evidence": dev_evidence.as_posix(),
+                "runner_bundle": identity,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exp = tmp_path / "formal_manifest.yaml"
+    exp.write_text(
+        "\n".join(
+            [
+                "experiment_id: formal_offline_e2e",
+                "schema_version: firebench-interop-v1",
+                f"shared_model_config: {shared.as_posix()}",
+                "base_config: configs/default.yaml",
+                "freeze_status: frozen",
+                "paper_final: true",
+                f"bundle: {bundle_dir.as_posix()}",
+                f"freeze_manifest: {freeze_path.as_posix()}",
+                "require_bundle_checksum: true",
+                "require_external_schema: true",
+                "require_complete_case_match: true",
+                "fail_on_schema_error: true",
+                "fail_on_duplicate_case_id: true",
+                "fail_on_missing_case: true",
+                "fail_on_extra_case: true",
+                "main_table_methods:",
+                "  - direct_llm",
+                "  - bm25_rag",
+                "  - ekell_style_controlled_shared_llm",
+                "comparison_suite_methods:",
+                "  - direct_llm",
+                "  - bm25_rag",
+                "  - dense_rag",
+                "  - hybrid_rag",
+                "  - ekell_style_controlled_shared_llm",
+                "methods:",
+                *[
+                    line
+                    for mid, cfg in method_cfgs.items()
+                    for line in (
+                        f"  - method_id: {mid}",
+                        f"    config: {cfg.as_posix()}",
+                        "    enabled: true",
+                    )
+                ],
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class ContractLLM:
+        provider = "local_contract_provider"
+        model = "contract-generation-v1"
+        model_version = "v1"
+
+        def usage_snapshot(self):
+            from external_baselines.common.llm_client import TokenUsage
+
+            return TokenUsage()
+
+        def usage_delta(self, _before):
+            from external_baselines.common.llm_client import TokenUsage
+
+            return TokenUsage()
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    def _runtime_evidence(**kwargs):
+        mid = kwargs["method_id"]
+        needs_index = mid in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"}
+        return RuntimeEvidence(
+            method_id=mid,
+            llm_provider="local_contract_provider",
+            llm_model="contract-generation-v1",
+            llm_model_version="v1",
+            llm_temperature=0.0,
+            llm_top_p=1.0,
+            llm_max_tokens=1024,
+            llm_seed=20260710,
+            llm_enable_thinking=False,
+            llm_is_smoke=False,
+            llm_initialized=True,
+            index_loaded=needs_index,
+            index_built_during_run=False,
+            actual_embedding_used=True if needs_index else None,
+            smoke_fallback_used=False if needs_index else None,
+            dense_dependency_actual_embedding_used=True if mid == "hybrid_rag" else None,
+            dense_dependency_smoke_fallback_used=False if mid == "hybrid_rag" else None,
+            index_checksum="same" if needs_index else None,
+            dense_dependency_index_checksum="same" if mid == "hybrid_rag" else None,
+        )
+
+    monkeypatch.setenv("LOCAL_CONTRACT_API_KEY", "offline-contract-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "build_llm_client", lambda _c: ContractLLM())
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
+
+    pred_dir = tmp_path / "published" / "predictions"
+    dec_dir = tmp_path / "published" / "decisions"
+    summary = run_decision_suite(
+        runner_bundle=bundle_dir,
+        prediction_dir=pred_dir,
+        decision_dir=dec_dir,
+        execution_stage="formal",
+        experiment_manifest=exp,
+    )
+    assert summary["formal_compliance"]["pre_publish_compliance_passed"] is True
+    assert summary["formal_compliance"]["transactional_publish_complete"] is True
+    assert summary["formal_compliance"]["formal_result"] is True
+    assert len(list(pred_dir.glob("*.jsonl"))) == 5
+    assert len(summary["method_summaries"]) == 5
+    assert not (tmp_path / "published" / "FORMAL_RUN_FAILED.json").exists()
+    assert not any(tmp_path.glob(".formal_tmp_*"))
+    assert not any(tmp_path.rglob("*.bak"))
+
+
+def test_generated_output_files_are_not_tracked():
+    import subprocess
+
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "outputs/"],
+        text=True,
+        cwd=ROOT,
+    ).splitlines()
+    allowed = {"outputs/.gitkeep", "outputs/README.md"}
+    unexpected = [path for path in tracked if path not in allowed]
+    assert unexpected == []

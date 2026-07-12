@@ -173,11 +173,13 @@ Requires:
 - **no** `--limit` (complete Runner Bundle case coverage enforced)
 - **no** `--allow-partial`
 - **no** `--enable-dev-aliases`
-- frozen Runner Bundle identity validated against freeze manifest (per-file checksums)
+- frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256)
+- manifest method entries resolved before per-method config merge
+- two-phase formal compliance: pre-publish checks (no publish required) → transactional publish → final `formal_result`
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`; includes E-KELL prompt files)
-- **transactional** prediction publish (temp dir → atomic publish only when all methods pass; failures leave `FORMAL_RUN_FAILED.json`, no partial formal predictions)
+- **transactional** publish of predictions and decisions (temp dir → atomic publish only when pre-publish compliance passes; failures roll back both targets and leave `FORMAL_RUN_FAILED.json`)
 - output under `outputs/interop/` (or formal directory)
 - dry-run artifacts must never report `formal_result=true`
 

@@ -15,7 +15,7 @@ def extract_frozen_runner_bundle_identity(freeze: dict[str, Any]) -> dict[str, A
     if isinstance(runner_block, dict):
         return {
             "bundle_checksum": runner_block.get("bundle_checksum") or freeze.get("runner_bundle_checksum"),
-            "input_cases_sha256": runner_block.get("input_cases_sha256"),
+            "input_cases_sha256": runner_block.get("input_cases_sha256") or freeze.get("input_cases_sha256"),
             "prediction_schema_sha256": runner_block.get("prediction_schema_sha256")
             or freeze.get("prediction_schema_checksum"),
             "corpus_aggregate_sha256": runner_block.get("corpus_aggregate_sha256")
@@ -62,63 +62,95 @@ def validate_formal_runner_bundle_integrity(
     expected_schema = str(frozen.get("prediction_schema_sha256") or "").strip()
     expected_corpus = str(frozen.get("corpus_aggregate_sha256") or "").strip()
 
-    if not any((expected_bundle, expected_input, expected_schema, expected_corpus)):
+    frozen_identity_complete = all((expected_bundle, expected_input, expected_schema, expected_corpus))
+    if not frozen_identity_complete:
         errors.append("frozen_bundle_identity_missing")
 
     bundle_validation = validate_bundle_checksum(
         bundle,
         expected=expected_bundle or None,
     )
+    bundle_checksum_ok = bundle_validation.get("ok") is True
 
-    if not file_report.get("ok", True):
+    file_report_checked = bool(file_report.get("checked"))
+    file_report_ok = file_report.get("ok") is True if file_report_checked else None
+
+    if file_report_checked and file_report_ok is not True:
         errors.append("runner_bundle_file_checksum_mismatch")
         for item in file_report.get("mismatches") or []:
             mismatches.append({"type": "file_checksum", "detail": item})
 
-    if expected_bundle:
-        declared = str(bundle_validation.get("producer_declared_checksum") or "")
-        if declared and declared != expected_bundle:
-            errors.append("runner_bundle_checksum_mismatch")
-            mismatches.append(
-                {
-                    "field": "bundle_checksum",
-                    "expected": expected_bundle,
-                    "actual": declared,
-                }
-            )
-        elif not declared and str(bundle_validation.get("recomputed") or "") != expected_bundle:
-            errors.append("runner_bundle_checksum_mismatch")
+    if expected_bundle and not bundle_checksum_ok:
+        errors.append("runner_bundle_checksum_mismatch")
+        mismatches.append(
+            {
+                "field": "bundle_checksum",
+                "expected": expected_bundle,
+                "actual": bundle_validation.get("producer_declared_checksum")
+                or bundle_validation.get("recomputed"),
+            }
+        )
 
+    input_cases_integrity = True
     if expected_input:
         actual_input = live.get("input_cases_sha256")
         if not actual_input or str(actual_input) != expected_input:
+            input_cases_integrity = False
             errors.append("input_cases_checksum_mismatch")
             mismatches.append(
                 {"field": "input_cases_sha256", "expected": expected_input, "actual": actual_input}
             )
 
+    prediction_schema_integrity = True
     if expected_schema:
         actual_schema = live.get("prediction_schema_sha256")
         if not actual_schema or str(actual_schema) != expected_schema:
+            prediction_schema_integrity = False
             errors.append("prediction_schema_checksum_mismatch")
             mismatches.append(
                 {"field": "prediction_schema_sha256", "expected": expected_schema, "actual": actual_schema}
             )
 
+    corpus_integrity = True
     if expected_corpus:
         actual_corpus = live.get("corpus_aggregate_sha256")
         if not actual_corpus or str(actual_corpus) != expected_corpus:
+            corpus_integrity = False
             errors.append("corpus_checksum_mismatch")
             mismatches.append(
                 {"field": "corpus_aggregate_sha256", "expected": expected_corpus, "actual": actual_corpus}
             )
 
-    ok = not errors and bool(bundle_validation.get("ok", False) or file_report.get("ok", True))
-    if frozen and not errors and not file_report.get("ok", True):
-        ok = False
+    if file_report_checked:
+        integrity_evidence_ok = file_report_ok is True and bundle_checksum_ok
+    elif frozen_identity_complete:
+        integrity_evidence_ok = (
+            bundle_checksum_ok
+            and input_cases_integrity
+            and prediction_schema_integrity
+            and corpus_integrity
+        )
+    else:
+        errors.append("runner_bundle_integrity_evidence_incomplete")
+        integrity_evidence_ok = False
+
+    ok = (
+        not errors
+        and integrity_evidence_ok
+        and bundle_checksum_ok
+        and input_cases_integrity
+        and prediction_schema_integrity
+        and corpus_integrity
+    )
 
     return {
         "ok": ok,
+        "bundle_checksum_ok": bundle_checksum_ok,
+        "input_cases_integrity": input_cases_integrity,
+        "prediction_schema_integrity": prediction_schema_integrity,
+        "corpus_integrity": corpus_integrity,
+        "per_file_checksums_checked": file_report_checked,
+        "per_file_checksums_ok": file_report_ok,
         "producer_declared_checksum": live.get("producer_declared_checksum"),
         "consumer_computed_hash": live.get("consumer_computed_hash"),
         "expected_frozen_checksum": expected_bundle or None,
@@ -128,7 +160,7 @@ def validate_formal_runner_bundle_integrity(
         "expected_prediction_schema_sha256": expected_schema or None,
         "corpus_aggregate_sha256": live.get("corpus_aggregate_sha256"),
         "expected_corpus_aggregate_sha256": expected_corpus or None,
-        "file_checksum_report_ok": bool(file_report.get("ok", True)),
+        "file_checksum_report_ok": file_report_ok,
         "mismatches": mismatches,
         "errors": errors,
         "bundle_checksum_validation": bundle_validation,

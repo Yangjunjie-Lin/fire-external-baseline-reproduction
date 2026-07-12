@@ -619,6 +619,7 @@ def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = N
         "top_p": llm_cfg.get("top_p"),
         "max_tokens": int(llm_cfg.get("max_tokens", 1200)),
         "seed": llm_cfg.get("seed"),
+        "enable_thinking": llm_cfg.get("enable_thinking"),
         "timeout_sec": llm_cfg.get("timeout_sec") or llm_cfg.get("read_timeout_sec"),
         "max_retries": llm_cfg.get("max_retries"),
         "api_key_env": llm_cfg.get("api_key_env") or getattr(inner, "api_key_env", None),

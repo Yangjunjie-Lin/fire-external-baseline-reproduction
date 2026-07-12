@@ -123,8 +123,16 @@ def _validate_runner_bundle_integrity(
 ) -> dict[str, Any]:
     if not formal:
         validation = validate_bundle_checksum(bundle)
+        file_report = bundle.get("file_checksum_report") or {}
+        file_ok = file_report.get("ok") if file_report.get("checked") else None
         return {
-            "ok": bool(validation.get("ok", True)),
+            "ok": validation.get("ok") is True,
+            "bundle_checksum_ok": validation.get("ok") is True,
+            "input_cases_integrity": True,
+            "prediction_schema_integrity": True,
+            "corpus_integrity": True,
+            "per_file_checksums_checked": bool(file_report.get("checked")),
+            "per_file_checksums_ok": file_ok,
             "producer_declared_checksum": validation.get("producer_declared_checksum"),
             "consumer_computed_hash": validation.get("consumer_computed_bundle_hash"),
             "expected_frozen_checksum": None,
@@ -140,7 +148,7 @@ def _validate_runner_bundle_integrity(
                 else None
             ),
             "expected_corpus_aggregate_sha256": None,
-            "file_checksum_report_ok": bool((bundle.get("file_checksum_report") or {}).get("ok", True)),
+            "file_checksum_report_ok": file_ok,
             "mismatches": [],
             "errors": [],
         }

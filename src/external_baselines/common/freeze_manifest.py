@@ -18,6 +18,7 @@ REQUIRED_COMPLETE_FIELDS = (
     "shared_model_config_sha256",
     "method_config_sha256",
     "prompt_tree_sha256",
+    "runner_bundle",
     "runner_bundle_checksum",
     "corpus_checksum",
     "prediction_schema_checksum",
@@ -25,6 +26,25 @@ REQUIRED_COMPLETE_FIELDS = (
     "embedding",
     "indexes",
 )
+
+RUNNER_BUNDLE_IDENTITY_FIELDS = (
+    "bundle_checksum",
+    "input_cases_sha256",
+    "prediction_schema_sha256",
+    "corpus_aggregate_sha256",
+)
+
+
+def runner_bundle_block_from_freeze(freeze: dict[str, Any]) -> dict[str, Any]:
+    block = freeze.get("runner_bundle")
+    if isinstance(block, dict):
+        return dict(block)
+    return {
+        "bundle_checksum": freeze.get("runner_bundle_checksum"),
+        "input_cases_sha256": freeze.get("input_cases_sha256"),
+        "prediction_schema_sha256": freeze.get("prediction_schema_checksum"),
+        "corpus_aggregate_sha256": freeze.get("corpus_checksum"),
+    }
 
 
 def prompt_tree_checksum(prompt_dir: str | Path) -> str | None:
@@ -81,6 +101,7 @@ def build_freeze_manifest_payload(
     experiment_raw: dict[str, Any],
     selected_dev_run: str | Path,
     bundle_checksum: str | None = None,
+    input_cases_sha256: str | None = None,
     corpus_checksum: str | None = None,
     schema_checksum: str | None = None,
     method_config_paths: dict[str, str] | None = None,
@@ -139,6 +160,13 @@ def build_freeze_manifest_payload(
             if key in indexes and isinstance(indexes[key], dict):
                 index_payload[key].update(indexes[key])
 
+    runner_bundle_block = {
+        "bundle_checksum": bundle_checksum,
+        "input_cases_sha256": input_cases_sha256,
+        "prediction_schema_sha256": schema_checksum,
+        "corpus_aggregate_sha256": corpus_checksum,
+    }
+
     return {
         "freeze_id": "controlled_comparison_v1",
         "freeze_status": "frozen",
@@ -150,7 +178,9 @@ def build_freeze_manifest_payload(
         "shared_model_config_sha256": sha256_file(shared) if shared else None,
         "method_config_sha256": method_hashes,
         "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
+        "runner_bundle": runner_bundle_block,
         "runner_bundle_checksum": bundle_checksum,
+        "input_cases_sha256": input_cases_sha256,
         "corpus_checksum": corpus_checksum,
         "prediction_schema_checksum": schema_checksum,
         "llm": llm_out,
@@ -288,13 +318,31 @@ def validate_freeze_manifest(
             raise FormalConfigError("freeze_manifest prompt_tree_sha256 set but prompt tree missing.")
         _check_hash(prompt_hash, actual_prompt, label="prompt_tree_sha256", require=True)
 
-    # Bundle / corpus / schema: check when expected_* provided OR freeze has value and runtime expected given
-    for freeze_key, expected, label in (
-        ("runner_bundle_checksum", expected_runner_bundle_checksum, "runner_bundle_checksum"),
-        ("corpus_checksum", expected_corpus_checksum, "corpus_checksum"),
-        ("prediction_schema_checksum", expected_prediction_schema_checksum, "prediction_schema_checksum"),
+    # Bundle / corpus / schema: standard runner_bundle block is authoritative for formal runs.
+    runner_block = runner_bundle_block_from_freeze(freeze)
+    if require_complete:
+        if not isinstance(freeze.get("runner_bundle"), dict):
+            raise FormalConfigError("freeze_manifest missing runner_bundle block.")
+        for field in RUNNER_BUNDLE_IDENTITY_FIELDS:
+            if not runner_block.get(field):
+                raise FormalConfigError(f"freeze_manifest missing runner_bundle.{field}.")
+
+    for block_field, expected, label in (
+        ("bundle_checksum", expected_runner_bundle_checksum, "runner_bundle.bundle_checksum"),
+        ("input_cases_sha256", None, "runner_bundle.input_cases_sha256"),
+        ("prediction_schema_sha256", expected_prediction_schema_checksum, "runner_bundle.prediction_schema_sha256"),
+        ("corpus_aggregate_sha256", expected_corpus_checksum, "runner_bundle.corpus_aggregate_sha256"),
     ):
-        freeze_val = freeze.get(freeze_key)
+        freeze_val = runner_block.get(block_field) or freeze.get(
+            {
+                "bundle_checksum": "runner_bundle_checksum",
+                "input_cases_sha256": "input_cases_sha256",
+                "prediction_schema_sha256": "prediction_schema_checksum",
+                "corpus_aggregate_sha256": "corpus_checksum",
+            }[block_field]
+        )
+        if block_field == "input_cases_sha256" and require_complete and not freeze_val:
+            raise FormalConfigError("freeze_manifest missing runner_bundle.input_cases_sha256.")
         if expected is not None:
             _check_optional_pair(freeze_val, expected, label=label, require=require_complete)
         elif require_complete and freeze_val in (None, ""):

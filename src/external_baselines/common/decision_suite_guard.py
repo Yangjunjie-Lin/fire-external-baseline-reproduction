@@ -109,13 +109,15 @@ def validate_formal_method_configs(
     """Load and validate per-method configs from a formal manifest before runtime init."""
     from external_baselines.common.experiment_manifest import (
         build_method_config,
+        get_method_entry,
         load_experiment_manifest,
     )
 
     experiment = load_experiment_manifest(experiment_manifest)
     reports: dict[str, Any] = {}
     for method_id in method_ids:
-        cfg = build_method_config(experiment, method_id)
+        method_entry = get_method_entry(experiment, method_id)
+        cfg = build_method_config(experiment, method_entry)
         cfg["execution_stage"] = "formal"
         cfg["paper_final"] = True
         cfg["strict_decision_parse"] = True

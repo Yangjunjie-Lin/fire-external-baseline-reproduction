@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> None:
         method_paths.setdefault(mid, method_paths.get(mid) or "")
 
     bundle_checksum = None
+    input_cases_sha256 = None
     corpus_checksum = None
     schema_checksum = None
     bundle_path = args.bundle or experiment.get("bundle")
@@ -89,6 +90,9 @@ def main(argv: list[str] | None = None) -> None:
                 "producer_declared_checksum"
             )
             schema_checksum = bundle.get("prediction_schema_sha256")
+            scenarios_path = bundle.get("scenarios_path")
+            if scenarios_path:
+                input_cases_sha256 = sha256_file(scenarios_path)
             corpus_manifest = bundle.get("corpus_manifest") or {}
             if isinstance(corpus_manifest, dict):
                 corpus_checksum = corpus_manifest.get("aggregate_sha256")
@@ -142,6 +146,7 @@ def main(argv: list[str] | None = None) -> None:
         experiment_raw=raw,
         selected_dev_run=args.selected_dev_run,
         bundle_checksum=bundle_checksum,
+        input_cases_sha256=input_cases_sha256,
         corpus_checksum=corpus_checksum,
         schema_checksum=schema_checksum,
         method_config_paths=method_paths,

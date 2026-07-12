@@ -8,8 +8,10 @@ import pytest
 
 from external_baselines.common.experiment_manifest import (
     MAIN_TABLE_METHODS,
+    MethodEntryError,
     build_method_config,
     enabled_methods,
+    get_method_entry,
     load_experiment_manifest,
 )
 
@@ -71,6 +73,81 @@ methods:
     assert cfg["llm"]["model"] == "shared-model"
     assert cfg["llm"]["max_tokens"] == 900
     assert cfg["retrieval"]["top_k"] == 5
+
+
+def test_get_method_entry_returns_matching_entry(tmp_path):
+    exp = tmp_path / "exp.yaml"
+    exp.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+    enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = load_experiment_manifest(exp)
+    entry = get_method_entry(manifest, "direct_llm")
+    assert entry["method_id"] == "direct_llm"
+
+
+def test_get_method_entry_rejects_missing_method(tmp_path):
+    exp = tmp_path / "exp.yaml"
+    exp.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = load_experiment_manifest(exp)
+    with pytest.raises(MethodEntryError, match="does not define method entry"):
+        get_method_entry(manifest, "dense_rag")
+
+
+def test_get_method_entry_rejects_disabled_method_in_formal(tmp_path):
+    exp = tmp_path / "exp.yaml"
+    exp.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: bm25_rag
+    config: configs/methods/bm25_rag.yaml
+    enabled: false
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = load_experiment_manifest(exp)
+    with pytest.raises(MethodEntryError, match="disabled"):
+        get_method_entry(manifest, "bm25_rag", require_enabled=True)
+
+
+def test_build_method_config_rejects_string_method_id(tmp_path):
+    exp = tmp_path / "exp.yaml"
+    exp.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = load_experiment_manifest(exp)
+    with pytest.raises(TypeError, match="method entry mapping"):
+        build_method_config(manifest, "direct_llm")  # type: ignore[arg-type]
+
+
+def test_build_method_config_requires_mapping():
+    with pytest.raises(TypeError, match="method entry mapping"):
+        build_method_config({}, "not-a-mapping")  # type: ignore[arg-type]
 
 
 def test_run_interop_rejects_multi_config():

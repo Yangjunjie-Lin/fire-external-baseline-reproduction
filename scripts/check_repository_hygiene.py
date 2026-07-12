@@ -20,6 +20,13 @@ IGNORE_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__", "node_modules"}
 BLOCKED_EXTENSIONS = {".pt", ".bin", ".safetensors", ".ckpt", ".sqlite", ".db"}
 BUILD_ARTIFACT_PREFIXES = ("dist/", "build/")
 BUILD_ARTIFACT_SUFFIXES = (".whl",)
+LOCAL_PATH_PATTERNS = [
+    re.compile(r"C:\\Users\\", re.I),
+    re.compile(r"/home/", re.I),
+    re.compile(r"AppData\\Local\\Temp", re.I),
+    re.compile(r"pytest-of-", re.I),
+]
+OUTPUTS_ALLOWED = {"outputs/README.md", "outputs/.gitkeep"}
 
 
 def _tracked_paths() -> set[str]:
@@ -55,6 +62,8 @@ def scan() -> dict[str, object]:
         if any(part in IGNORE_DIRS for part in path.parts):
             continue
         rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        if rel.startswith("outputs/") and rel not in OUTPUTS_ALLOWED and rel in tracked:
+            findings.append({"type": "tracked_generated_output", "path": rel})
         if _is_build_artifact(rel) and rel in tracked:
             findings.append({"type": "build_artifact", "path": rel})
         if path.suffix in BLOCKED_EXTENSIONS:
@@ -74,6 +83,11 @@ def scan() -> dict[str, object]:
             for pattern in SECRET_PATTERNS:
                 if pattern.search(text) and ".env.example" not in rel:
                     findings.append({"type": "secret_pattern", "path": rel})
+            if rel.endswith(".json") or rel.endswith(".jsonl"):
+                for pattern in LOCAL_PATH_PATTERNS:
+                    if pattern.search(text):
+                        findings.append({"type": "local_temp_path_in_fixture", "path": rel})
+                        break
 
     # Deduplicate
     seen: set[tuple[str, str]] = set()

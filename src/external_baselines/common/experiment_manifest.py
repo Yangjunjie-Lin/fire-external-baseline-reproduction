@@ -11,7 +11,7 @@ Formal runs use a single experiment manifest that:
 from pathlib import Path
 from typing import Any
 
-from external_baselines.common.io import deep_merge, load_config, read_json, read_yaml
+from external_baselines.common.io import load_config, read_json, read_yaml
 from external_baselines.method_registry import (
     canonicalize_method_id,
     comparison_suite_methods,
@@ -28,6 +28,28 @@ METHOD_SETS = {
     "main_table": MAIN_TABLE_METHODS,
     "comparison_suite": COMPARISON_SUITE_METHODS,
 }
+
+
+class MethodEntryError(ValueError):
+    """Raised when an experiment manifest lacks a usable method entry."""
+
+
+def get_method_entry(
+    manifest: dict[str, Any],
+    method_id: str,
+    *,
+    require_enabled: bool = True,
+) -> dict[str, Any]:
+    """Return the resolved method entry dict for a canonical method_id."""
+    mid = canonicalize_method_id(method_id)
+    for entry in manifest.get("methods") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("method_id") == mid:
+            if require_enabled and not entry.get("enabled", True):
+                raise MethodEntryError(f"Experiment manifest method entry disabled: {mid}")
+            return entry
+    raise MethodEntryError(f"Experiment manifest does not define method entry: {mid}")
 
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)
@@ -100,6 +122,13 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
 
 def build_method_config(manifest: dict[str, Any], method_entry: dict[str, Any]) -> dict[str, Any]:
     """Merge order (later wins): base → shared_model → method_config → manifest paper flags."""
+    if not isinstance(method_entry, dict):
+        raise TypeError(
+            "build_method_config requires a method entry mapping, "
+            f"got {type(method_entry).__name__}"
+        )
+    if not method_entry.get("method_id"):
+        raise TypeError("build_method_config requires method_entry with method_id")
     paths = [manifest["base_config"], manifest["shared_model_config"]]
     if method_entry.get("config"):
         paths.append(method_entry["config"])

@@ -11,6 +11,7 @@ __pycache__/
 outputs/**
 !outputs/.gitkeep
 !outputs/README.md
+outputs/*.json
 outputs/*.jsonl
 outputs/*.csv
 outputs/*.md
