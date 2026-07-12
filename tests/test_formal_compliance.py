@@ -1908,10 +1908,12 @@ def test_hybrid_requires_explicit_real_dense_evidence():
     from external_baselines.common.runtime_evidence import collect_hybrid_runtime_evidence
 
     class DenseRuntime:
+        embedding_backend = _mock_embedding_backend()
         index_manifest = {"actual_embedding_used": True, "smoke_fallback_used": False, "index_checksum": "abc"}
         dense_index = object()
         audit = type("A", (), {"index_load_count": 1})()
         index_built_during_run = False
+        embedding_identity_report = {"ok": True, "errors": []}
 
     class HybridRuntime:
         dense_runtime = DenseRuntime()
@@ -4294,22 +4296,18 @@ def test_full_e2e_uses_real_core_functions(tmp_path, monkeypatch, function_name)
 
 def test_full_e2e_uses_llm_and_embedding_factories(tmp_path, monkeypatch):
     llm_calls = {"n": 0}
-    emb_calls: dict[str, Any | None] = {}
+    emb_calls: list[str] = []
 
     def _llm_factory(method_id, config):
         llm_calls["n"] += 1
         return _offline_heuristic_transport_factory(method_id, config)
 
     def _emb_factory(method_id, config):
-        backend = _offline_embedding_backend_factory(method_id, config)
-        emb_calls[method_id] = backend
-        return backend
+        emb_calls.append(method_id)
+        return _offline_embedding_backend_factory(method_id, config)
 
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
     monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
-    from external_baselines.common.method_runtime import clear_runtime_cache
-
-    clear_runtime_cache()
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
         prediction_dir=fixture["pred_dir"],
@@ -4320,10 +4318,11 @@ def test_full_e2e_uses_llm_and_embedding_factories(tmp_path, monkeypatch):
         embedding_backend_factory=_emb_factory,
     )
     assert llm_calls["n"] == 5
-    assert emb_calls["direct_llm"] is None
-    assert emb_calls["bm25_rag"] is None
-    for mid in ("dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"):
-        assert emb_calls[mid] is not None
+    assert emb_calls == [
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    ]
 
 
 def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
@@ -4509,9 +4508,14 @@ def test_disk_summary_and_receipt_have_non_conflicting_semantics(tmp_path, monke
 
 
 def test_staged_validator_rejects_invalid_prediction_json(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.bundle import load_runner_bundle
     from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
 
     fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    schema_path = Path(bundle["prediction_schema_path"])
+    schema_sha = sha256_file(schema_path)
     pred = fixture["run_root"] / "predictions" / "direct_llm.jsonl"
     pred.write_text("{not json}\n", encoding="utf-8")
     with pytest.raises(FormalSuiteExecutionError, match="invalid_prediction_json"):
@@ -4519,13 +4523,20 @@ def test_staged_validator_rejects_invalid_prediction_json(tmp_path, monkeypatch)
             fixture["run_root"],
             method_ids=list(_passing_formal_method_evidences().keys()),
             expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
         )
 
 
 def test_staged_validator_rejects_suite_summary_cleanup_true(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.bundle import load_runner_bundle
     from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
 
     fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    schema_path = Path(bundle["prediction_schema_path"])
+    schema_sha = sha256_file(schema_path)
     summary_path = fixture["run_root"] / "suite_summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary["formal_compliance"]["transactional_cleanup_complete"] = True
@@ -4535,6 +4546,8 @@ def test_staged_validator_rejects_suite_summary_cleanup_true(tmp_path, monkeypat
             fixture["run_root"],
             method_ids=list(_passing_formal_method_evidences().keys()),
             expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
         )
 
 
@@ -4603,4 +4616,691 @@ def test_injected_embedding_preserves_runtime_evidence(tmp_path, monkeypatch):
     assert index.get("index_loaded") is True
     assert embedding.get("actual_embedding_used") is True
     assert embedding.get("smoke_fallback_used") is False
+    assert embedding.get("identity_match") is True
+
+
+# --- Round-4: embedding identity, cache lifecycle, frozen schema, factory scope, supplemental hashes ---
+
+
+_FAKE_SHA256 = "deadbeef" * 8
+
+
+def _schema_from_fixture(fixture: dict) -> tuple[Path, str]:
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.bundle import load_runner_bundle
+
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    schema_path = Path(bundle["prediction_schema_path"])
+    return schema_path, sha256_file(schema_path)
+
+
+def _mock_embedding_backend(**overrides):
+    defaults = {
+        "backend": "text2vec",
+        "model_name": "fake/bge",
+        "model_version": "v-test",
+        "dimension": 8,
+        "actual_embedding_used": True,
+        "smoke_fallback_used": False,
+    }
+    defaults.update(overrides)
+    return type("MockEmbeddingBackend", (), defaults)()
+
+
+def _dense_method_config(fixture: dict) -> dict[str, Any]:
+    from external_baselines.interop.bundle import load_runner_bundle
+
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    config = _formal_method_configs(str(bundle["corpus_dir"]), dense_index=fixture["dense_idx"])["dense_rag"]
+    config["dense_rag"]["index_path"] = str(fixture["dense_idx"])
+    return config
+
+
+def _matching_embedding_backend():
+    from external_baselines.retrieval.embedding_backends import create_embedding_backend
+    from tests.test_dense_real_index import FakeEmbeddingModel
+
+    return create_embedding_backend(
+        "text2vec",
+        model_name="fake/bge",
+        model_version="v-test",
+        dimension=8,
+        paper_final=True,
+        reject_smoke=True,
+        model=FakeEmbeddingModel(8),
+    )
+
+
+def _wrong_embedding_backend():
+    from external_baselines.retrieval.embedding_backends import create_embedding_backend
+    from tests.test_dense_real_index import FakeEmbeddingModel
+
+    return create_embedding_backend(
+        "text2vec",
+        model_name="another/model",
+        model_version="v1",
+        dimension=16,
+        paper_final=True,
+        reject_smoke=True,
+        model=FakeEmbeddingModel(16),
+    )
+
+
+def _formal_index_manifest():
+    return {
+        "backend": "text2vec",
+        "model_name": "fake/bge",
+        "model_version": "v-test",
+        "dimension": 8,
+    }
+
+
+def test_runtime_embedding_identity_matches_config_and_manifest():
+    from external_baselines.retrieval.embedding_backends import validate_runtime_embedding_identity
+
+    backend = _matching_embedding_backend()
+    report = validate_runtime_embedding_identity(
+        actual_backend=backend,
+        configured_backend="text2vec",
+        configured_model_name="fake/bge",
+        configured_model_version="v-test",
+        configured_dimension=8,
+        index_manifest=_formal_index_manifest(),
+        formal=True,
+    )
+    assert report["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("configured_backend", "another_backend"),
+        ("configured_model_name", "another/model"),
+        ("configured_model_version", "v1"),
+        ("configured_dimension", 16),
+    ],
+)
+def test_runtime_embedding_rejects_identity_mismatch(field, value):
+    from external_baselines.retrieval.embedding_backends import validate_runtime_embedding_identity
+
+    kwargs = {
+        "actual_backend": _wrong_embedding_backend(),
+        "configured_backend": "text2vec",
+        "configured_model_name": "fake/bge",
+        "configured_model_version": "v-test",
+        "configured_dimension": 8,
+        "index_manifest": _formal_index_manifest(),
+        "formal": True,
+    }
+    kwargs[field] = value
+    report = validate_runtime_embedding_identity(**kwargs)
+    assert report["ok"] is False
+    assert report["errors"]
+
+
+def test_runtime_embedding_rejects_wrong_backend():
+    test_runtime_embedding_rejects_identity_mismatch("configured_backend", "another_backend")
+
+
+def test_runtime_embedding_rejects_wrong_model_name():
+    test_runtime_embedding_rejects_identity_mismatch("configured_model_name", "another/model")
+
+
+def test_runtime_embedding_rejects_wrong_model_version():
+    test_runtime_embedding_rejects_identity_mismatch("configured_model_version", "v1")
+
+
+def test_runtime_embedding_rejects_wrong_dimension():
+    test_runtime_embedding_rejects_identity_mismatch("configured_dimension", 16)
+
+
+def test_runtime_embedding_rejects_smoke_backend_in_formal():
+    from external_baselines.retrieval.embedding_backends import (
+        HashEmbeddingBackend,
+        validate_runtime_embedding_identity,
+    )
+
+    backend = HashEmbeddingBackend(dimension=8)
+    report = validate_runtime_embedding_identity(
+        actual_backend=backend,
+        configured_backend="text2vec",
+        configured_model_name="fake/bge",
+        configured_model_version="v-test",
+        configured_dimension=8,
+        index_manifest=_formal_index_manifest(),
+        formal=True,
+    )
+    assert report["ok"] is False
+
+
+def test_runtime_evidence_uses_actual_embedding_backend(tmp_path, monkeypatch):
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    dense = (summary.get("runtime_evidence") or {}).get("dense_rag", {}).get("embedding") or {}
+    actual = dense.get("actual_backend") or {}
+    assert actual.get("model") == "fake/bge"
+    assert actual.get("model_version") == "v-test"
+    assert actual.get("actual_embedding_used") is True
+
+
+def test_runtime_evidence_reports_identity_errors(tmp_path, monkeypatch):
+    from external_baselines.retrieval.embedding_backends import EmbeddingBackendError
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+
+    def _bad_factory(method_id, config):
+        if method_id in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"}:
+            return _wrong_embedding_backend()
+        return None
+
+    with pytest.raises((FormalRunFailed, EmbeddingBackendError, RuntimeError)):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+            llm_transport_factory=_offline_heuristic_transport_factory,
+            embedding_backend_factory=_bad_factory,
+        )
+
+
+def test_dense_hybrid_embedding_identity_matches(tmp_path, monkeypatch):
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    dense = (summary.get("runtime_evidence") or {}).get("dense_rag", {}).get("embedding") or {}
+    hybrid = (summary.get("runtime_evidence") or {}).get("hybrid_rag", {}).get("embedding") or {}
+    assert dense.get("identity_match") is True
+    assert hybrid.get("identity_match") is True
+    assert dense.get("actual_backend") == hybrid.get("actual_backend")
+
+
+def test_runtime_cache_cleared_before_suite(tmp_path, monkeypatch):
+    from external_baselines.common import method_runtime as mr
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    mr._RUNTIME_CACHE[("stale",)] = object()
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    assert mr._RUNTIME_CACHE == {}
+
+
+def test_runtime_cache_cleared_after_success(tmp_path, monkeypatch):
+    from external_baselines.common import method_runtime as mr
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    assert mr._RUNTIME_CACHE == {}
+
+
+def test_runtime_cache_cleared_after_failure(tmp_path, monkeypatch):
+    from external_baselines.common import method_runtime as mr
+    from external_baselines.retrieval.embedding_backends import EmbeddingBackendError
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+
+    def _bad_factory(method_id, config):
+        if method_id == "dense_rag":
+            return _wrong_embedding_backend()
+        return _offline_embedding_backend_factory(method_id, config)
+
+    with pytest.raises((FormalRunFailed, EmbeddingBackendError, RuntimeError)):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+            llm_transport_factory=_offline_heuristic_transport_factory,
+            embedding_backend_factory=_bad_factory,
+        )
+    assert mr._RUNTIME_CACHE == {}
+
+
+def test_second_suite_does_not_reuse_first_suite_runtime(tmp_path, monkeypatch):
+    from external_baselines.retrieval import dense_index as dense_index_mod
+
+    loads = {"n": 0}
+    original = dense_index_mod.load_dense_index
+
+    def _spy(*args, **kwargs):
+        loads["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dense_index_mod, "load_dense_index", _spy)
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    first = loads["n"]
+    run_root2, pred_dir2, dec_dir2 = _formal_run_dirs(tmp_path, name="published2")
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=pred_dir2,
+        decision_dir=dec_dir2,
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        formal_run_root=run_root2,
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    assert loads["n"] > first
+
+
+def test_changed_index_manifest_invalidates_cache(tmp_path):
+    from external_baselines.common.method_runtime import clear_runtime_cache, prepare_dense_runtime
+    from external_baselines.retrieval.dense_index import DenseIndexError
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    config = _dense_method_config(fixture)
+    prepare_dense_runtime(config, embedding_backend=_matching_embedding_backend())
+    manifest_path = fixture["dense_idx"] / "index_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["model_version"] = "v-changed"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    clear_runtime_cache()
+    with pytest.raises(DenseIndexError, match="index_checksum mismatch"):
+        prepare_dense_runtime(config, embedding_backend=_matching_embedding_backend())
+
+
+def test_changed_embedding_backend_invalidates_cache(tmp_path):
+    from external_baselines.common.method_runtime import assert_cached_runtime_compatible, prepare_dense_runtime
+    from external_baselines.retrieval.embedding_backends import EmbeddingBackendError
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    config = _dense_method_config(fixture)
+    runtime = prepare_dense_runtime(config, embedding_backend=_matching_embedding_backend())
+    with pytest.raises(EmbeddingBackendError, match="runtime_embedding_identity_mismatch"):
+        assert_cached_runtime_compatible(
+            runtime,
+            _wrong_embedding_backend(),
+            config,
+            formal=True,
+        )
+
+
+def test_hybrid_rejects_incompatible_cached_dense_backend(tmp_path):
+    from external_baselines.common.method_runtime import prepare_dense_runtime, prepare_hybrid_runtime
+    from external_baselines.interop.bundle import load_runner_bundle
+    from external_baselines.retrieval.embedding_backends import EmbeddingBackendError
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    dense_config = _dense_method_config(fixture)
+    hybrid_config = _formal_method_configs(str(bundle["corpus_dir"]), dense_index=fixture["dense_idx"])["hybrid_rag"]
+    hybrid_config["dense_rag"]["index_path"] = str(fixture["dense_idx"])
+    prepare_dense_runtime(dense_config, embedding_backend=_matching_embedding_backend())
+    with pytest.raises(EmbeddingBackendError, match="runtime_embedding_identity_mismatch"):
+        prepare_hybrid_runtime(hybrid_config, embedding_backend=_wrong_embedding_backend())
+
+
+def test_dense_and_hybrid_can_share_compatible_runtime_within_one_suite(tmp_path):
+    from external_baselines.common.method_runtime import prepare_dense_runtime, prepare_hybrid_runtime
+    from external_baselines.interop.bundle import load_runner_bundle
+    from external_baselines.retrieval import dense_index as dense_index_mod
+
+    loads = {"n": 0}
+    original = dense_index_mod.load_dense_index
+
+    def _spy(*args, **kwargs):
+        loads["n"] += 1
+        return original(*args, **kwargs)
+
+    dense_index_mod.load_dense_index = _spy
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    dense_config = _dense_method_config(fixture)
+    hybrid_config = _formal_method_configs(str(bundle["corpus_dir"]), dense_index=fixture["dense_idx"])["hybrid_rag"]
+    hybrid_config["dense_rag"]["index_path"] = str(fixture["dense_idx"])
+    backend = _matching_embedding_backend()
+    prepare_dense_runtime(dense_config, embedding_backend=backend)
+    first = loads["n"]
+    prepare_hybrid_runtime(hybrid_config, embedding_backend=backend)
+    assert loads["n"] == first
+    dense_index_mod.load_dense_index = original
+
+
+def test_staged_validator_uses_runner_bundle_schema(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    result = validate_staged_formal_run_root(
+        fixture["run_root"],
+        method_ids=list(_passing_formal_method_evidences().keys()),
+        expected_case_ids=["FBPUB_000001"],
+        prediction_schema_path=schema_path,
+        expected_prediction_schema_sha256=schema_sha,
+    )
+    assert result["ok"] is True
+
+
+def test_staged_validator_rejects_schema_sha_mismatch(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, _schema_sha = _schema_from_fixture(fixture)
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="staged_prediction_schema_sha256_mismatch"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=_FAKE_SHA256,
+        )
+
+
+def test_staged_validator_rejects_missing_external_schema(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="staged_prediction_schema_missing"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=tmp_path / "missing_schema.json",
+            expected_prediction_schema_sha256="abc",
+        )
+
+
+def test_staged_validator_rejects_record_valid_only_under_local_schema(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.schema import load_schema
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    strict_schema_path = tmp_path / "strict_schema.json"
+    schema = load_schema(Path(_schema_from_fixture(fixture)[0]))
+    schema.setdefault("properties", {})["frozen_suite_token"] = {"type": "string"}
+    schema.setdefault("required", [])
+    if "frozen_suite_token" not in schema["required"]:
+        schema["required"] = list(schema["required"]) + ["frozen_suite_token"]
+    strict_schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    strict_sha = sha256_file(strict_schema_path)
+    with pytest.raises(FormalSuiteExecutionError, match="invalid_interop_record"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=strict_schema_path,
+            expected_prediction_schema_sha256=strict_sha,
+        )
+
+
+def test_staged_validator_passes_valid_frozen_schema(tmp_path, monkeypatch):
+    test_staged_validator_uses_runner_bundle_schema(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "method_id",
+    ["dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"],
+)
+def test_embedding_factory_called_for_vector_methods(method_id):
+    from scripts.run_decision_comparison_suite import EMBEDDING_METHODS
+
+    assert method_id in EMBEDDING_METHODS
+
+
+@pytest.mark.parametrize("method_id", ["direct_llm", "bm25_rag"])
+def test_embedding_factory_not_called_for_non_vector_methods(method_id):
+    from scripts.run_decision_comparison_suite import EMBEDDING_METHODS
+
+    assert method_id not in EMBEDDING_METHODS
+
+
+def test_embedding_factory_called_for_dense():
+    test_embedding_factory_called_for_vector_methods("dense_rag")
+
+
+def test_embedding_factory_called_for_hybrid():
+    test_embedding_factory_called_for_vector_methods("hybrid_rag")
+
+
+def test_embedding_factory_called_for_ekell():
+    test_embedding_factory_called_for_vector_methods("ekell_style_controlled_shared_llm")
+
+
+def test_embedding_factory_not_called_for_direct_llm():
+    test_embedding_factory_not_called_for_non_vector_methods("direct_llm")
+
+
+def test_embedding_factory_not_called_for_bm25():
+    test_embedding_factory_not_called_for_non_vector_methods("bm25_rag")
+
+
+def test_embedding_factory_total_call_count_is_three(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def _factory(mid, config):
+        calls.append(mid)
+        return _offline_embedding_backend_factory(mid, config)
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_factory,
+    )
+    assert calls == ["dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"]
+
+
+def test_run_manifest_hashes_decisions_jsonl(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    manifest = json.loads((fixture["run_root"] / "run_manifest.json").read_text(encoding="utf-8"))
+    rel = "decisions/direct_llm/decisions.jsonl"
+    assert rel in (manifest.get("artifact_hashes") or {})
+
+
+def test_run_manifest_hashes_responses_jsonl(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    manifest = json.loads((fixture["run_root"] / "run_manifest.json").read_text(encoding="utf-8"))
+    rel = "decisions/direct_llm/responses.jsonl"
+    assert rel in (manifest.get("artifact_hashes") or {})
+
+
+def test_run_manifest_hashes_unmapped_taxonomy_jsonl(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    manifest = json.loads((fixture["run_root"] / "run_manifest.json").read_text(encoding="utf-8"))
+    rel = "decisions/direct_llm/unmapped_taxonomy.jsonl"
+    assert rel in (manifest.get("artifact_hashes") or {})
+
+
+def test_staged_validator_rejects_decisions_jsonl_hash_mismatch(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    manifest_path = fixture["run_root"] / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_hashes"]["decisions/direct_llm/decisions.jsonl"] = _FAKE_SHA256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="artifact_sha256_mismatch"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_staged_validator_rejects_responses_jsonl_hash_mismatch(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    manifest_path = fixture["run_root"] / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_hashes"]["decisions/direct_llm/responses.jsonl"] = _FAKE_SHA256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="artifact_sha256_mismatch"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_staged_validator_rejects_unmapped_taxonomy_hash_mismatch(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    manifest_path = fixture["run_root"] / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_hashes"]["decisions/direct_llm/unmapped_taxonomy.jsonl"] = _FAKE_SHA256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="artifact_sha256_mismatch"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_staged_validator_rejects_nonempty_unmapped_taxonomy(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    unmapped = fixture["run_root"] / "decisions" / "direct_llm" / "unmapped_taxonomy.jsonl"
+    unmapped.write_text(
+        json.dumps(
+            {
+                "case_id": "FBPUB_000001",
+                "method_id": "direct_llm",
+                "field": "risk_signals",
+                "raw_value": "bad",
+                "normalized_value": None,
+                "reason": "not_in_firebench_taxonomy",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="nonempty_unmapped_taxonomy"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_staged_validator_rejects_wrong_method_in_decisions_jsonl(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    decisions = fixture["run_root"] / "decisions" / "direct_llm" / "decisions.jsonl"
+    decisions.write_text(
+        json.dumps(
+            {
+                "case_id": "FBPUB_000001",
+                "method_id": "bm25_rag",
+                "decision": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="wrong_method_in_decisions"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_staged_validator_rejects_missing_supplemental_artifact(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    responses = fixture["run_root"] / "decisions" / "direct_llm" / "responses.jsonl"
+    responses.unlink()
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="missing_supplemental"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
+
+
+def test_manifest_rejects_path_traversal_artifact(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    manifest_path = fixture["run_root"] / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_hashes"]["../outside.jsonl"] = _FAKE_SHA256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="manifest_rejects_path_traversal_artifact"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
 

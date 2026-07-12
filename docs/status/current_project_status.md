@@ -23,7 +23,7 @@ Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench
 | DEV | real or experimental config | explicit enable only | allowed (subset debug) | recommended persisted dirs | recommended | false |
 | Formal | forbidden | forbidden | **forbidden** | **load-only** persisted dirs | required (non-`.example`, frozen) | runtime evidence + transactional publish |
 
-Formal enforcement (decision suite): immutable suite summary does not pre-declare backup cleanup success (`transactional_cleanup_complete: null`); publish receipt is the cleanup authority; staged validator reparses predictions and verifies manifest hashes before rename; `embedding_backend_factory` provides test-only embedding injection alongside LLM transport; post-commit warning failures are visible via stderr/return summary but cannot modify the committed run.
+Formal enforcement (decision suite): immutable suite summary does not pre-declare backup cleanup success (`transactional_cleanup_complete: null`); publish receipt is the cleanup authority; staged validator reparses predictions against the frozen Runner Bundle schema and schema SHA and verifies manifest hashes (including decisions/responses/unmapped-taxonomy artifacts) before rename; Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata; runtime caches are scoped to one comparison-suite invocation; `embedding_backend_factory` is invoked only for Dense, Hybrid, and E-KELL; post-commit warning failures are visible via stderr/return summary but cannot modify the committed run.
 
 Formal pre-checks (read-only against main project):
 

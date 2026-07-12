@@ -7,10 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.schema import canonicalize_method_id
 from external_baselines.retrieval.embedding_backends import (
+    EmbeddingBackendError,
     create_embedding_backend,
+    embedding_backend_identity,
     resolve_dimension,
+    validate_runtime_embedding_identity,
 )
 
 
@@ -38,6 +42,7 @@ class DenseRuntime:
     index_manifest: dict[str, Any]
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
     index_built_during_run: bool = False
+    embedding_identity_report: dict[str, Any] = field(default_factory=dict)
 
     def close(self) -> None:
         return None
@@ -63,25 +68,89 @@ class EKELLRuntime:
     index_manifest: dict[str, Any]
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
     index_built_during_run: bool = False
+    embedding_identity_report: dict[str, Any] = field(default_factory=dict)
 
     def close(self) -> None:
         return None
 
 
-# Shared cache keyed by (kind, path, model_version) within one process/run.
-_RUNTIME_CACHE: dict[tuple[str, str, str], Any] = {}
+# Shared cache scoped to one comparison-suite invocation.
+_RUNTIME_CACHE: dict[tuple[str, ...], Any] = {}
 
 
 def clear_runtime_cache() -> None:
     _RUNTIME_CACHE.clear()
 
 
-def _cache_get(kind: str, path: str, model_version: str) -> Any | None:
-    return _RUNTIME_CACHE.get((kind, str(path), str(model_version)))
+def _index_manifest_checksum(index_path: str | Path) -> str:
+    manifest_path = Path(index_path) / "index_manifest.json"
+    if manifest_path.is_file():
+        return sha256_file(manifest_path)
+    return ""
 
 
-def _cache_set(kind: str, path: str, model_version: str, value: Any) -> None:
-    _RUNTIME_CACHE[(kind, str(path), str(model_version))] = value
+def _runtime_cache_key(
+    kind: str,
+    *,
+    index_path: str,
+    model_name: str,
+    model_version: str,
+    dimension: int,
+    corpus_checksum: str | None,
+    index_manifest_checksum: str,
+) -> tuple[str, ...]:
+    return (
+        kind,
+        str(index_path),
+        str(model_name),
+        str(model_version),
+        str(int(dimension or 0)),
+        str(corpus_checksum or ""),
+        str(index_manifest_checksum or ""),
+    )
+
+
+def _cache_get(key: tuple[str, ...]) -> Any | None:
+    return _RUNTIME_CACHE.get(key)
+
+
+def _cache_set(key: tuple[str, ...], value: Any) -> None:
+    _RUNTIME_CACHE[key] = value
+
+
+def assert_cached_runtime_compatible(
+    cached_runtime: Any,
+    requested_backend: Any | None,
+    requested_config: dict[str, Any],
+    *,
+    formal: bool,
+    config_section: str = "dense_rag",
+) -> None:
+    section = requested_config.get(config_section) or {}
+    configured_backend = str(section.get("backend") or "")
+    configured_model_name = str(section.get("model_name") or "")
+    configured_model_version = str(section.get("model_version") or "unspecified")
+    configured_dimension = resolve_dimension(section, 64)
+    manifest = dict(getattr(cached_runtime, "index_manifest", None) or {})
+    cached_backend = getattr(cached_runtime, "embedding_backend", None)
+    if requested_backend is not None and cached_backend is not None:
+        if embedding_backend_identity(cached_backend) != embedding_backend_identity(requested_backend):
+            raise EmbeddingBackendError(
+                "runtime_embedding_identity_mismatch: injected backend differs from cached runtime backend"
+            )
+    if cached_backend is None:
+        return
+    report = validate_runtime_embedding_identity(
+        actual_backend=cached_backend,
+        configured_backend=configured_backend,
+        configured_model_name=configured_model_name,
+        configured_model_version=configured_model_version,
+        configured_dimension=configured_dimension,
+        index_manifest=manifest,
+        formal=formal,
+    )
+    if formal and not report.get("ok"):
+        raise EmbeddingBackendError("; ".join(report.get("errors") or ["runtime_embedding_identity_mismatch"]))
 
 
 def prepare_dense_runtime(
@@ -110,8 +179,24 @@ def prepare_dense_runtime(
     corpus_checksum = config.get("corpus_checksum") or (config.get("paths") or {}).get("corpus_checksum")
 
     cache_key_path = str(cache_path)
-    cached = _cache_get("dense", cache_key_path, model_version)
+    manifest_checksum = _index_manifest_checksum(cache_key_path)
+    cache_key = _runtime_cache_key(
+        "dense",
+        index_path=cache_key_path,
+        model_name=model_name,
+        model_version=model_version,
+        dimension=dim,
+        corpus_checksum=str(corpus_checksum or ""),
+        index_manifest_checksum=manifest_checksum,
+    )
+    cached = _cache_get(cache_key)
     if cached is not None:
+        assert_cached_runtime_compatible(
+            cached,
+            embedding_backend,
+            config,
+            formal=paper_final or reject_smoke,
+        )
         cached.audit.embedding_model_load_count = getattr(
             cached.embedding_backend, "_load_count", cached.audit.embedding_model_load_count
         )
@@ -185,6 +270,17 @@ def prepare_dense_runtime(
 
     if emb.dimension in (0, None) and index.dim:
         emb.dimension = int(index.dim)
+    identity_report = validate_runtime_embedding_identity(
+        actual_backend=emb,
+        configured_backend=backend,
+        configured_model_name=model_name,
+        configured_model_version=model_version,
+        configured_dimension=dim,
+        index_manifest=manifest,
+        formal=paper_final or reject_smoke,
+    )
+    if (paper_final or reject_smoke) and not identity_report.get("ok"):
+        raise EmbeddingBackendError("; ".join(identity_report.get("errors") or ["runtime_embedding_identity_mismatch"]))
     retriever = DenseRetriever(index, embedding_backend=emb)
     runtime = DenseRuntime(
         embedding_backend=emb,
@@ -196,8 +292,9 @@ def prepare_dense_runtime(
             index_load_count=index_load_count,
         ),
         index_built_during_run=index_built_during_run,
+        embedding_identity_report=identity_report,
     )
-    _cache_set("dense", cache_key_path, model_version, runtime)
+    _cache_set(cache_key, runtime)
     return runtime
 
 
@@ -265,8 +362,25 @@ def prepare_ekell_runtime(
     dimension = int(vector_cfg.get("dimension", vector_cfg.get("dim", 64)) or 64)
 
     if index_path:
-        cached = _cache_get("ekell", str(index_path), model_version)
+        manifest_checksum = _index_manifest_checksum(str(index_path))
+        cache_key = _runtime_cache_key(
+            "ekell",
+            index_path=str(index_path),
+            model_name=model_name,
+            model_version=model_version,
+            dimension=dimension,
+            corpus_checksum=str(config.get("corpus_checksum") or (config.get("paths") or {}).get("corpus_checksum") or ""),
+            index_manifest_checksum=manifest_checksum,
+        )
+        cached = _cache_get(cache_key)
         if cached is not None:
+            assert_cached_runtime_compatible(
+                cached,
+                embedding_backend,
+                config,
+                formal=paper_final or reject_smoke,
+                config_section="ekell_vector",
+            )
             return cached
 
     kg = load_kg(corpus_dir)
@@ -320,6 +434,20 @@ def prepare_ekell_runtime(
         if index_dir is not None:
             manifest = index.save_directory(index_dir)
 
+    if emb.dimension in (0, None) and manifest.get("dimension"):
+        emb.dimension = int(manifest["dimension"])
+    identity_report = validate_runtime_embedding_identity(
+        actual_backend=emb,
+        configured_backend=backend_name,
+        configured_model_name=model_name,
+        configured_model_version=model_version,
+        configured_dimension=dimension,
+        index_manifest=manifest,
+        formal=paper_final or reject_smoke,
+    )
+    if (paper_final or reject_smoke) and not identity_report.get("ok"):
+        raise EmbeddingBackendError("; ".join(identity_report.get("errors") or ["runtime_embedding_identity_mismatch"]))
+
     runtime = EKELLRuntime(
         kg=kg,
         embedding_backend=emb,
@@ -331,9 +459,10 @@ def prepare_ekell_runtime(
             index_load_count=index_load_count,
         ),
         index_built_during_run=index_built_during_run,
+        embedding_identity_report=identity_report,
     )
     if index_path:
-        _cache_set("ekell", str(index_path), model_version, runtime)
+        _cache_set(cache_key, runtime)
     return runtime
 
 

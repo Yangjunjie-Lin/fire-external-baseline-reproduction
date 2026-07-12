@@ -188,6 +188,10 @@ outputs/formal/
 
 - Final suite summary and run manifest are staged before commit; the committed run root is never rewritten after rename.
 - Immutable suite summary records commit success but does not pre-declare backup cleanup success; actual cleanup status is in `publish_receipt.json`.
-- Staged validation reparses predictions and verifies exact case IDs, method IDs, schema, summaries, and all run-manifest hashes.
+- Staged validation reparses predictions against the frozen Runner Bundle prediction schema and schema SHA; verifies exact case IDs, method IDs, summaries, supplemental decision artifacts, and all run-manifest hashes.
+- Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata.
+- Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
+- Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL.
+- Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
 - Offline Formal E2E injects only LLM transport and embedding-compute boundaries.
 - Post-commit warning failures are printed and returned, but never mutate or invalidate the committed run.

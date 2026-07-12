@@ -226,7 +226,11 @@ python scripts/validate_formal_config.py \
 - Post-commit cleanup or receipt failures are non-destructive warnings; committed runs are never rolled back.
 - Immutable `suite_summary.json` records staged compliance and atomic publication success but does **not** pre-declare backup cleanup outcome (`transactional_cleanup_complete: null`). Actual cleanup status lives in external `publish_receipt.json`.
 - Returned Python summary may include `transactional_publish_runtime` and `post_commit_warnings` without rewriting the committed run root.
-- Staged-package validation reparses every prediction JSONL, checks exact case/method identity, validates summaries, and recomputes all run-manifest hashes before rename.
+- Staged-package validation reparses every prediction JSONL against the frozen Runner Bundle prediction schema and schema SHA, checks exact case/method identity, validates summaries and supplemental decision artifacts, and recomputes all run-manifest hashes before rename.
+- Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata.
+- Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
+- Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL (`embedding_backend_factory`); Direct LLM and BM25 never request an embedding backend.
+- Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
 - Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only external LLM transport and embedding-compute boundaries via `embedding_backend_factory`.
 - New freeze manifests use explicit `runner_bundle` identity fields; legacy `runner_bundle_checksum` is opt-in via `--include-legacy-compat-fields`.
 - Generated files under `outputs/` are never tracked.

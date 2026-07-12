@@ -182,7 +182,11 @@ Requires:
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (external control root + copy under `diagnostics/` in staged run root; includes E-KELL prompt files)
-- **transactional** publish: staged package validation (reparsed predictions + manifest hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
+- **transactional** publish: staged package validation (reparsed predictions against frozen Runner Bundle schema + supplemental artifact hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
+- Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata
+- runtime caches are scoped to one comparison-suite invocation and cannot leak across runs
+- embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
+- run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts
 - offline Formal E2E injects only LLM transport and embedding-compute boundaries
 - producer-declared checksum and consumer-computed hash are frozen and validated separately (legacy ambiguous `bundle_checksum` rejected in formal)
 - output under `outputs/interop/` (or formal directory)

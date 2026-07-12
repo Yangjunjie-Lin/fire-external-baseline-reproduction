@@ -12,6 +12,7 @@ from external_baselines.common.generation_identity import (
     extract_generation_identity,
     validate_runtime_generation_identity,
 )
+from external_baselines.retrieval.embedding_backends import embedding_backend_identity
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", "mock", "fake", ""})
 SMOKE_MODEL_TOKENS = ("heuristic", "smoke", "fixture", "mock", "fake")
@@ -73,6 +74,7 @@ class RuntimeEvidence:
     dense_dependency_backend: str | None = None
     dense_dependency_actual_embedding_used: bool | None = None
     dense_dependency_smoke_fallback_used: bool | None = None
+    embedding_identity_report: dict[str, Any] | None = None
     rrf_k: float | None = None
     candidate_pool: int | None = None
 
@@ -155,15 +157,37 @@ def collect_dense_runtime_evidence(
         configured=configured_path,
         resolved=resolved_path,
     )
-    evidence.embedding_backend = str(manifest.get("backend") or dense_cfg.get("backend") or "")
-    evidence.embedding_model = str(manifest.get("model_name") or dense_cfg.get("model_name") or "")
-    evidence.embedding_model_version = str(
-        manifest.get("model_version") or dense_cfg.get("model_version") or ""
-    )
-    if "actual_embedding_used" in manifest:
-        evidence.actual_embedding_used = manifest["actual_embedding_used"] is True
-    if "smoke_fallback_used" in manifest:
-        evidence.smoke_fallback_used = manifest["smoke_fallback_used"] is True
+    identity_report = dict(getattr(runtime, "embedding_identity_report", None) or {})
+    actual_backend = getattr(runtime, "embedding_backend", None)
+    actual_identity = embedding_backend_identity(actual_backend) if actual_backend is not None else {}
+    configured_identity = {
+        "backend": str(dense_cfg.get("backend") or ""),
+        "model_name": str(dense_cfg.get("model_name") or ""),
+        "model_version": str(dense_cfg.get("model_version") or ""),
+        "dimension": int(dense_cfg.get("dimension", dense_cfg.get("dim", 0)) or 0),
+    }
+    manifest_identity = {
+        "backend": str(manifest.get("backend") or ""),
+        "model_name": str(manifest.get("model_name") or ""),
+        "model_version": str(manifest.get("model_version") or ""),
+        "dimension": int(manifest.get("dimension") or 0),
+    }
+    evidence.embedding_backend = str(actual_identity.get("backend") or "")
+    evidence.embedding_model = str(actual_identity.get("model_name") or "")
+    evidence.embedding_model_version = str(actual_identity.get("model_version") or "")
+    if actual_identity.get("actual_embedding_used") is not None:
+        evidence.actual_embedding_used = actual_identity["actual_embedding_used"] is True
+    if actual_identity.get("smoke_fallback_used") is not None:
+        evidence.smoke_fallback_used = actual_identity["smoke_fallback_used"] is True
+    evidence.embedding_identity_report = {
+        "actual_backend": actual_identity,
+        "index_manifest": manifest_identity,
+        "configured": configured_identity,
+        "identity_match": bool(identity_report.get("ok")),
+        "identity_errors": list(identity_report.get("errors") or []),
+    }
+    if identity_report.get("errors"):
+        evidence.errors.extend(list(identity_report["errors"]))
     evidence.index_type = str(manifest.get("index_type") or "dense_evidence_index")
     evidence.configured_index_path = configured_text
     evidence.resolved_index_path = resolved_text
@@ -225,13 +249,37 @@ def collect_ekell_runtime_evidence(
         configured=configured_path,
         resolved=resolved_path,
     )
-    evidence.embedding_backend = str(manifest.get("backend") or "")
-    evidence.embedding_model = str(manifest.get("model_name") or manifest.get("embedding_model") or "")
-    evidence.embedding_model_version = str(manifest.get("model_version") or "")
-    if "actual_embedding_used" in manifest:
-        evidence.actual_embedding_used = manifest["actual_embedding_used"] is True
-    if "smoke_fallback_used" in manifest:
-        evidence.smoke_fallback_used = manifest["smoke_fallback_used"] is True
+    identity_report = dict(getattr(runtime, "embedding_identity_report", None) or {})
+    actual_backend = getattr(runtime, "embedding_backend", None)
+    actual_identity = embedding_backend_identity(actual_backend) if actual_backend is not None else {}
+    configured_identity = {
+        "backend": str(vector_cfg.get("backend") or ""),
+        "model_name": str(vector_cfg.get("model_name") or ""),
+        "model_version": str(vector_cfg.get("model_version") or ""),
+        "dimension": int(vector_cfg.get("dimension", vector_cfg.get("dim", 0)) or 0),
+    }
+    manifest_identity = {
+        "backend": str(manifest.get("backend") or ""),
+        "model_name": str(manifest.get("model_name") or manifest.get("embedding_model") or ""),
+        "model_version": str(manifest.get("model_version") or ""),
+        "dimension": int(manifest.get("dimension") or 0),
+    }
+    evidence.embedding_backend = str(actual_identity.get("backend") or "")
+    evidence.embedding_model = str(actual_identity.get("model_name") or "")
+    evidence.embedding_model_version = str(actual_identity.get("model_version") or "")
+    if actual_identity.get("actual_embedding_used") is not None:
+        evidence.actual_embedding_used = actual_identity["actual_embedding_used"] is True
+    if actual_identity.get("smoke_fallback_used") is not None:
+        evidence.smoke_fallback_used = actual_identity["smoke_fallback_used"] is True
+    evidence.embedding_identity_report = {
+        "actual_backend": actual_identity,
+        "index_manifest": manifest_identity,
+        "configured": configured_identity,
+        "identity_match": bool(identity_report.get("ok")),
+        "identity_errors": list(identity_report.get("errors") or []),
+    }
+    if identity_report.get("errors"):
+        evidence.errors.extend(list(identity_report["errors"]))
     evidence.index_type = str(manifest.get("index_type") or "ekell_kg_vector_index")
     evidence.configured_index_path = configured_text
     evidence.resolved_index_path = resolved_text
@@ -448,8 +496,37 @@ def evidence_to_summary_sections(evidence: RuntimeEvidence) -> dict[str, Any]:
         "initialized": evidence.llm_initialized,
     }
     embedding: dict[str, Any] | None = None
-    if evidence.embedding_backend or evidence.embedding_model:
+    if (
+        evidence.embedding_backend
+        or evidence.embedding_model
+        or evidence.embedding_identity_report
+    ):
+        report = dict(evidence.embedding_identity_report or {})
+        actual_backend = dict(report.get("actual_backend") or {})
+        if not actual_backend and (evidence.embedding_backend or evidence.embedding_model):
+            actual_backend = {
+                "backend": evidence.embedding_backend,
+                "model": evidence.embedding_model,
+                "model_version": evidence.embedding_model_version,
+                "dimension": 0,
+                "actual_embedding_used": evidence.actual_embedding_used,
+                "smoke_fallback_used": evidence.smoke_fallback_used,
+            }
+        elif actual_backend:
+            actual_backend = {
+                "backend": actual_backend.get("backend"),
+                "model": actual_backend.get("model_name"),
+                "model_version": actual_backend.get("model_version"),
+                "dimension": actual_backend.get("dimension"),
+                "actual_embedding_used": actual_backend.get("actual_embedding_used"),
+                "smoke_fallback_used": actual_backend.get("smoke_fallback_used"),
+            }
         embedding = {
+            "actual_backend": actual_backend,
+            "index_manifest": report.get("index_manifest") or {},
+            "configured": report.get("configured") or {},
+            "identity_match": report.get("identity_match"),
+            "identity_errors": list(report.get("identity_errors") or []),
             "backend": evidence.embedding_backend,
             "model": evidence.embedding_model,
             "model_version": evidence.embedding_model_version,

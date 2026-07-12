@@ -221,3 +221,122 @@ def validate_embedding_backend(
 
 def resolve_dimension(cfg: dict[str, Any], default: int = 64) -> int:
     return int(cfg.get("dimension", cfg.get("dim", default)))
+
+
+def _normalize_backend_name(value: str) -> str:
+    return str(value or "").strip().casefold().replace("-", "_")
+
+
+def embedding_backend_identity(backend: Any) -> dict[str, Any]:
+    return {
+        "backend": str(getattr(backend, "backend", "") or ""),
+        "model_name": str(getattr(backend, "model_name", "") or ""),
+        "model_version": str(getattr(backend, "model_version", "") or ""),
+        "dimension": int(getattr(backend, "dimension", 0) or 0),
+        "actual_embedding_used": getattr(
+            backend,
+            "actual_embedding_used",
+            None,
+        ),
+        "smoke_fallback_used": getattr(
+            backend,
+            "smoke_fallback_used",
+            None,
+        ),
+    }
+
+
+def _manifest_embedding_fields(index_manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "backend": str(index_manifest.get("backend") or ""),
+        "model_name": str(
+            index_manifest.get("model_name") or index_manifest.get("embedding_model") or ""
+        ),
+        "model_version": str(index_manifest.get("model_version") or ""),
+        "dimension": int(index_manifest.get("dimension") or 0),
+    }
+
+
+def validate_runtime_embedding_identity(
+    *,
+    actual_backend: Any,
+    configured_backend: str,
+    configured_model_name: str,
+    configured_model_version: str,
+    configured_dimension: int,
+    index_manifest: dict[str, Any],
+    formal: bool,
+) -> dict[str, Any]:
+    actual = embedding_backend_identity(actual_backend)
+    configured = {
+        "backend": str(configured_backend or ""),
+        "model_name": str(configured_model_name or ""),
+        "model_version": str(configured_model_version or ""),
+        "dimension": int(configured_dimension or 0),
+    }
+    manifest = _manifest_embedding_fields(index_manifest)
+    checks = {
+        "backend_match": _normalize_backend_name(actual["backend"])
+        == _normalize_backend_name(configured["backend"])
+        == _normalize_backend_name(manifest["backend"]),
+        "model_name_match": actual["model_name"].strip() == configured["model_name"].strip()
+        == manifest["model_name"].strip(),
+        "model_version_match": actual["model_version"].strip()
+        == configured["model_version"].strip()
+        == manifest["model_version"].strip(),
+        "dimension_match": actual["dimension"] == configured["dimension"] == manifest["dimension"],
+        "actual_embedding_used": actual["actual_embedding_used"] is True,
+        "smoke_fallback_forbidden": actual["smoke_fallback_used"] is False,
+    }
+    errors: list[str] = []
+    if formal:
+        if not checks["backend_match"]:
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"backend configured={configured['backend']!r} actual={actual['backend']!r} "
+                f"index={manifest['backend']!r}"
+            )
+        if actual["model_name"].strip() != configured["model_name"].strip():
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"model_name configured={configured['model_name']!r} actual={actual['model_name']!r}"
+            )
+        if manifest["model_name"].strip() and actual["model_name"].strip() != manifest["model_name"].strip():
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"model_name actual={actual['model_name']!r} index={manifest['model_name']!r}"
+            )
+        if actual["model_version"].strip() != configured["model_version"].strip():
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"model_version configured={configured['model_version']!r} "
+                f"actual={actual['model_version']!r}"
+            )
+        if manifest["model_version"].strip() and actual["model_version"].strip() != manifest["model_version"].strip():
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"model_version actual={actual['model_version']!r} index={manifest['model_version']!r}"
+            )
+        if actual["dimension"] != configured["dimension"]:
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"dimension configured={configured['dimension']} actual={actual['dimension']}"
+            )
+        if manifest["dimension"] and actual["dimension"] != manifest["dimension"]:
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"dimension actual={actual['dimension']} index={manifest['dimension']}"
+            )
+        if actual["actual_embedding_used"] is not True:
+            errors.append("runtime_embedding_identity_mismatch: actual_embedding_used must be true")
+        if actual["smoke_fallback_used"] is not False:
+            errors.append("runtime_embedding_identity_mismatch: smoke_fallback_used must be false")
+    ok = not errors if formal else True
+    return {
+        "ok": ok,
+        "actual": actual,
+        "configured": configured,
+        "index_manifest": manifest,
+        "checks": checks,
+        "errors": errors,
+    }
