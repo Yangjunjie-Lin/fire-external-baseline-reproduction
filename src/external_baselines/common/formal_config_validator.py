@@ -230,6 +230,21 @@ def validate_dense_config_for_real_run(
         path = _resolve_repo_path(str(index_path))
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
+        if validation_stage == "formal":
+            from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
+
+            try:
+                validate_dense_index_directory(
+                    path,
+                    load_embeddings=False,
+                    expected_model_name=str(dense.get("model_name") or ""),
+                    expected_model_version=str(dense.get("model_version") or ""),
+                    expected_backend=backend,
+                    expected_dimension=int(dim) if dim is not None else None,
+                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
+                )
+            except DenseIndexError as exc:
+                raise FormalConfigError(str(exc)) from exc
 
 
 def validate_hybrid_config_for_real_run(
@@ -321,8 +336,29 @@ def validate_ekell_vector_for_formal(
             raise FormalConfigError(f"Formal E-KELL requires ekell_vector.{field} (non-placeholder).")
     _validate_positive_dimension(vector.get("dimension"), allow_placeholders=allow_placeholders)
     index_path = vector.get("index_path")
-    if index_path and not allow_placeholders and _is_placeholder(index_path):
-        raise FormalConfigError("Formal E-KELL rejects placeholder ekell_vector.index_path.")
+    if not index_path:
+        if not allow_placeholders:
+            raise FormalConfigError("Formal E-KELL requires a persisted directory index_path.")
+    elif _is_placeholder(index_path) and not allow_placeholders:
+        raise FormalConfigError("Formal E-KELL requires a persisted directory index_path.")
+    if not allow_placeholders and index_path and not _is_placeholder(index_path):
+        path = _resolve_repo_path(str(index_path))
+        if not path.exists():
+            raise FormalConfigError(f"Formal E-KELL index_path does not exist: {index_path}")
+        from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
+
+        try:
+            VectorIndex.validate_directory(
+                path,
+                load_embeddings=False,
+                expected_backend=backend,
+                expected_model_name=str(vector.get("model_name") or ""),
+                expected_model_version=str(vector.get("model_version") or ""),
+                expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                require_real_embedding=True,
+            )
+        except VectorIndexError as exc:
+            raise FormalConfigError(str(exc)) from exc
 
 
 def validate_paper_fidelity_method_config(

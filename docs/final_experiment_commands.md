@@ -113,7 +113,7 @@ python scripts/run_interop_baselines.py \
   --manifest outputs/interop/comparison_suite_v1/run_manifest.json
 ```
 
-Formal stage forbids `--limit`, `--allow-partial`, and `--override-readiness-lock`.
+Formal stage forbids `--limit`, `--allow-partial`, and `--override-readiness-lock`. The decision comparison suite additionally requires persisted directory indexes (`index_manifest.json`, `documents.jsonl`, `embeddings.npy`) for Dense and E-KELL, unified preflight of all five methods before any LLM initialization, and derives `formal_compliance.formal_result` from runtime evidence rather than stage labels.
 
 ## B. Main table only (3 methods)
 

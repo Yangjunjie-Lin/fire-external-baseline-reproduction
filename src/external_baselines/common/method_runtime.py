@@ -37,6 +37,7 @@ class DenseRuntime:
     retriever: Any
     index_manifest: dict[str, Any]
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
+    index_built_during_run: bool = False
 
     def close(self) -> None:
         return None
@@ -61,6 +62,7 @@ class EKELLRuntime:
     vector_retriever: Any
     index_manifest: dict[str, Any]
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
+    index_built_during_run: bool = False
 
     def close(self) -> None:
         return None
@@ -122,6 +124,7 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
     )
 
     index_dir = Path(cache_path)
+    index_built_during_run = False
     if index_dir.is_dir() and (index_dir / "index_manifest.json").is_file():
         payload = load_dense_index(
             index_dir,
@@ -146,30 +149,14 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
         index_load_count = 1
         manifest = dict(payload["manifest"])
     elif paper_final or reject_smoke or not allow_rebuild:
-        if Path(cache_path).suffix.lower() == ".json" and Path(cache_path).is_file():
-            # smoke JSON path
-            index = build_dense_index(
-                evidence_path,
-                model_name=model_name,
-                model_version=model_version,
-                backend=backend,
-                dim=dim,
-                cache_path=cache_path,
-                embedding_model=dense_cfg.get("injected_model"),
-                batch_size=int(dense_cfg.get("batch_size", 16)),
-                normalize_embeddings=bool(dense_cfg.get("normalize_embeddings", True)),
-                paper_final=paper_final,
-                reject_smoke=reject_smoke,
-                corpus_checksum=corpus_checksum,
-            )
-            index_load_count = 1
-            manifest = dict(index.build_manifest)
-        else:
-            raise DenseIndexError(
-                f"Dense index missing or invalid at {cache_path}; "
-                "formal/reject_smoke mode forbids pipeline rebuild. "
-                "Use scripts/build_comparison_indexes.py."
-            )
+        if index_dir.is_file() and index_dir.suffix.lower() == ".json":
+            if paper_final or reject_smoke:
+                raise DenseIndexError("legacy_dense_json_forbidden_in_formal")
+        raise DenseIndexError(
+            f"Dense index missing or invalid at {cache_path}; "
+            "formal/reject_smoke mode forbids pipeline rebuild. "
+            "Use scripts/build_comparison_indexes.py."
+        )
     else:
         index = build_dense_index(
             evidence_path,
@@ -185,6 +172,7 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
             reject_smoke=reject_smoke,
             corpus_checksum=corpus_checksum,
         )
+        index_built_during_run = True
         index_load_count = 1
         manifest = dict(index.build_manifest)
 
@@ -200,6 +188,7 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
             embedding_model_load_count=getattr(emb, "_load_count", 0),
             index_load_count=index_load_count,
         ),
+        index_built_during_run=index_built_during_run,
     )
     _cache_set("dense", cache_key_path, model_version, runtime)
     return runtime
@@ -277,6 +266,7 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
     )
 
     index_dir = Path(str(index_path)) if index_path else None
+    index_built_during_run = False
     if index_dir and index_dir.is_dir() and (index_dir / "index_manifest.json").is_file():
         retriever = VectorRetriever.from_index_directory(
             index_dir,
@@ -290,6 +280,8 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
         index_load_count = 1
         manifest = dict(index.metadata)
     elif paper_final or reject_smoke:
+        if index_dir and index_dir.is_file() and index_dir.suffix.lower() == ".json":
+            raise VectorIndexError("legacy_ekell_json_forbidden_in_formal")
         raise VectorIndexError(
             f"E-KELL formal/reject_smoke requires a persisted index at index_path={index_path!r}; "
             "refusing to rebuild per case. Use scripts/build_comparison_indexes.py."
@@ -306,6 +298,7 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
         index = retriever.index
         index_load_count = 1
         manifest = dict(index.metadata)
+        index_built_during_run = True
         if index_dir is not None:
             manifest = index.save_directory(index_dir)
 
@@ -319,6 +312,7 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
             embedding_model_load_count=getattr(emb, "_load_count", 0),
             index_load_count=index_load_count,
         ),
+        index_built_during_run=index_built_during_run,
     )
     if index_path:
         _cache_set("ekell", str(index_path), model_version, runtime)

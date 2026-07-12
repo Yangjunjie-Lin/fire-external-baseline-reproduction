@@ -17,11 +17,13 @@ Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench
 
 ## Execution modes
 
-| Mode | Heuristic/smoke | Dev aliases | Manifest | Output IDs |
-|---|---|---|---|---|
-| Dry run | allowed (fixtures) | optional (`--enable-dev-aliases`) | optional | canonical only |
-| DEV | real or experimental config | explicit enable only | recommended | canonical only |
-| Formal | forbidden | forbidden | required (non-`.example`, frozen) | canonical only; all decision fields explicit |
+| Mode | Heuristic/smoke | Dev aliases | `--limit` | Index build | Manifest | `formal_result` |
+|---|---|---|---|---|---|---|
+| Dry run | allowed (fixtures) | optional (`--enable-dev-aliases`) | allowed | allowed (smoke/rebuild) | optional | always false |
+| DEV | real or experimental config | explicit enable only | allowed (subset debug) | recommended persisted dirs | recommended | false |
+| Formal | forbidden | forbidden | **forbidden** | **load-only** persisted dirs | required (non-`.example`, frozen) | runtime evidence only |
+
+Formal enforcement (decision suite): complete Runner Bundle case coverage; Dense/E-KELL directory indexes only; five-method preflight before any LLM call; strict JSON array types; `formal_compliance` derived from runtime evidence (`runtime_evidence.py`).
 
 Formal pre-checks (read-only against main project):
 
@@ -48,6 +50,8 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 | DEV-only taxonomy aliases | `configs/contracts/firebench_taxonomy_dev_aliases_v1.json` |
 | Taxonomy snapshot parity checker | `scripts/check_firebench_taxonomy_snapshot.py` |
 | Formal decision suite guard | `src/external_baselines/common/decision_suite_guard.py` |
+| Unified five-method preflight | `src/external_baselines/common/decision_suite_preflight.py` |
+| Runtime evidence / formal compliance | `src/external_baselines/common/runtime_evidence.py` |
 | Taxonomy normalizer (character-level only) | `src/external_baselines/common/taxonomy_normalizer.py` |
 | Output taxonomy checker | `scripts/check_output_taxonomy.py` |
 | Schema snapshot checker | `scripts/check_firebench_contract_snapshot.py` |

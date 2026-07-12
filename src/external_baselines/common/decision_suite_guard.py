@@ -25,6 +25,12 @@ MANIFEST_REQUIRED_MESSAGE = (
     "Heuristic/smoke defaults are only permitted for smoke or dry-run fixtures."
 )
 
+FORMAL_LIMIT_FORBIDDEN_MESSAGE = (
+    "Formal execution forbids --limit. "
+    "Formal runs must process the complete Runner Bundle case set. "
+    "Use dry_run for partial-case diagnostics."
+)
+
 SMOKE_CONFIG_FORBIDDEN_MESSAGE = (
     "Formal execution cannot use the built-in smoke configuration."
 )
@@ -49,9 +55,12 @@ def validate_decision_suite_execution(
     experiment_manifest: Path | None,
     method_ids: list[str],
     runner_bundle: Path | None = None,
+    limit: int | None = None,
 ) -> None:
     """Validate suite execution contract before any LLM or index loading."""
     stage = str(execution_stage or "dry_run").strip().lower()
+    if stage == "formal" and limit is not None:
+        raise FormalSuiteExecutionError(FORMAL_LIMIT_FORBIDDEN_MESSAGE)
     if stage != "formal":
         return
 

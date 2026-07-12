@@ -1,5 +1,5 @@
 {
-  "evidence_path": "C:\\Users\\Yangjunjie Lin\\AppData\\Local\\Temp\\pytest-of-Yangjunjie Lin\\pytest-151\\test_dense_outputs_standard_ta0\\corpus\\evidence_chunks.jsonl",
+  "evidence_path": "C:\\Users\\Yangjunjie Lin\\AppData\\Local\\Temp\\pytest-of-Yangjunjie Lin\\pytest-162\\test_dense_outputs_standard_ta0\\corpus\\evidence_chunks.jsonl",
   "evidence_sha256": "12576ed6cb2f52c6e162fe3df06499056218d5a33c4e5e9e9f8058433b544cad",
   "model_name": "smoke-hash-embedding",
   "model_version": "v0-smoke",

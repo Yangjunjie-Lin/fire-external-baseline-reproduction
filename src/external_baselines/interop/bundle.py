@@ -9,11 +9,12 @@ expected labels, annotation notes, or target outputs from an Evaluator Bundle.
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from external_baselines.common.checksums import directory_manifest, sha256_file
-from external_baselines.common.io import read_json, read_yaml
+from external_baselines.common.io import read_json, read_jsonl, read_yaml
 
 
 FORBIDDEN_BUNDLE_KEYS = {
@@ -408,6 +409,107 @@ def validate_bundle_checksum(bundle: dict[str, Any], *, expected: str | None = N
             "and must not be confused with a producer-declared bundle checksum."
         ),
     }
+
+
+@dataclass
+class RunnerBundleCoverage:
+    manifest_case_count: int | None
+    input_file_case_count: int
+    loaded_case_count: int
+    input_case_ids: list[str]
+    loaded_case_ids: list[str]
+    runner_bundle_case_count_source: str
+    scenarios_path: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "manifest_case_count": self.manifest_case_count,
+            "input_file_case_count": self.input_file_case_count,
+            "loaded_case_count": self.loaded_case_count,
+            "input_case_ids": list(self.input_case_ids),
+            "loaded_case_ids": list(self.loaded_case_ids),
+            "runner_bundle_case_count_source": self.runner_bundle_case_count_source,
+            "scenarios_path": self.scenarios_path,
+        }
+
+
+def _manifest_declared_case_count(manifest: dict[str, Any]) -> int | None:
+    for key in ("case_count", "input_case_count", "scenario_count"):
+        value = manifest.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    stats = manifest.get("stats")
+    if isinstance(stats, dict):
+        for key in ("case_count", "input_case_count", "scenario_count"):
+            value = stats.get(key)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def inspect_runner_bundle_case_coverage(
+    bundle_path: str | Path,
+    *,
+    limit: int | None = None,
+) -> RunnerBundleCoverage:
+    """Inspect full Runner Bundle case coverage without truncating input_cases.jsonl."""
+    from external_baselines.common.io import load_scenarios
+
+    bundle = load_runner_bundle(bundle_path)
+    scenarios_path = Path(str(bundle.get("scenarios_path") or ""))
+    if not scenarios_path.is_file():
+        raise BundleIntegrityError(f"Runner Bundle input cases missing: {scenarios_path}")
+
+    rows = read_jsonl(scenarios_path)
+    input_case_ids: list[str] = []
+    for row in rows:
+        cid = str(row.get("case_id") or row.get("scenario_id") or "").strip()
+        if cid:
+            input_case_ids.append(cid)
+
+    manifest = bundle.get("manifest") if isinstance(bundle.get("manifest"), dict) else {}
+    manifest_case_count = _manifest_declared_case_count(manifest)
+    count_source = "manifest" if manifest_case_count is not None else "input_cases_jsonl"
+
+    loaded = load_scenarios(scenarios_path, limit=limit)
+    loaded_case_ids = [str(s.get("case_id") or s.get("scenario_id") or "").strip() for s in loaded]
+    loaded_case_ids = [cid for cid in loaded_case_ids if cid]
+
+    return RunnerBundleCoverage(
+        manifest_case_count=manifest_case_count,
+        input_file_case_count=len(input_case_ids),
+        loaded_case_count=len(loaded_case_ids),
+        input_case_ids=input_case_ids,
+        loaded_case_ids=loaded_case_ids,
+        runner_bundle_case_count_source=count_source,
+        scenarios_path=str(scenarios_path),
+    )
+
+
+def validate_formal_runner_bundle_coverage(coverage: RunnerBundleCoverage) -> None:
+    """Hard-fail when formal coverage invariants are violated."""
+    if coverage.manifest_case_count is not None and coverage.manifest_case_count != coverage.input_file_case_count:
+        raise BundleIntegrityError(
+            "Formal Runner Bundle case_count mismatch: "
+            f"manifest={coverage.manifest_case_count} input_cases={coverage.input_file_case_count}"
+        )
+    if coverage.loaded_case_count != coverage.input_file_case_count:
+        raise BundleIntegrityError(
+            "Formal execution requires loading the complete Runner Bundle case set; "
+            f"loaded={coverage.loaded_case_count} expected={coverage.input_file_case_count}"
+        )
+    if set(coverage.loaded_case_ids) != set(coverage.input_case_ids):
+        raise BundleIntegrityError(
+            "Formal loaded case_id set does not match input_cases.jsonl case_id set."
+        )
+    if len(coverage.input_case_ids) != len(set(coverage.input_case_ids)):
+        raise BundleIntegrityError("Duplicate case_id values in input_cases.jsonl.")
 
 
 def assert_no_evaluator_bundle_access(path: str | Path) -> None:

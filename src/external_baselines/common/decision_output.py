@@ -29,6 +29,38 @@ from external_baselines.common.taxonomy_normalizer import (
 from external_baselines.common.text_utils import as_list, extract_json_object
 
 
+def require_list_field(
+    obj: dict[str, Any],
+    key: str,
+    *,
+    strict: bool,
+    error_name: str,
+    errors: list[str],
+) -> list[Any] | None:
+    if key not in obj:
+        return None
+    value = obj[key]
+    if not isinstance(value, list):
+        errors.append(error_name)
+        if strict:
+            return None
+        return as_list(value)
+    return value
+
+
+def _validate_string_list_items(
+    items: list[Any],
+    *,
+    error_name: str,
+    errors: list[str],
+) -> None:
+    for item in items:
+        if item in (None, ""):
+            continue
+        if not isinstance(item, str):
+            errors.append(error_name)
+
+
 class DecisionParseError(ValueError):
     """Raised when strict decision parsing fails."""
 
@@ -274,105 +306,153 @@ def parse_decision_output(
 
     risk_signals: list[str] = []
     if "risk_signals" in decision:
-        for item in as_list(decision.get("risk_signals")):
-            if item in (None, ""):
-                continue
-            mapped = normalize_risk_signal(
-                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
-            )
-            if mapped is None:
-                errors.append(f"invalid_risk_signal:{item}")
-            else:
-                risk_signals.append(mapped)
-        risk_signals = sort_by_taxonomy_order(risk_signals, "risk_signals")
+        raw_signals = require_list_field(
+            decision, "risk_signals", strict=strict, error_name="risk_signals_not_array", errors=errors
+        )
+        if raw_signals is not None:
+            _validate_string_list_items(raw_signals, error_name="risk_signal_not_string", errors=errors)
+            for item in raw_signals if strict else as_list(raw_signals):
+                if item in (None, ""):
+                    continue
+                mapped = normalize_risk_signal(
+                    str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                )
+                if mapped is None:
+                    errors.append(f"invalid_risk_signal:{item}")
+                else:
+                    risk_signals.append(mapped)
+            risk_signals = sort_by_taxonomy_order(risk_signals, "risk_signals")
 
     blocked_actions: list[str] = []
     if "blocked_actions" in decision:
-        for item in as_list(decision.get("blocked_actions")):
-            if item in (None, ""):
-                continue
-            mapped = normalize_blocked_action_id(
-                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
-            )
-            if mapped is None:
-                errors.append(f"invalid_blocked_action_id:{item}")
-            else:
-                blocked_actions.append(mapped)
-        blocked_actions = sort_by_taxonomy_order(blocked_actions, "blocked_action_ids")
+        raw_blocked = require_list_field(
+            decision, "blocked_actions", strict=strict, error_name="blocked_actions_not_array", errors=errors
+        )
+        if raw_blocked is not None:
+            _validate_string_list_items(raw_blocked, error_name="blocked_action_not_string", errors=errors)
+            for item in raw_blocked if strict else as_list(raw_blocked):
+                if item in (None, ""):
+                    continue
+                mapped = normalize_blocked_action_id(
+                    str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                )
+                if mapped is None:
+                    errors.append(f"invalid_blocked_action_id:{item}")
+                else:
+                    blocked_actions.append(mapped)
+            blocked_actions = sort_by_taxonomy_order(blocked_actions, "blocked_action_ids")
 
     missing_confirmations: list[str] = []
     if "missing_confirmations" in decision:
-        for item in as_list(decision.get("missing_confirmations")):
-            if item in (None, ""):
-                continue
-            mapped = normalize_confirmation_id(
-                str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+        raw_confirmations = require_list_field(
+            decision,
+            "missing_confirmations",
+            strict=strict,
+            error_name="missing_confirmations_not_array",
+            errors=errors,
+        )
+        if raw_confirmations is not None:
+            _validate_string_list_items(
+                raw_confirmations, error_name="confirmation_not_string", errors=errors
             )
-            if mapped is None:
-                errors.append(f"invalid_confirmation_id:{item}")
-            else:
-                missing_confirmations.append(mapped)
-        missing_confirmations = sort_by_taxonomy_order(missing_confirmations, "confirmation_ids")
+            for item in raw_confirmations if strict else as_list(raw_confirmations):
+                if item in (None, ""):
+                    continue
+                mapped = normalize_confirmation_id(
+                    str(item), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                )
+                if mapped is None:
+                    errors.append(f"invalid_confirmation_id:{item}")
+                else:
+                    missing_confirmations.append(mapped)
+            missing_confirmations = sort_by_taxonomy_order(missing_confirmations, "confirmation_ids")
 
     actions: list[dict[str, Any]] = []
     seen_action_ids: set[str] = set()
     if "recommended_actions" in decision:
-        for item in as_list(decision.get("recommended_actions")):
-            if not isinstance(item, dict):
-                errors.append("recommended_action_not_object")
-                continue
-            raw_action_id = item.get("action_id")
-            text = item.get("text")
-            if "action_id" not in item or not isinstance(raw_action_id, str) or not raw_action_id.strip():
-                errors.append("missing_action_id")
-                continue
-            mapped_id = normalize_action_id(
-                raw_action_id, strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
-            )
-            if mapped_id is None:
-                errors.append(f"invalid_action_id:{raw_action_id}")
-                continue
-            if mapped_id in seen_action_ids:
-                continue
-            seen_action_ids.add(mapped_id)
-            if "text" not in item or not isinstance(text, str) or not text.strip():
-                errors.append("missing_action_text")
-                if strict:
+        raw_actions = require_list_field(
+            decision,
+            "recommended_actions",
+            strict=strict,
+            error_name="recommended_actions_not_array",
+            errors=errors,
+        )
+        if raw_actions is not None:
+            for item in raw_actions if strict else as_list(raw_actions):
+                if strict and not isinstance(item, dict):
+                    errors.append("recommended_action_not_object")
                     continue
-                text = ""
-            raw_priority = item.get("priority") if "priority" in item else None
-            if raw_priority in (None, ""):
-                if "priority" in item:
-                    errors.append("invalid_priority:")
-                priority = "unknown" if not strict else None
-            else:
-                priority = normalize_priority(
-                    str(raw_priority), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                if not isinstance(item, dict):
+                    errors.append("recommended_action_not_object")
+                    continue
+                raw_action_id = item.get("action_id")
+                text = item.get("text")
+                if "action_id" not in item or not isinstance(raw_action_id, str) or not raw_action_id.strip():
+                    errors.append("missing_action_id")
+                    continue
+                mapped_id = normalize_action_id(
+                    raw_action_id, strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
                 )
-                if priority is None:
-                    errors.append(f"invalid_priority:{raw_priority}")
+                if mapped_id is None:
+                    errors.append(f"invalid_action_id:{raw_action_id}")
+                    continue
+                if mapped_id in seen_action_ids:
+                    continue
+                seen_action_ids.add(mapped_id)
+                if "text" not in item or not isinstance(text, str) or not text.strip():
+                    errors.append("missing_action_text")
+                    if strict:
+                        continue
+                    text = ""
+                raw_priority = item.get("priority") if "priority" in item else None
+                if raw_priority in (None, ""):
+                    if "priority" in item:
+                        errors.append("invalid_priority:")
                     priority = "unknown" if not strict else None
-            if "priority" not in item:
-                errors.append("missing_action_priority")
-                priority = "unknown" if not strict else None
-            if "evidence_refs" not in item:
-                errors.append("missing_action_evidence_refs")
-                refs_raw: list[str | None] = []
-            else:
-                refs_raw = [normalize_evidence_id(r) for r in as_list(item.get("evidence_refs"))]
-            refs = dedupe_preserve_order([r for r in refs_raw if r])
-            if priority is None or gate is None or status is None or risk_level is None:
-                if strict:
-                    raise DecisionParseError("; ".join(errors) if errors else "strict_field_parse_failed")
-                continue
-            actions.append(
-                {
-                    "action_id": mapped_id,
-                    "text": str(text).strip() if text is not None else "",
-                    "priority": priority,
-                    "evidence_refs": refs,
-                }
-            )
+                else:
+                    priority = normalize_priority(
+                        str(raw_priority), strict=False, report=report, dev_aliases_enabled=dev_aliases_enabled
+                    )
+                    if priority is None:
+                        errors.append(f"invalid_priority:{raw_priority}")
+                        priority = "unknown" if not strict else None
+                if "priority" not in item:
+                    errors.append("missing_action_priority")
+                    priority = "unknown" if not strict else None
+                if "evidence_refs" not in item:
+                    errors.append("missing_action_evidence_refs")
+                    refs_raw: list[str | None] = []
+                else:
+                    raw_refs = require_list_field(
+                        item,
+                        "evidence_refs",
+                        strict=strict,
+                        error_name="action_evidence_refs_not_array",
+                        errors=errors,
+                    )
+                    if raw_refs is None:
+                        refs_raw = []
+                    else:
+                        _validate_string_list_items(
+                            raw_refs, error_name="action_evidence_ref_not_string", errors=errors
+                        )
+                        refs_raw = [
+                            normalize_evidence_id(r)
+                            for r in (raw_refs if strict else as_list(raw_refs))
+                        ]
+                refs = dedupe_preserve_order([r for r in refs_raw if r])
+                if priority is None or gate is None or status is None or risk_level is None:
+                    if strict:
+                        raise DecisionParseError("; ".join(errors) if errors else "strict_field_parse_failed")
+                    continue
+                actions.append(
+                    {
+                        "action_id": mapped_id,
+                        "text": str(text).strip() if text is not None else "",
+                        "priority": priority,
+                        "evidence_refs": refs,
+                    }
+                )
 
     if strict and errors:
         raise DecisionParseError("; ".join(errors))
@@ -380,8 +460,31 @@ def parse_decision_output(
         raise DecisionParseError("; ".join(errors) if errors else "strict_field_parse_failed")
 
     allowed_ids = _allowed_evidence_ids(retrieved_contexts or [])
-    citations_raw = [normalize_evidence_id(c) for c in as_list(response.get("citations") if "citations" in response else [])]
+    citations_raw: list[str | None] = []
+    if "citations" in response:
+        raw_citations = require_list_field(
+            response,
+            "citations",
+            strict=strict,
+            error_name="response_citations_not_array",
+            errors=errors,
+        )
+        if raw_citations is not None:
+            _validate_string_list_items(
+                raw_citations, error_name="response_citation_not_string", errors=errors
+            )
+            citations_raw = [
+                normalize_evidence_id(c)
+                for c in (raw_citations if strict else as_list(raw_citations))
+            ]
     citations = dedupe_preserve_order([c for c in citations_raw if c])
+    type_shape_errors = [
+        e
+        for e in errors
+        if e.endswith("_not_array") or e.endswith("_not_string") or e.endswith("_not_object")
+    ]
+    if strict and type_shape_errors:
+        raise DecisionParseError("; ".join(errors))
     invalid_citations: list[str] = []
     if allowed_ids is not None:
         valid_citations = []

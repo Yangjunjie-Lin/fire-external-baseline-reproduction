@@ -359,6 +359,80 @@ class VectorIndex:
         return manifest
 
     @classmethod
+    def validate_directory(
+        cls,
+        index_dir: str | Path,
+        *,
+        load_embeddings: bool = True,
+        expected_backend: str | None = None,
+        expected_model_name: str | None = None,
+        expected_model_version: str | None = None,
+        expected_dimension: int | None = None,
+        expected_kg_checksum: str | None = None,
+        expected_corpus_checksum: str | None = None,
+        require_real_embedding: bool = False,
+    ) -> dict[str, Any]:
+        index_dir = Path(index_dir)
+        if index_dir.is_file():
+            if index_dir.suffix.lower() == ".json":
+                raise VectorIndexError("legacy_ekell_json_forbidden_in_formal")
+            raise VectorIndexError("ekell_index_path_not_directory")
+        if not index_dir.is_dir():
+            raise VectorIndexError("ekell_index_path_not_directory")
+        if load_embeddings:
+            loaded = cls.load_directory(
+                index_dir,
+                expected_backend=expected_backend,
+                expected_model_name=expected_model_name,
+                expected_model_version=expected_model_version,
+                expected_dimension=expected_dimension,
+                expected_kg_checksum=expected_kg_checksum,
+                expected_corpus_checksum=expected_corpus_checksum,
+                require_real_embedding=require_real_embedding,
+            )
+            return dict(loaded.metadata)
+        from external_baselines.common.checksums import sha256_file
+        from external_baselines.common.io import read_json, read_jsonl
+
+        docs_path = index_dir / "documents.jsonl"
+        emb_path = index_dir / "embeddings.npy"
+        manifest_path = index_dir / "index_manifest.json"
+        if not manifest_path.is_file():
+            raise VectorIndexError("ekell_index_manifest_missing")
+        if not docs_path.is_file():
+            raise VectorIndexError("ekell_index_documents_missing")
+        if not emb_path.is_file():
+            raise VectorIndexError("ekell_index_embeddings_missing")
+        manifest = read_json(manifest_path)
+        documents = read_jsonl(docs_path)
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover
+            raise VectorIndexError("numpy is required to validate E-KELL embeddings (.npy).") from exc
+        arr = np.load(emb_path, mmap_mode="r")
+        row_count, dim = int(arr.shape[0]), int(arr.shape[1])
+        if int(manifest.get("document_count") or 0) != len(documents):
+            raise VectorIndexError("document_count does not match documents.jsonl length.")
+        if row_count != len(documents):
+            raise VectorIndexError("embeddings.npy row count does not match documents.")
+        if int(manifest.get("dimension") or 0) != dim:
+            raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
+        if require_real_embedding:
+            if bool(manifest.get("smoke_fallback_used")):
+                raise VectorIndexError("smoke_fallback_used=true is forbidden for real E-KELL indexes.")
+            if not bool(manifest.get("actual_embedding_used", False)):
+                raise VectorIndexError("actual_embedding_used must be true for real E-KELL indexes.")
+        if expected_backend and str(manifest.get("backend")) != str(expected_backend):
+            raise VectorIndexError("backend mismatch.")
+        if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
+            raise VectorIndexError("model_name mismatch.")
+        if expected_model_version and str(manifest.get("model_version")) != str(expected_model_version):
+            raise VectorIndexError("model_version mismatch.")
+        if expected_dimension is not None and int(manifest.get("dimension") or 0) != int(expected_dimension):
+            raise VectorIndexError("dimension mismatch.")
+        return dict(manifest)
+
+    @classmethod
     def load_directory(
         cls,
         index_dir: str | Path,

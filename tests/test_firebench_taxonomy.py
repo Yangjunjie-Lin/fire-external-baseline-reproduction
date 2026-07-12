@@ -89,6 +89,7 @@ def _cfg(corpus: Path) -> dict:
             "model_version": "v0-smoke",
             "dimension": 64,
             "reject_smoke": False,
+            "allow_index_rebuild": True,
         },
         "hybrid_rag": {"top_k": 3, "candidate_pool": 5, "reject_smoke": False},
         "ekell_style": {"prompt_dir": "configs/prompts/controlled", "neighborhood_k_hop": 1},

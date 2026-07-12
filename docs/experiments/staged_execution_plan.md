@@ -170,9 +170,28 @@ Requires:
 - `allow_formal_evaluation: true`
 - `configs_frozen: true`
 - `real_dry_run_completed: true`
-- **no** `--limit`
+- **no** `--limit` (complete Runner Bundle case coverage enforced)
 - **no** `--allow-partial`
+- persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild)
+- five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`)
 - output under `outputs/interop/` (or formal directory)
+
+```bash
+python scripts/check_comparison_readiness.py \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --bundle <frozen_runner_bundle> \
+  --method-set comparison_suite
+
+python scripts/run_decision_comparison_suite.py \
+  --runner-bundle <frozen_runner_bundle> \
+  --method-set comparison_suite \
+  --execution-stage formal \
+  --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
+  --prediction-dir outputs/interop/test_public/predictions \
+  --decision-dir outputs/decision_runs/test_public
+```
+
+Legacy combined runner (also no `--limit` in formal):
 
 ```bash
 python scripts/run_interop_baselines.py \

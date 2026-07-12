@@ -319,6 +319,86 @@ def load_dense_index(
     }
 
 
+def validate_dense_index_directory(
+    index_dir: str | Path,
+    *,
+    load_embeddings: bool = True,
+    expected_model_name: str | None = None,
+    expected_model_version: str | None = None,
+    expected_corpus_checksum: str | None = None,
+    expected_backend: str | None = None,
+    expected_dimension: int | None = None,
+) -> dict[str, Any]:
+    """Validate a persisted dense index directory without building or migrating."""
+    index_dir = Path(index_dir)
+    if index_dir.is_file():
+        if index_dir.suffix.lower() == ".json":
+            raise DenseIndexError("legacy_dense_json_forbidden_in_formal")
+        raise DenseIndexError("dense_index_path_not_directory")
+    if not index_dir.is_dir():
+        raise DenseIndexError("dense_index_path_not_directory")
+
+    docs_path = index_dir / "documents.jsonl"
+    emb_path = index_dir / "embeddings.npy"
+    manifest_path = index_dir / "index_manifest.json"
+    if not manifest_path.is_file():
+        raise DenseIndexError("dense_index_manifest_missing")
+    if not docs_path.is_file():
+        raise DenseIndexError("dense_index_documents_missing")
+    if not emb_path.is_file():
+        raise DenseIndexError("dense_index_embeddings_missing")
+
+    if load_embeddings:
+        return load_dense_index(
+            index_dir,
+            expected_model_name=expected_model_name,
+            expected_model_version=expected_model_version,
+            expected_corpus_checksum=expected_corpus_checksum,
+            expected_backend=expected_backend,
+            expected_dimension=expected_dimension,
+        )
+
+    manifest = read_json(manifest_path)
+    documents = read_jsonl(docs_path)
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise DenseIndexError("numpy is required to validate dense embeddings (.npy).") from exc
+    arr = np.load(emb_path, mmap_mode="r")
+    row_count, dim = int(arr.shape[0]), int(arr.shape[1])
+    if int(manifest.get("document_count") or 0) != len(documents):
+        raise DenseIndexError("document_count does not match documents.jsonl length.")
+    if row_count != len(documents):
+        raise DenseIndexError("embeddings.npy row count does not match documents.")
+    if int(manifest.get("dimension") or 0) != dim:
+        raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
+    if bool(manifest.get("smoke_fallback_used")):
+        raise DenseIndexError("smoke_fallback_used=true is forbidden for formal dense indexes.")
+    if not bool(manifest.get("actual_embedding_used", True)):
+        raise DenseIndexError("actual_embedding_used must be true for formal dense indexes.")
+    if expected_model_name and str(manifest.get("model_name")) != str(expected_model_name):
+        raise DenseIndexError("model_name mismatch.")
+    if expected_model_version and str(manifest.get("model_version")) != str(expected_model_version):
+        raise DenseIndexError("model_version mismatch.")
+    if expected_backend and str(manifest.get("backend")) != str(expected_backend):
+        raise DenseIndexError("backend mismatch.")
+    if expected_dimension is not None and int(manifest.get("dimension") or 0) != int(expected_dimension):
+        raise DenseIndexError("dimension mismatch.")
+    if expected_corpus_checksum and str(manifest.get("corpus_checksum")) != str(expected_corpus_checksum):
+        raise DenseIndexError("corpus_checksum mismatch.")
+    return {
+        "index_dir": index_dir,
+        "documents": documents,
+        "embeddings": None,
+        "manifest": manifest,
+        "dimension": dim,
+        "checksum": manifest.get("index_checksum"),
+        "backend": manifest.get("backend"),
+        "model_name": manifest.get("model_name"),
+        "model_version": manifest.get("model_version"),
+    }
+
+
 def query_dense_index(
     index: dict[str, Any],
     query: str,
