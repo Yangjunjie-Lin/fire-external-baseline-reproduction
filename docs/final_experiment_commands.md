@@ -187,5 +187,7 @@ outputs/formal/
 ```
 
 - Final suite summary and run manifest are staged before commit; the committed run root is never rewritten after rename.
-- Post-commit cleanup failures are warnings only (written to control root).
-- All Formal CLI validation failures emit structured JSON on stderr and exit 1.
+- Immutable suite summary records commit success but does not pre-declare backup cleanup success; actual cleanup status is in `publish_receipt.json`.
+- Staged validation reparses predictions and verifies exact case IDs, method IDs, schema, summaries, and all run-manifest hashes.
+- Offline Formal E2E injects only LLM transport and embedding-compute boundaries.
+- Post-commit warning failures are printed and returned, but never mutate or invalidate the committed run.

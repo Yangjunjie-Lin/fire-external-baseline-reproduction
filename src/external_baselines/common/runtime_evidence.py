@@ -336,7 +336,7 @@ def compute_suite_formal_compliance(
     ekell_prompt_bundle_valid: bool = False,
     transactional_publish_complete: bool = False,
     transactional_publish_committed: bool | None = None,
-    transactional_cleanup_complete: bool = True,
+    transactional_cleanup_complete: bool | None = None,
     method_ids: list[str] | None = None,
     phase: Literal["pre_publish", "planned_final", "final"] = "pre_publish",
 ) -> dict[str, Any]:
@@ -394,11 +394,12 @@ def compute_suite_formal_compliance(
         if transactional_publish_committed is not None
         else transactional_publish_complete
     )
-    cleanup_complete = (
-        transactional_cleanup_complete if formal and phase in {"final", "planned_final"} else True
-    )
-
     is_final_phase = phase in {"final", "planned_final"}
+    if formal and is_final_phase:
+        cleanup_complete = transactional_cleanup_complete
+    else:
+        cleanup_complete = True
+
     formal_result = bool(
         pre_publish_compliance_passed and publish_committed
     ) if is_final_phase else False

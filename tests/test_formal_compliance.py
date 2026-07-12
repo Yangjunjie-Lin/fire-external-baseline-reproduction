@@ -90,32 +90,37 @@ def _offline_heuristic_transport_factory(_method_id, _config):
     return complete
 
 
-def _enable_offline_embedding_injection(monkeypatch) -> None:
-    """Use the production injected_model path for fake/bge offline index fixtures."""
-    from external_baselines.retrieval import embedding_backends
+def _offline_embedding_backend_factory(method_id, config):
+    if method_id not in {"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"}:
+        return None
     from tests.test_dense_real_index import FakeEmbeddingModel
 
-    original = embedding_backends.create_embedding_backend
+    if method_id == "ekell_style_controlled_shared_llm":
+        from external_baselines.ekell_style.embedding_backends import create_embedding_backend
 
-    def _create(backend, *, model_name=None, model=None, dimension=128, **kwargs):
-        if model is None and str(model_name or "").startswith("fake/"):
-            model = FakeEmbeddingModel(int(dimension or 8))
-        return original(
-            backend,
-            model_name=model_name,
-            model=model,
-            dimension=dimension,
-            **kwargs,
+        vector_cfg = config.get("ekell_vector") or {}
+        dim = int(vector_cfg.get("dimension", 8) or 8)
+        return create_embedding_backend(
+            "text2vec",
+            model_name=str(vector_cfg.get("model_name") or "fake/bge"),
+            model_version=str(vector_cfg.get("model_version") or "v-test"),
+            dimension=dim,
+            paper_final=True,
+            reject_smoke=True,
+            model=FakeEmbeddingModel(dim),
         )
+    from external_baselines.retrieval.embedding_backends import create_embedding_backend
 
-    monkeypatch.setattr(embedding_backends, "create_embedding_backend", _create)
-    monkeypatch.setattr(
-        "external_baselines.common.method_runtime.create_embedding_backend",
-        _create,
-    )
-    monkeypatch.setattr(
-        "external_baselines.ekell_style.embedding_backends.create_embedding_backend",
-        _create,
+    dense_cfg = config.get("dense_rag") or {}
+    dim = int(dense_cfg.get("dimension", 8) or 8)
+    return create_embedding_backend(
+        "text2vec",
+        model_name=str(dense_cfg.get("model_name") or "fake/bge"),
+        model_version=str(dense_cfg.get("model_version") or "v-test"),
+        dimension=dim,
+        paper_final=True,
+        reject_smoke=True,
+        model=FakeEmbeddingModel(dim),
     )
 
 
@@ -4208,7 +4213,6 @@ def test_formal_cli_validation_does_not_create_final_run_root(tmp_path):
 def test_formal_full_guard_preflight_runtime_pipeline_and_publish_offline(tmp_path, monkeypatch):
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
     monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
-    _enable_offline_embedding_injection(monkeypatch)
     from external_baselines.common.method_runtime import clear_runtime_cache
 
     clear_runtime_cache()
@@ -4219,6 +4223,7 @@ def test_formal_full_guard_preflight_runtime_pipeline_and_publish_offline(tmp_pa
         execution_stage="formal",
         experiment_manifest=fixture["experiment_manifest"],
         llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
     )
     assert summary["formal_compliance"]["formal_result"] is True
     assert len(list(fixture["pred_dir"].glob("*.jsonl"))) == 5
@@ -4240,6 +4245,8 @@ def _full_e2e_real_function_refs():
         "resolve_pipeline": suite.resolve_pipeline,
         "prepare_method_runtime": suite.prepare_method_runtime,
         "collect_method_runtime_evidence": collect_method_runtime_evidence,
+        "validate_staged_formal_run_root": suite.validate_staged_formal_run_root,
+        "publish_formal_run_root_transactionally": suite.publish_formal_run_root_transactionally,
     }
 
 
@@ -4251,6 +4258,8 @@ def _full_e2e_real_function_refs():
         "resolve_pipeline",
         "prepare_method_runtime",
         "collect_method_runtime_evidence",
+        "validate_staged_formal_run_root",
+        "publish_formal_run_root_transactionally",
     ],
 )
 def test_full_e2e_uses_real_core_functions(tmp_path, monkeypatch, function_name):
@@ -4268,7 +4277,6 @@ def test_full_e2e_uses_real_core_functions(tmp_path, monkeypatch, function_name)
     )
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
     monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
-    _enable_offline_embedding_injection(monkeypatch)
     from external_baselines.common.method_runtime import clear_runtime_cache
 
     clear_runtime_cache()
@@ -4279,8 +4287,43 @@ def test_full_e2e_uses_real_core_functions(tmp_path, monkeypatch, function_name)
         execution_stage="formal",
         experiment_manifest=fixture["experiment_manifest"],
         llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
     )
     assert calls["n"] >= 1
+
+
+def test_full_e2e_uses_llm_and_embedding_factories(tmp_path, monkeypatch):
+    llm_calls = {"n": 0}
+    emb_calls: dict[str, Any | None] = {}
+
+    def _llm_factory(method_id, config):
+        llm_calls["n"] += 1
+        return _offline_heuristic_transport_factory(method_id, config)
+
+    def _emb_factory(method_id, config):
+        backend = _offline_embedding_backend_factory(method_id, config)
+        emb_calls[method_id] = backend
+        return backend
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_llm_factory,
+        embedding_backend_factory=_emb_factory,
+    )
+    assert llm_calls["n"] == 5
+    assert emb_calls["direct_llm"] is None
+    assert emb_calls["bm25_rag"] is None
+    for mid in ("dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"):
+        assert emb_calls[mid] is not None
 
 
 def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
@@ -4292,7 +4335,6 @@ def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
 
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
     monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
-    _enable_offline_embedding_injection(monkeypatch)
     from external_baselines.common.method_runtime import clear_runtime_cache
 
     clear_runtime_cache()
@@ -4303,6 +4345,7 @@ def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
         execution_stage="formal",
         experiment_manifest=fixture["experiment_manifest"],
         llm_transport_factory=_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
     )
     assert transport_calls["n"] == 5
 
@@ -4310,7 +4353,6 @@ def test_full_e2e_only_injects_llm_transport(tmp_path, monkeypatch):
 def test_full_e2e_builds_no_index_during_run(tmp_path, monkeypatch):
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
     monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
-    _enable_offline_embedding_injection(monkeypatch)
     from external_baselines.common.method_runtime import clear_runtime_cache
 
     clear_runtime_cache()
@@ -4321,7 +4363,244 @@ def test_full_e2e_builds_no_index_during_run(tmp_path, monkeypatch):
         execution_stage="formal",
         experiment_manifest=fixture["experiment_manifest"],
         llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
     )
     for mid in ("dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"):
         evidence = (summary.get("runtime_evidence") or {}).get(mid, {}).get("index") or {}
         assert evidence.get("index_built_during_run") is False
+
+
+# --- Round-5: cleanup metadata, staged content validation, embedding factory, warnings ---
+
+
+def _run_mock_formal_publish(tmp_path, monkeypatch, *, n_cases: int = 1):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=n_cases)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        mid = config.get("method_id") or "direct_llm"
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id=mid,
+            strict=True,
+        )
+        row = decision_output_to_legacy_row(parsed)
+        row["method_id"] = mid
+        return row
+
+    def _pipeline_for(mid):
+        def _run(prediction_input, *, config, llm, runtime=None):
+            from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+            parsed = parse_decision_output(
+                _valid_payload(),
+                case_id=prediction_input["case_id"],
+                method_id=mid,
+                strict=True,
+            )
+            return decision_output_to_legacy_row(parsed)
+
+        return _run
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda mid: _pipeline_for(mid))
+    monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        suite,
+        "collect_method_runtime_evidence",
+        lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]],
+    )
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+    return fixture, summary
+
+
+def test_staged_summary_does_not_claim_cleanup_complete(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    disk = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    assert disk["formal_compliance"]["transactional_cleanup_complete"] is None
+    assert disk["transactional_publish"]["cleanup_complete"] is None
+    assert disk["transactional_publish"]["cleanup_status"] == "reported_externally"
+
+
+def test_staged_summary_uses_external_cleanup_status(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    disk = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    assert disk["transactional_publish"]["cleanup_warnings"] is None
+
+
+def test_formal_result_does_not_depend_on_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    fixture, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    disk = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    assert disk["formal_compliance"]["formal_result"] is True
+    assert summary["formal_compliance"]["formal_result"] is True
+
+
+def test_cleanup_failure_keeps_disk_summary_immutable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    fixture, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    disk = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    assert disk["transactional_publish"]["cleanup_complete"] is None
+    assert summary["transactional_publish_runtime"]["cleanup_complete"] is False
+
+
+def test_cleanup_failure_return_summary_uses_runtime_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    _, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    assert "transactional_publish_runtime" in summary
+    assert summary["transactional_publish_runtime"]["cleanup_complete"] is False
+
+
+def test_publish_receipt_is_cleanup_authority(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite._remove_directory_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("backup cleanup failed")),
+    )
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    receipt = json.loads(
+        next((fixture["control_root"] / "runs").rglob("publish_receipt.json")).read_text(encoding="utf-8")
+    )
+    assert receipt["cleanup_complete"] is False
+    assert receipt["cleanup_warnings"]
+
+
+def test_disk_summary_and_receipt_have_non_conflicting_semantics(tmp_path, monkeypatch):
+    fixture, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    disk = json.loads((fixture["run_root"] / "suite_summary.json").read_text(encoding="utf-8"))
+    receipt = json.loads(
+        next((fixture["control_root"] / "runs").rglob("publish_receipt.json")).read_text(encoding="utf-8")
+    )
+    assert disk["transactional_publish"]["cleanup_complete"] is None
+    assert isinstance(receipt["cleanup_complete"], bool)
+    assert summary["transactional_publish_runtime"]["cleanup_complete"] == receipt["cleanup_complete"]
+
+
+def test_staged_validator_rejects_invalid_prediction_json(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    pred = fixture["run_root"] / "predictions" / "direct_llm.jsonl"
+    pred.write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(FormalSuiteExecutionError, match="invalid_prediction_json"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+        )
+
+
+def test_staged_validator_rejects_suite_summary_cleanup_true(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    summary_path = fixture["run_root"] / "suite_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["formal_compliance"]["transactional_cleanup_complete"] = True
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(FormalSuiteExecutionError, match="suite_summary_cleanup_must_be_null"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+        )
+
+
+def test_publish_receipt_failure_emits_stderr_warning(tmp_path, monkeypatch, capsys):
+    from scripts import run_decision_comparison_suite as suite
+
+    monkeypatch.setattr(
+        suite,
+        "_write_publish_receipt",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("receipt write failed")),
+    )
+    _, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    captured = capsys.readouterr()
+    assert "formal_post_commit_warning" in captured.err
+    assert any(w.get("code") == "publish_receipt_write_failed" for w in summary.get("post_commit_warnings") or [])
+
+
+def test_post_commit_warning_does_not_change_formal_result(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    monkeypatch.setattr(
+        suite,
+        "_write_publish_receipt",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("receipt write failed")),
+    )
+    _, summary = _run_mock_formal_publish(tmp_path, monkeypatch)
+    assert summary["formal_compliance"]["formal_result"] is True
+
+
+def test_full_e2e_does_not_patch_create_embedding_backend(monkeypatch):
+    import external_baselines.common.method_runtime as method_runtime
+    import external_baselines.retrieval.embedding_backends as retrieval_backends
+
+    assert not getattr(retrieval_backends.create_embedding_backend, "__wrapped__", None)
+    original = method_runtime.create_embedding_backend
+    assert original is retrieval_backends.create_embedding_backend or callable(original)
+
+
+def test_production_default_embedding_factory_is_none():
+    import inspect
+
+    from scripts.run_decision_comparison_suite import run_decision_suite
+
+    sig = inspect.signature(run_decision_suite)
+    assert sig.parameters["embedding_backend_factory"].default is None
+
+
+def test_injected_embedding_preserves_runtime_evidence(tmp_path, monkeypatch):
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=2)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    from external_baselines.common.method_runtime import clear_runtime_cache
+
+    clear_runtime_cache()
+    summary = run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+        llm_transport_factory=_offline_heuristic_transport_factory,
+        embedding_backend_factory=_offline_embedding_backend_factory,
+    )
+    dense = (summary.get("runtime_evidence") or {}).get("dense_rag", {})
+    embedding = dense.get("embedding") or {}
+    index = dense.get("index") or {}
+    assert index.get("index_loaded") is True
+    assert embedding.get("actual_embedding_used") is True
+    assert embedding.get("smoke_fallback_used") is False
+

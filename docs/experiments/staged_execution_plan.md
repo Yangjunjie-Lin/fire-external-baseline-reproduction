@@ -182,8 +182,8 @@ Requires:
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (external control root + copy under `diagnostics/` in staged run root; includes E-KELL prompt files)
-- **transactional** publish: staged package validation → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; committed runs are never rolled back)
-- Formal CLI validation failures emit structured JSON and exit 1; dry-run may exit zero with `formal_result=false`
+- **transactional** publish: staged package validation (reparsed predictions + manifest hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
+- offline Formal E2E injects only LLM transport and embedding-compute boundaries
 - producer-declared checksum and consumer-computed hash are frozen and validated separately (legacy ambiguous `bundle_checksum` rejected in formal)
 - output under `outputs/interop/` (or formal directory)
 - dry-run artifacts must never report `formal_result=true`

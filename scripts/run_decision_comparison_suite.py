@@ -427,13 +427,99 @@ def publish_formal_run_root_transactionally(
     )
 
 
+_SHA256_HEX_RE = __import__("re").compile(r"^[a-f0-9]{64}$")
+
+
+def _is_valid_sha256_hex(value: Any) -> bool:
+    return isinstance(value, str) and bool(_SHA256_HEX_RE.match(value))
+
+
+def emit_post_commit_warning(
+    *,
+    warning_code: str,
+    message: str,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    warning = {
+        "code": warning_code,
+        "message": sanitize_error_message(message),
+        "path": str(path) if path else None,
+    }
+    print(json.dumps({"formal_post_commit_warning": warning}), file=sys.stderr)
+    return warning
+
+
+def _validate_staged_prediction_file(
+    pred_file: Path,
+    *,
+    method_id: str,
+    expected_case_id_set: set[str],
+) -> list[str]:
+    from external_baselines.common.taxonomy_normalizer import assert_canonical_interop_record
+
+    errors: list[str] = []
+    if not pred_file.is_file():
+        return [f"missing_prediction_{method_id}"]
+    try:
+        lines = pred_file.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        return [f"prediction_not_utf8_{method_id}"]
+    records: list[dict[str, Any]] = []
+    for line_no, line in enumerate(lines, start=1):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text)
+        except json.JSONDecodeError:
+            errors.append(f"invalid_prediction_json_{method_id}:line_{line_no}")
+            continue
+        if not isinstance(record, dict):
+            errors.append(f"invalid_prediction_object_{method_id}:line_{line_no}")
+            continue
+        records.append(record)
+        schema_errors = validate_interop_record(record)
+        if schema_errors:
+            errors.append(f"invalid_interop_record_{method_id}:line_{line_no}")
+        if str(record.get("schema_version") or "") != "firebench-interop-v1":
+            errors.append(f"wrong_schema_version_{method_id}:line_{line_no}")
+        if str(record.get("method_id") or "") != method_id:
+            errors.append(f"wrong_method_id_{method_id}:line_{line_no}")
+        case_id = str(record.get("case_id") or "").strip()
+        if not case_id:
+            errors.append(f"missing_case_id_{method_id}:line_{line_no}")
+        pred = record.get("prediction")
+        if not isinstance(pred, dict):
+            errors.append(f"missing_prediction_object_{method_id}:line_{line_no}")
+        elif not isinstance(pred.get("final_response"), dict):
+            errors.append(f"missing_final_response_{method_id}:line_{line_no}")
+        try:
+            assert_canonical_interop_record(record, dev_aliases_enabled=False)
+        except Exception:  # noqa: BLE001
+            errors.append(f"invalid_canonical_interop_{method_id}:line_{line_no}")
+    if len(records) != len(expected_case_id_set):
+        errors.append(f"prediction_count_mismatch_{method_id}")
+    observed = [str(r.get("case_id") or "") for r in records]
+    if len(observed) != len(set(observed)):
+        errors.append(f"duplicate_case_id_{method_id}")
+    if set(observed) != expected_case_id_set:
+        errors.append(f"case_id_set_mismatch_{method_id}")
+    return errors
+
+
 def validate_staged_formal_run_root(
     temp_run_root: Path,
     *,
     method_ids: list[str],
-    case_count: int,
+    expected_case_ids: list[str] | set[str],
 ) -> dict[str, Any]:
     errors: list[str] = []
+    expected_case_id_set = set(expected_case_ids)
+    if not expected_case_id_set:
+        errors.append("expected_case_ids_empty")
+    if len(expected_case_id_set) != len(list(expected_case_ids)):
+        errors.append("expected_case_ids_duplicate")
+
     predictions = temp_run_root / "predictions"
     decisions = temp_run_root / "decisions"
     suite_summary_path = temp_run_root / "suite_summary.json"
@@ -453,31 +539,137 @@ def validate_staged_formal_run_root(
     for method_id in method_ids:
         pred_file = predictions / f"{method_id}.jsonl"
         summary_file = decisions / method_id / "run_summary.json"
-        if not pred_file.is_file():
-            errors.append(f"missing_prediction_{method_id}")
+        errors.extend(
+            _validate_staged_prediction_file(
+                pred_file,
+                method_id=method_id,
+                expected_case_id_set=expected_case_id_set,
+            )
+        )
         if not summary_file.is_file():
             errors.append(f"missing_run_summary_{method_id}")
+            continue
+        try:
+            method_summary = json.loads(summary_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            errors.append(f"invalid_method_summary_json_{method_id}")
+            continue
+        if str(method_summary.get("method_id") or "") != method_id:
+            errors.append(f"method_summary_method_id_mismatch_{method_id}")
+        if method_summary.get("execution_stage") != "formal":
+            errors.append(f"method_summary_execution_stage_{method_id}")
+        if method_summary.get("case_count") != len(expected_case_id_set):
+            errors.append(f"method_summary_case_count_{method_id}")
+        if method_summary.get("successful_count") != len(expected_case_id_set):
+            errors.append(f"method_summary_successful_count_{method_id}")
+        if int(method_summary.get("parsing_failure_count") or 0) != 0:
+            errors.append(f"method_summary_parsing_failures_{method_id}")
+        if int(method_summary.get("schema_failure_count") or 0) != 0:
+            errors.append(f"method_summary_schema_failures_{method_id}")
+        if method_summary.get("formal_result") is not True:
+            errors.append(f"method_summary_formal_result_{method_id}")
+        method_compliance = method_summary.get("formal_compliance") or {}
+        if method_compliance.get("formal_result") is not True:
+            errors.append(f"method_summary_compliance_formal_false_{method_id}")
+        taxonomy = method_summary.get("taxonomy_validation") or {}
+        if taxonomy.get("valid") is not True:
+            errors.append(f"method_summary_taxonomy_invalid_{method_id}")
+        pred_sha = method_summary.get("prediction_file_sha256")
+        if not _is_valid_sha256_hex(pred_sha):
+            errors.append(f"method_summary_prediction_sha_invalid_{method_id}")
+        elif pred_file.is_file() and pred_sha != sha256_file(pred_file):
+            errors.append(f"method_summary_prediction_sha_mismatch_{method_id}")
 
     if suite_summary_path.is_file():
-        summary = json.loads(suite_summary_path.read_text(encoding="utf-8"))
+        try:
+            summary = json.loads(suite_summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            errors.append("invalid_suite_summary_json")
+            summary = {}
+        if summary.get("execution_stage") != "formal":
+            errors.append("suite_summary_execution_stage")
+        if summary.get("formal") is not True:
+            errors.append("suite_summary_formal_flag")
+        if summary.get("case_count") != len(expected_case_id_set):
+            errors.append("suite_summary_case_count")
+        if sorted(summary.get("methods") or []) != sorted(method_ids):
+            errors.append("suite_summary_methods_mismatch")
         compliance = summary.get("formal_compliance") or {}
         if compliance.get("formal_result") is not True:
             errors.append("staged_formal_result_not_true")
         if compliance.get("transactional_publish_committed") is not True:
             errors.append("staged_publish_not_committed")
+        if compliance.get("pre_publish_compliance_passed") is not True:
+            errors.append("staged_pre_publish_not_passed")
+        if compliance.get("transactional_cleanup_complete") is not None:
+            errors.append("suite_summary_cleanup_must_be_null")
+        transactional = summary.get("transactional_publish") or {}
+        if transactional.get("cleanup_complete") is not None:
+            errors.append("suite_summary_transactional_cleanup_must_be_null")
         coverage = summary.get("coverage") or {}
         for method_id in method_ids:
             report = coverage.get(method_id) or {}
             if report.get("errors"):
                 errors.append(f"coverage_errors_{method_id}")
-            if report.get("expected_case_count") != case_count:
-                errors.append(f"coverage_count_mismatch_{method_id}")
+            if report.get("expected_case_count") != len(expected_case_id_set):
+                errors.append(f"coverage_expected_count_{method_id}")
+            if report.get("prediction_count") != len(expected_case_id_set):
+                errors.append(f"coverage_actual_count_{method_id}")
+            if report.get("missing_case_ids"):
+                errors.append(f"coverage_missing_cases_{method_id}")
+            if report.get("extra_case_ids"):
+                errors.append(f"coverage_extra_cases_{method_id}")
+            if report.get("duplicate_case_ids"):
+                errors.append(f"coverage_duplicate_cases_{method_id}")
+
+    if run_manifest_path.is_file():
+        try:
+            manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            errors.append("invalid_run_manifest_json")
+            manifest = {}
+        if manifest.get("execution_stage") != "formal":
+            errors.append("manifest_execution_stage")
+        if manifest.get("formal_result") is not True:
+            errors.append("manifest_formal_result")
+        if sorted(manifest.get("method_ids") or []) != sorted(method_ids):
+            errors.append("manifest_method_set_mismatch")
+        if manifest.get("case_count") != len(expected_case_id_set):
+            errors.append("manifest_case_count")
+        for field, path in (
+            ("suite_summary_sha256", suite_summary_path),
+            ("preflight_sha256", preflight_path),
+        ):
+            recorded = manifest.get(field)
+            if not _is_valid_sha256_hex(recorded):
+                errors.append(f"missing_or_invalid_{field}")
+            elif path.is_file() and recorded != sha256_file(path):
+                errors.append(f"{field}_mismatch")
+        prediction_files = manifest.get("prediction_files") or {}
+        decision_summary_files = manifest.get("decision_summary_files") or {}
+        for method_id in method_ids:
+            pred_file = predictions / f"{method_id}.jsonl"
+            summary_file = decisions / method_id / "run_summary.json"
+            pred_hash = prediction_files.get(method_id)
+            if not _is_valid_sha256_hex(pred_hash):
+                errors.append(f"prediction_sha256_missing_{method_id}")
+            elif pred_file.is_file() and pred_hash != sha256_file(pred_file):
+                errors.append(f"prediction_sha256_mismatch_{method_id}")
+            dec_hash = decision_summary_files.get(method_id)
+            if not _is_valid_sha256_hex(dec_hash):
+                errors.append(f"decision_summary_sha256_missing_{method_id}")
+            elif summary_file.is_file() and dec_hash != sha256_file(summary_file):
+                errors.append(f"decision_summary_sha256_mismatch_{method_id}")
 
     if errors:
         raise FormalSuiteExecutionError(
             "staged_formal_run_root_invalid: " + ", ".join(errors)
         )
-    return {"ok": True, "method_count": len(method_ids), "case_count": case_count}
+    return {
+        "ok": True,
+        "method_count": len(method_ids),
+        "case_count": len(expected_case_id_set),
+    }
 
 
 def build_formal_run_manifest(
@@ -505,6 +697,13 @@ def build_formal_run_manifest(
         for mid in method_ids
         if (decisions_dir / mid / "run_summary.json").is_file()
     }
+    core_files = [
+        "suite_summary.json",
+        "run_manifest.json",
+        "diagnostics/decision_suite_preflight.json",
+        *[f"predictions/{mid}.jsonl" for mid in method_ids],
+        *[f"decisions/{mid}/run_summary.json" for mid in method_ids],
+    ]
     return {
         "run_id": run_id,
         "execution_stage": "formal",
@@ -518,6 +717,10 @@ def build_formal_run_manifest(
         "prediction_files": prediction_files,
         "decision_summary_files": decision_summary_files,
         "formal_result": formal_result,
+        "artifact_inventory": {
+            "core_files": core_files,
+            "supplemental_files": [],
+        },
         "suite_summary": {
             "formal_compliance": suite_summary.get("formal_compliance"),
             "transactional_publish": suite_summary.get("transactional_publish"),
@@ -539,16 +742,24 @@ def _write_publish_receipt(
         if publish_result.run_root_state is not None
         else None
     )
+    suite_summary_path = layout.run_root / "suite_summary.json"
+    run_manifest_path = layout.run_root / "run_manifest.json"
     write_json(
         run_record / "publish_receipt.json",
         {
             "run_id": run_id,
             "committed": publish_result.committed,
+            "formal_result": formal_result,
             "formal_run_root": str(layout.run_root),
             "backup_path": str(backup_path) if backup_path else None,
             "cleanup_complete": publish_result.cleanup_complete,
             "cleanup_warnings": list(publish_result.cleanup_warnings),
-            "formal_result": formal_result,
+            "formal_run_manifest_sha256": sha256_file(run_manifest_path)
+            if run_manifest_path.is_file()
+            else None,
+            "formal_suite_summary_sha256": sha256_file(suite_summary_path)
+            if suite_summary_path.is_file()
+            else None,
         },
     )
 
@@ -872,6 +1083,7 @@ def _write_decision_artifacts(
 
 
 LLMTransportFactory = Callable[[str, dict[str, Any]], Callable[..., str] | None]
+EmbeddingBackendFactory = Callable[[str, dict[str, Any]], Any | None]
 
 
 def run_decision_suite(
@@ -887,6 +1099,7 @@ def run_decision_suite(
     keep_failed_temp_artifacts: bool = False,
     formal_run_root: Path | None = None,
     llm_transport_factory: LLMTransportFactory | None = None,
+    embedding_backend_factory: EmbeddingBackendFactory | None = None,
 ) -> dict[str, Any]:
     formal = execution_stage == "formal"
     run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
@@ -1079,9 +1292,18 @@ def run_decision_suite(
                     if llm_transport_factory is not None
                     else None
                 )
+                injected_embedding = (
+                    embedding_backend_factory(method_id, method_config)
+                    if embedding_backend_factory is not None
+                    else None
+                )
                 llm = build_llm_client(method_config, transport=transport)
                 pipeline = resolve_pipeline(method_id)
-                runtime = prepare_method_runtime(method_id, method_config)
+                runtime = prepare_method_runtime(
+                    method_id,
+                    method_config,
+                    embedding_backend=injected_embedding,
+                )
                 evidence = collect_method_runtime_evidence(
                     method_id=method_id,
                     config=method_config,
@@ -1293,13 +1515,14 @@ def run_decision_suite(
                 method_ids=method_ids,
                 phase="planned_final",
                 transactional_publish_committed=True,
-                transactional_cleanup_complete=True,
+                transactional_cleanup_complete=None,
                 **integrity_flags,
             )
             suite_summary["transactional_publish"] = {
                 "committed": True,
-                "cleanup_complete": True,
-                "cleanup_warnings": [],
+                "cleanup_status": "reported_externally",
+                "cleanup_complete": None,
+                "cleanup_warnings": None,
             }
             write_json(temp_root / "suite_summary.json", suite_summary)
             run_manifest = build_formal_run_manifest(
@@ -1317,8 +1540,9 @@ def run_decision_suite(
             validate_staged_formal_run_root(
                 temp_root,
                 method_ids=method_ids,
-                case_count=len(case_ids),
+                expected_case_ids=case_ids,
             )
+            post_commit_warnings: list[dict[str, Any]] = []
             try:
                 publish_result = publish_formal_run_root_transactionally(
                     temp_run_root=temp_root,
@@ -1340,15 +1564,29 @@ def run_decision_suite(
                     rollback_errors=publish_result.errors,
                 )
 
-            suite_summary["transactional_publish"] = {
+            for warning_message in publish_result.cleanup_warnings:
+                post_commit_warnings.append(
+                    emit_post_commit_warning(
+                        warning_code="backup_cleanup_failed",
+                        message=warning_message,
+                    )
+                )
+            suite_summary["transactional_publish_runtime"] = {
                 "committed": publish_result.committed,
                 "cleanup_complete": publish_result.cleanup_complete,
                 "cleanup_warnings": list(publish_result.cleanup_warnings),
             }
-            try:
-                _write_cleanup_warning(layout=layout, publish_result=publish_result)
-            except Exception:  # noqa: BLE001
-                pass
+            if publish_result.cleanup_warnings:
+                try:
+                    _write_cleanup_warning(layout=layout, publish_result=publish_result)
+                except Exception as exc:  # noqa: BLE001
+                    post_commit_warnings.append(
+                        emit_post_commit_warning(
+                            warning_code="cleanup_warning_record_write_failed",
+                            message=str(exc),
+                            path=layout.cleanup_warning_path,
+                        )
+                    )
             try:
                 _write_publish_receipt(
                     control_root=control_root,
@@ -1357,13 +1595,27 @@ def run_decision_suite(
                     publish_result=publish_result,
                     formal_result=True,
                 )
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                post_commit_warnings.append(
+                    emit_post_commit_warning(
+                        warning_code="publish_receipt_write_failed",
+                        message=str(exc),
+                        path=control_root / "runs" / run_id / "publish_receipt.json",
+                    )
+                )
             try:
                 if layout.failure_marker_path.is_file():
                     layout.failure_marker_path.unlink()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                post_commit_warnings.append(
+                    emit_post_commit_warning(
+                        warning_code="stale_failure_marker_remove_failed",
+                        message=str(exc),
+                        path=layout.failure_marker_path,
+                    )
+                )
+            if post_commit_warnings:
+                suite_summary["post_commit_warnings"] = post_commit_warnings
         elif formal:
             suite_summary["formal_compliance"]["formal_result"] = False
             suite_summary["formal_compliance"]["transactional_publish_complete"] = False

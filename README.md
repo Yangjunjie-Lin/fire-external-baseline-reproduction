@@ -224,7 +224,10 @@ python scripts/validate_formal_config.py \
 - Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename. **No core formal artifact is rewritten after commit.**
 - Publish phases: **PREPARE** (backup) → **STAGED PACKAGE** (final `suite_summary.json`, `run_manifest.json`, preflight copy) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures write warnings/receipts to control root only).
 - Post-commit cleanup or receipt failures are non-destructive warnings; committed runs are never rolled back.
-- Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only the external LLM transport (and deterministic fake embedding for offline index fixtures).
+- Immutable `suite_summary.json` records staged compliance and atomic publication success but does **not** pre-declare backup cleanup outcome (`transactional_cleanup_complete: null`). Actual cleanup status lives in external `publish_receipt.json`.
+- Returned Python summary may include `transactional_publish_runtime` and `post_commit_warnings` without rewriting the committed run root.
+- Staged-package validation reparses every prediction JSONL, checks exact case/method identity, validates summaries, and recomputes all run-manifest hashes before rename.
+- Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only external LLM transport and embedding-compute boundaries via `embedding_backend_factory`.
 - New freeze manifests use explicit `runner_bundle` identity fields; legacy `runner_bundle_checksum` is opt-in via `--include-legacy-compat-fields`.
 - Generated files under `outputs/` are never tracked.
 

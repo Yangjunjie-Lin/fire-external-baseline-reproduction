@@ -84,7 +84,11 @@ def _cache_set(kind: str, path: str, model_version: str, value: Any) -> None:
     _RUNTIME_CACHE[(kind, str(path), str(model_version))] = value
 
 
-def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
+def prepare_dense_runtime(
+    config: dict[str, Any],
+    *,
+    embedding_backend: Any | None = None,
+) -> DenseRuntime:
     from external_baselines.dense_rag.pipeline import DenseIndex, DenseRetriever, build_dense_index
     from external_baselines.retrieval.dense_index import DenseIndexError, load_dense_index
 
@@ -113,15 +117,18 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
         )
         return cached
 
-    emb = create_embedding_backend(
-        backend,
-        model_name=model_name,
-        model_version=model_version,
-        dimension=dim,
-        paper_final=paper_final,
-        reject_smoke=reject_smoke,
-        model=dense_cfg.get("injected_model"),
-    )
+    if embedding_backend is not None:
+        emb = embedding_backend
+    else:
+        emb = create_embedding_backend(
+            backend,
+            model_name=model_name,
+            model_version=model_version,
+            dimension=dim,
+            paper_final=paper_final,
+            reject_smoke=reject_smoke,
+            model=dense_cfg.get("injected_model"),
+        )
 
     index_dir = Path(cache_path)
     index_built_during_run = False
@@ -194,7 +201,11 @@ def prepare_dense_runtime(config: dict[str, Any]) -> DenseRuntime:
     return runtime
 
 
-def prepare_hybrid_runtime(config: dict[str, Any]) -> HybridRuntime:
+def prepare_hybrid_runtime(
+    config: dict[str, Any],
+    *,
+    embedding_backend: Any | None = None,
+) -> HybridRuntime:
     from external_baselines.vanilla_rag.retriever import LexicalRetriever
 
     hybrid_cfg = config.get("hybrid_rag") or {}
@@ -215,7 +226,7 @@ def prepare_hybrid_runtime(config: dict[str, Any]) -> HybridRuntime:
     merged = dict(config)
     merged["dense_rag"] = dense_cfg
 
-    dense_runtime = prepare_dense_runtime(merged)
+    dense_runtime = prepare_dense_runtime(merged, embedding_backend=embedding_backend)
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     lexical = LexicalRetriever.from_jsonl(str(corpus_dir / "evidence_chunks.jsonl"))
     runtime = HybridRuntime(
@@ -229,7 +240,11 @@ def prepare_hybrid_runtime(config: dict[str, Any]) -> HybridRuntime:
     return runtime
 
 
-def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
+def prepare_ekell_runtime(
+    config: dict[str, Any],
+    *,
+    embedding_backend: Any | None = None,
+) -> EKELLRuntime:
     from external_baselines.ekell_style.embedding_backends import create_embedding_backend
     from external_baselines.ekell_style.kg_loader import load_kg
     from external_baselines.ekell_style.vector_index import VectorIndexError
@@ -255,15 +270,18 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
             return cached
 
     kg = load_kg(corpus_dir)
-    emb = create_embedding_backend(
-        backend_name,
-        model_name=model_name,
-        model_version=model_version,
-        dimension=dimension,
-        paper_final=paper_final,
-        reject_smoke=reject_smoke,
-        model=vector_cfg.get("injected_model"),
-    )
+    if embedding_backend is not None:
+        emb = embedding_backend
+    else:
+        emb = create_embedding_backend(
+            backend_name,
+            model_name=model_name,
+            model_version=model_version,
+            dimension=dimension,
+            paper_final=paper_final,
+            reject_smoke=reject_smoke,
+            model=vector_cfg.get("injected_model"),
+        )
 
     index_dir = Path(str(index_path)) if index_path else None
     index_built_during_run = False
@@ -319,14 +337,19 @@ def prepare_ekell_runtime(config: dict[str, Any]) -> EKELLRuntime:
     return runtime
 
 
-def prepare_method_runtime(method_id: str, config: dict[str, Any]) -> Any | None:
+def prepare_method_runtime(
+    method_id: str,
+    config: dict[str, Any],
+    *,
+    embedding_backend: Any | None = None,
+) -> Any | None:
     mid = canonicalize_method_id(method_id)
     if mid == "dense_rag":
-        return prepare_dense_runtime(config)
+        return prepare_dense_runtime(config, embedding_backend=embedding_backend)
     if mid == "hybrid_rag":
-        return prepare_hybrid_runtime(config)
+        return prepare_hybrid_runtime(config, embedding_backend=embedding_backend)
     if mid in {"ekell_style_controlled_shared_llm", "ekell_style_paper_fidelity"}:
-        return prepare_ekell_runtime(config)
+        return prepare_ekell_runtime(config, embedding_backend=embedding_backend)
     return None
 
 
