@@ -44,6 +44,39 @@ class FormalConfigurationError(FormalConfigError):
     """Alias for formal configuration failures in the decision suite."""
 
 
+class FormalRunFailed(RuntimeError):
+    """Raised when a formal comparison suite run fails after diagnostics are written."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.summary = summary or {}
+
+
+_SENSITIVE_ERROR_PATTERNS = (
+    "sk-",
+    "bearer ",
+    "api_key",
+    "authorization",
+)
+
+
+def sanitize_error_message(message: str) -> str:
+    """Redact likely secrets from formal failure messages."""
+    text = str(message or "")
+    lowered = text.lower()
+    for token in _SENSITIVE_ERROR_PATTERNS:
+        if token in lowered:
+            return "Formal run failed (details redacted)."
+    return text
+
+
 def _is_example_manifest(path: Path) -> bool:
     name = path.name.lower()
     return name.endswith(".example") or ".example" in name

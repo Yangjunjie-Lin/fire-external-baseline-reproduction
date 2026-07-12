@@ -28,7 +28,7 @@ REQUIRED_COMPLETE_FIELDS = (
 )
 
 RUNNER_BUNDLE_IDENTITY_FIELDS = (
-    "bundle_checksum",
+    "consumer_computed_hash",
     "input_cases_sha256",
     "prediction_schema_sha256",
     "corpus_aggregate_sha256",
@@ -40,7 +40,8 @@ def runner_bundle_block_from_freeze(freeze: dict[str, Any]) -> dict[str, Any]:
     if isinstance(block, dict):
         return dict(block)
     return {
-        "bundle_checksum": freeze.get("runner_bundle_checksum"),
+        "producer_declared_checksum": freeze.get("producer_declared_checksum"),
+        "consumer_computed_hash": freeze.get("runner_bundle_checksum"),
         "input_cases_sha256": freeze.get("input_cases_sha256"),
         "prediction_schema_sha256": freeze.get("prediction_schema_checksum"),
         "corpus_aggregate_sha256": freeze.get("corpus_checksum"),
@@ -100,7 +101,8 @@ def build_freeze_manifest_payload(
     experiment_manifest_path: str | Path,
     experiment_raw: dict[str, Any],
     selected_dev_run: str | Path,
-    bundle_checksum: str | None = None,
+    producer_declared_checksum: str | None = None,
+    consumer_computed_hash: str | None = None,
     input_cases_sha256: str | None = None,
     corpus_checksum: str | None = None,
     schema_checksum: str | None = None,
@@ -108,6 +110,7 @@ def build_freeze_manifest_payload(
     indexes: dict[str, Any] | None = None,
     embedding: dict[str, Any] | None = None,
     llm: dict[str, Any] | None = None,
+    producer_checksum_available: bool | None = None,
 ) -> dict[str, Any]:
     experiment_manifest_path = Path(experiment_manifest_path)
     selected = Path(selected_dev_run)
@@ -160,8 +163,15 @@ def build_freeze_manifest_payload(
             if key in indexes and isinstance(indexes[key], dict):
                 index_payload[key].update(indexes[key])
 
+    producer_available = (
+        producer_checksum_available
+        if producer_checksum_available is not None
+        else bool(producer_declared_checksum)
+    )
     runner_bundle_block = {
-        "bundle_checksum": bundle_checksum,
+        "producer_declared_checksum": producer_declared_checksum,
+        "consumer_computed_hash": consumer_computed_hash,
+        "producer_checksum_available": producer_available,
         "input_cases_sha256": input_cases_sha256,
         "prediction_schema_sha256": schema_checksum,
         "corpus_aggregate_sha256": corpus_checksum,
@@ -179,7 +189,8 @@ def build_freeze_manifest_payload(
         "method_config_sha256": method_hashes,
         "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
         "runner_bundle": runner_bundle_block,
-        "runner_bundle_checksum": bundle_checksum,
+        "runner_bundle_checksum": consumer_computed_hash,
+        "producer_declared_checksum": producer_declared_checksum,
         "input_cases_sha256": input_cases_sha256,
         "corpus_checksum": corpus_checksum,
         "prediction_schema_checksum": schema_checksum,
@@ -323,19 +334,30 @@ def validate_freeze_manifest(
     if require_complete:
         if not isinstance(freeze.get("runner_bundle"), dict):
             raise FormalConfigError("freeze_manifest missing runner_bundle block.")
+        if runner_block.get("bundle_checksum") and not (
+            runner_block.get("producer_declared_checksum") or runner_block.get("consumer_computed_hash")
+        ):
+            raise FormalConfigError("legacy_ambiguous_bundle_checksum_not_allowed")
         for field in RUNNER_BUNDLE_IDENTITY_FIELDS:
             if not runner_block.get(field):
                 raise FormalConfigError(f"freeze_manifest missing runner_bundle.{field}.")
+        producer_available = runner_block.get("producer_checksum_available")
+        if producer_available is None and runner_block.get("producer_declared_checksum"):
+            producer_available = True
+        if producer_available and not runner_block.get("producer_declared_checksum"):
+            raise FormalConfigError("freeze_manifest missing runner_bundle.producer_declared_checksum.")
 
     for block_field, expected, label in (
-        ("bundle_checksum", expected_runner_bundle_checksum, "runner_bundle.bundle_checksum"),
+        ("producer_declared_checksum", None, "runner_bundle.producer_declared_checksum"),
+        ("consumer_computed_hash", expected_runner_bundle_checksum, "runner_bundle.consumer_computed_hash"),
         ("input_cases_sha256", None, "runner_bundle.input_cases_sha256"),
         ("prediction_schema_sha256", expected_prediction_schema_checksum, "runner_bundle.prediction_schema_sha256"),
         ("corpus_aggregate_sha256", expected_corpus_checksum, "runner_bundle.corpus_aggregate_sha256"),
     ):
         freeze_val = runner_block.get(block_field) or freeze.get(
             {
-                "bundle_checksum": "runner_bundle_checksum",
+                "producer_declared_checksum": "producer_declared_checksum",
+                "consumer_computed_hash": "runner_bundle_checksum",
                 "input_cases_sha256": "input_cases_sha256",
                 "prediction_schema_sha256": "prediction_schema_checksum",
                 "corpus_aggregate_sha256": "corpus_checksum",
@@ -343,9 +365,11 @@ def validate_freeze_manifest(
         )
         if block_field == "input_cases_sha256" and require_complete and not freeze_val:
             raise FormalConfigError("freeze_manifest missing runner_bundle.input_cases_sha256.")
+        if block_field == "consumer_computed_hash" and require_complete and not freeze_val:
+            raise FormalConfigError("freeze_manifest missing runner_bundle.consumer_computed_hash.")
         if expected is not None:
             _check_optional_pair(freeze_val, expected, label=label, require=require_complete)
-        elif require_complete and freeze_val in (None, ""):
+        elif require_complete and block_field in RUNNER_BUNDLE_IDENTITY_FIELDS and freeze_val in (None, ""):
             raise FormalConfigError(f"freeze_manifest missing {label}.")
 
     # LLM identity vs shared config

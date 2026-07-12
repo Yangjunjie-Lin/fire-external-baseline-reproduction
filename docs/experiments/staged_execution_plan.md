@@ -179,7 +179,9 @@ Requires:
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (`outputs/diagnostics/decision_suite_preflight.json`; includes E-KELL prompt files)
-- **transactional** publish of predictions and decisions (temp dir → atomic publish only when pre-publish compliance passes; failures roll back both targets and leave `FORMAL_RUN_FAILED.json`)
+- **transactional** publish of predictions, decisions, and `suite_summary.json` (temp dir → atomic publish only when pre-publish compliance passes; failures roll back both targets, exit nonzero, and leave `FORMAL_RUN_FAILED.json`)
+- Formal CLI exits nonzero on any configuration/compliance/publish failure; dry-run may exit zero with `formal_result=false`
+- producer-declared checksum and consumer-computed hash are frozen and validated separately (legacy ambiguous `bundle_checksum` rejected in formal)
 - output under `outputs/interop/` (or formal directory)
 - dry-run artifacts must never report `formal_result=true`
 

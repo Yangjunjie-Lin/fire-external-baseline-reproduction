@@ -219,8 +219,11 @@ python scripts/validate_formal_config.py \
 
 - Manifest method entries are resolved before config merge (`get_method_entry` → `build_method_config`).
 - Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → transactional publish → `formal_result`.
+- **Formal failure always exits nonzero**; dry-run success may exit zero with `formal_result=false`.
+- Producer-declared and consumer-computed Runner Bundle checksums are frozen and validated separately.
 - Runner Bundle integrity is fail-closed; complete freeze includes `runner_bundle.input_cases_sha256`.
-- Predictions and decisions publish as one rollback-safe transaction; generated files under `outputs/` are never tracked.
+- Predictions, decisions, and `suite_summary.json` publish as one rollback-safe transaction.
+- Generated files under `outputs/` are never tracked.
 
 Heuristic smoke (no paid API):
 

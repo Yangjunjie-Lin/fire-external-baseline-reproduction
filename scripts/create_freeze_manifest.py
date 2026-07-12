@@ -78,6 +78,8 @@ def main(argv: list[str] | None = None) -> None:
         method_paths.setdefault(mid, method_paths.get(mid) or "")
 
     bundle_checksum = None
+    producer_declared_checksum = None
+    consumer_computed_hash = None
     input_cases_sha256 = None
     corpus_checksum = None
     schema_checksum = None
@@ -86,9 +88,9 @@ def main(argv: list[str] | None = None) -> None:
     if bundle_path and not _is_placeholder(bundle_path):
         try:
             bundle = load_runner_bundle(bundle_path)
-            bundle_checksum = bundle.get("consumer_computed_bundle_hash") or bundle.get(
-                "producer_declared_checksum"
-            )
+            producer_declared_checksum = bundle.get("producer_declared_checksum")
+            consumer_computed_hash = bundle.get("consumer_computed_bundle_hash")
+            bundle_checksum = consumer_computed_hash
             schema_checksum = bundle.get("prediction_schema_sha256")
             scenarios_path = bundle.get("scenarios_path")
             if scenarios_path:
@@ -145,13 +147,15 @@ def main(argv: list[str] | None = None) -> None:
         experiment_manifest_path=args.experiment_manifest,
         experiment_raw=raw,
         selected_dev_run=args.selected_dev_run,
-        bundle_checksum=bundle_checksum,
+        producer_declared_checksum=producer_declared_checksum,
+        consumer_computed_hash=consumer_computed_hash or bundle_checksum,
         input_cases_sha256=input_cases_sha256,
         corpus_checksum=corpus_checksum,
         schema_checksum=schema_checksum,
         method_config_paths=method_paths,
         indexes=indexes,
         embedding=embedding or None,
+        producer_checksum_available=bool(producer_declared_checksum),
     )
     if args.draft:
         payload["freeze_status"] = "draft"
@@ -169,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
                 experiment_manifest_path=args.experiment_manifest,
                 experiment_raw=raw,
                 require_complete=True,
-                expected_runner_bundle_checksum=bundle_checksum,
+                expected_runner_bundle_checksum=consumer_computed_hash or bundle_checksum,
                 expected_corpus_checksum=corpus_checksum,
                 expected_prediction_schema_checksum=schema_checksum,
                 loaded_index_manifests={

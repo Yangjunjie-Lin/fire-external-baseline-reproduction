@@ -153,7 +153,7 @@ def _validate_runner_bundle_integrity(
             "errors": [],
         }
 
-    frozen_identity = extract_frozen_runner_bundle_identity(freeze or {})
+    frozen_identity = extract_frozen_runner_bundle_identity(freeze or {}, formal=formal)
     live = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen_identity)
     if not live.get("input_cases_sha256") and bundle.get("scenarios_path"):
         live["input_cases_sha256"] = sha256_file(bundle.get("scenarios_path"))

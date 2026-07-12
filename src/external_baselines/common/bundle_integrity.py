@@ -9,23 +9,37 @@ from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.bundle import validate_bundle_checksum
 
 
-def extract_frozen_runner_bundle_identity(freeze: dict[str, Any]) -> dict[str, Any]:
+def extract_frozen_runner_bundle_identity(
+    freeze: dict[str, Any],
+    *,
+    formal: bool = False,
+) -> dict[str, Any]:
     """Normalize frozen Runner Bundle identity fields from a freeze manifest."""
-    runner_block = freeze.get("runner_bundle")
-    if isinstance(runner_block, dict):
+    runner_block = freeze.get("runner_bundle") if isinstance(freeze.get("runner_bundle"), dict) else {}
+    legacy_bundle = runner_block.get("bundle_checksum") or freeze.get("runner_bundle_checksum")
+    producer = runner_block.get("producer_declared_checksum")
+    consumer = runner_block.get("consumer_computed_hash")
+    if formal and legacy_bundle and producer in (None, "") and consumer in (None, ""):
         return {
-            "bundle_checksum": runner_block.get("bundle_checksum") or freeze.get("runner_bundle_checksum"),
+            "legacy_ambiguous_bundle_checksum": str(legacy_bundle),
             "input_cases_sha256": runner_block.get("input_cases_sha256") or freeze.get("input_cases_sha256"),
             "prediction_schema_sha256": runner_block.get("prediction_schema_sha256")
             or freeze.get("prediction_schema_checksum"),
             "corpus_aggregate_sha256": runner_block.get("corpus_aggregate_sha256")
             or freeze.get("corpus_checksum"),
         }
+    if not producer and not consumer and legacy_bundle:
+        producer = None
+        consumer = legacy_bundle
     return {
-        "bundle_checksum": freeze.get("runner_bundle_checksum"),
-        "input_cases_sha256": freeze.get("input_cases_sha256"),
-        "prediction_schema_sha256": freeze.get("prediction_schema_checksum"),
-        "corpus_aggregate_sha256": freeze.get("corpus_checksum"),
+        "producer_declared_checksum": producer,
+        "consumer_computed_hash": consumer,
+        "producer_checksum_available": runner_block.get("producer_checksum_available"),
+        "input_cases_sha256": runner_block.get("input_cases_sha256") or freeze.get("input_cases_sha256"),
+        "prediction_schema_sha256": runner_block.get("prediction_schema_sha256")
+        or freeze.get("prediction_schema_checksum"),
+        "corpus_aggregate_sha256": runner_block.get("corpus_aggregate_sha256")
+        or freeze.get("corpus_checksum"),
     }
 
 
@@ -57,21 +71,50 @@ def validate_formal_runner_bundle_integrity(
     mismatches: list[dict[str, Any]] = []
 
     frozen = dict(frozen_identity or {})
-    expected_bundle = str(frozen.get("bundle_checksum") or "").strip()
+    if frozen.get("legacy_ambiguous_bundle_checksum"):
+        errors.append("legacy_ambiguous_bundle_checksum_not_allowed")
+
+    expected_producer = frozen.get("producer_declared_checksum")
+    expected_consumer = str(frozen.get("consumer_computed_hash") or "").strip()
     expected_input = str(frozen.get("input_cases_sha256") or "").strip()
     expected_schema = str(frozen.get("prediction_schema_sha256") or "").strip()
     expected_corpus = str(frozen.get("corpus_aggregate_sha256") or "").strip()
 
-    frozen_identity_complete = all((expected_bundle, expected_input, expected_schema, expected_corpus))
+    live_producer = live.get("producer_declared_checksum")
+    live_consumer = str(live.get("consumer_computed_hash") or "").strip()
+
+    frozen_identity_complete = all((expected_consumer, expected_input, expected_schema, expected_corpus))
     if not frozen_identity_complete:
         errors.append("frozen_bundle_identity_missing")
 
-    bundle_validation = validate_bundle_checksum(
-        bundle,
-        expected=expected_bundle or None,
-    )
-    bundle_checksum_ok = bundle_validation.get("ok") is True
+    producer_required = expected_producer not in (None, "")
+    producer_checksum_match = True
+    if producer_required:
+        if not live_producer or str(live_producer) != str(expected_producer):
+            producer_checksum_match = False
+            errors.append("producer_declared_checksum_mismatch")
+            mismatches.append(
+                {
+                    "field": "producer_declared_checksum",
+                    "expected": expected_producer,
+                    "actual": live_producer,
+                }
+            )
+    elif live_producer not in (None, ""):
+        producer_checksum_match = True
 
+    consumer_hash_match = bool(expected_consumer and live_consumer and expected_consumer == live_consumer)
+    if expected_consumer and not consumer_hash_match:
+        errors.append("consumer_computed_hash_mismatch")
+        mismatches.append(
+            {
+                "field": "consumer_computed_hash",
+                "expected": expected_consumer,
+                "actual": live_consumer or None,
+            }
+        )
+
+    bundle_validation = validate_bundle_checksum(bundle)
     file_report_checked = bool(file_report.get("checked"))
     file_report_ok = file_report.get("ok") is True if file_report_checked else None
 
@@ -79,17 +122,6 @@ def validate_formal_runner_bundle_integrity(
         errors.append("runner_bundle_file_checksum_mismatch")
         for item in file_report.get("mismatches") or []:
             mismatches.append({"type": "file_checksum", "detail": item})
-
-    if expected_bundle and not bundle_checksum_ok:
-        errors.append("runner_bundle_checksum_mismatch")
-        mismatches.append(
-            {
-                "field": "bundle_checksum",
-                "expected": expected_bundle,
-                "actual": bundle_validation.get("producer_declared_checksum")
-                or bundle_validation.get("recomputed"),
-            }
-        )
 
     input_cases_integrity = True
     if expected_input:
@@ -122,10 +154,15 @@ def validate_formal_runner_bundle_integrity(
             )
 
     if file_report_checked:
-        integrity_evidence_ok = file_report_ok is True and bundle_checksum_ok
+        integrity_evidence_ok = (
+            file_report_ok is True
+            and consumer_hash_match
+            and (producer_checksum_match if producer_required else True)
+        )
     elif frozen_identity_complete:
         integrity_evidence_ok = (
-            bundle_checksum_ok
+            consumer_hash_match
+            and (producer_checksum_match if producer_required else True)
             and input_cases_integrity
             and prediction_schema_integrity
             and corpus_integrity
@@ -137,7 +174,8 @@ def validate_formal_runner_bundle_integrity(
     ok = (
         not errors
         and integrity_evidence_ok
-        and bundle_checksum_ok
+        and consumer_hash_match
+        and (producer_checksum_match if producer_required else True)
         and input_cases_integrity
         and prediction_schema_integrity
         and corpus_integrity
@@ -145,15 +183,17 @@ def validate_formal_runner_bundle_integrity(
 
     return {
         "ok": ok,
-        "bundle_checksum_ok": bundle_checksum_ok,
+        "producer_declared_checksum": live_producer,
+        "expected_producer_declared_checksum": expected_producer,
+        "producer_checksum_match": producer_checksum_match,
+        "consumer_computed_hash": live_consumer or None,
+        "expected_consumer_computed_hash": expected_consumer or None,
+        "consumer_hash_match": consumer_hash_match,
         "input_cases_integrity": input_cases_integrity,
         "prediction_schema_integrity": prediction_schema_integrity,
         "corpus_integrity": corpus_integrity,
         "per_file_checksums_checked": file_report_checked,
         "per_file_checksums_ok": file_report_ok,
-        "producer_declared_checksum": live.get("producer_declared_checksum"),
-        "consumer_computed_hash": live.get("consumer_computed_hash"),
-        "expected_frozen_checksum": expected_bundle or None,
         "input_cases_sha256": live.get("input_cases_sha256"),
         "expected_input_cases_sha256": expected_input or None,
         "prediction_schema_sha256": live.get("prediction_schema_sha256"),

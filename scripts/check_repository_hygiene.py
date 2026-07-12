@@ -86,6 +86,8 @@ def scan() -> dict[str, object]:
             if rel.endswith(".json") or rel.endswith(".jsonl"):
                 for pattern in LOCAL_PATH_PATTERNS:
                     if pattern.search(text):
+                        if rel.startswith("outputs/") and rel not in tracked:
+                            break
                         findings.append({"type": "local_temp_path_in_fixture", "path": rel})
                         break
 
