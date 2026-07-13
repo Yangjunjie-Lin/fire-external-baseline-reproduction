@@ -220,6 +220,9 @@ outputs/formal/
 - Engineering release-readiness gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.
 - Formal 推荐使用 `--formal-run-root`；提供 formal run root 时无需额外 `--prediction-dir` / `--decision-dir`。
 - Legacy 双目录模式仅允许共享同一 run root；`jsonschema` 为核心运行依赖；Hybrid wrapper 不拥有共享 Dense runtime 的关闭权。
+- Dense/E-KELL 由 suite cache scope 关闭；Hybrid wrapper 在方法结束时关闭；cleanup 失败不会掩盖主流程异常。
+- Release readiness 区分 engineering / empirical；engineering gate 失败退出非零；empirical pending 不阻断工程 CI。
+- Formal YAML 安全字段要求精确 boolean 与正整数 dimension，拒绝 string/float/bool 隐式转换。
 - Engineering readiness 与 empirical/paper readiness 分离；CI 不声称远程 workflow 已通过。
 - Offline Formal E2E injects only LLM transport and embedding-compute boundaries.
 - Post-commit warning failures are printed and returned, but never mutate or invalidate the committed run.

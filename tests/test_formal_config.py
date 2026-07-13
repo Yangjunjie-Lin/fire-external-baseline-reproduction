@@ -220,6 +220,50 @@ def test_rejects_string_dimension():
         _validate_positive_dimension("768", allow_placeholders=False)
 
 
+def test_formal_config_rejects_dimension_string():
+    with pytest.raises(FormalConfigError, match="dense_rag.dimension"):
+        _validate_positive_dimension("8", allow_placeholders=False, field="dense_rag.dimension")
+
+
+def test_formal_config_rejects_dimension_float():
+    with pytest.raises(FormalConfigError, match="dense_rag.dimension"):
+        _validate_positive_dimension(8.0, allow_placeholders=False, field="dense_rag.dimension")
+
+
+def test_formal_config_rejects_dimension_bool():
+    with pytest.raises(FormalConfigError, match="dense_rag.dimension"):
+        _validate_positive_dimension(True, allow_placeholders=False, field="dense_rag.dimension")
+
+
+def test_formal_config_rejects_reject_smoke_string_false():
+    from external_baselines.common.formal_config_validator import _validate_exact_bool
+
+    with pytest.raises(FormalConfigError, match="dense_rag.reject_smoke"):
+        _validate_exact_bool("false", field="dense_rag.reject_smoke", required=True)
+
+
+def test_formal_config_rejects_reject_smoke_integer_one():
+    from external_baselines.common.formal_config_validator import _validate_exact_bool
+
+    with pytest.raises(FormalConfigError, match="dense_rag.reject_smoke"):
+        _validate_exact_bool(1, field="dense_rag.reject_smoke", required=True)
+
+
+def test_formal_config_rejects_paper_final_string_true():
+    from external_baselines.common.formal_config_validator import _validate_exact_bool
+
+    with pytest.raises(FormalConfigError, match="paper_final"):
+        _validate_exact_bool("true", field="paper_final", required=True)
+
+
+def test_formal_config_accepts_exact_bool_and_int():
+    from external_baselines.common.formal_config_validator import _validate_exact_bool
+
+    assert _validate_exact_bool(True, field="dense_rag.reject_smoke", required=True) is True
+    assert _validate_exact_bool(False, field="dense_rag.reject_smoke", required=False) is False
+    assert _validate_positive_dimension(8, allow_placeholders=False, field="dense_rag.dimension") == 8
+
+
 # --- .example protection ---
 
 

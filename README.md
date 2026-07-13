@@ -271,6 +271,11 @@ python scripts/validate_formal_config.py \
 - Formal temp artifacts are created **only after** static validation and five-method preflight pass.
 - Formal diagnostics and failure records live in an external **control root** (`.<run-root-name>.control/`) and never mutate the published run root before commit.
 - Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename. **No core formal artifact is rewritten after commit.**
+- `--formal-run-root` is the recommended Formal output interface and automatically derives `predictions/` and `decisions/` beneath one immutable run root. Legacy `--prediction-dir` / `--decision-dir` remain supported only when both paths share that same Formal root.
+- `jsonschema` is a core runtime dependency because frozen Draft 2020-12 schema validation is mandatory for Formal execution.
+- Dense and E-KELL runtimes are cache-owned. Hybrid wrappers are method-owned (`owns_dense_runtime=False`) and do not close their shared Dense dependency. Runtime cleanup failures cannot mask the original suite failure.
+- Release-readiness distinguishes engineering readiness from empirical readiness. Engineering gate failures return a non-zero exit code; pending real experiments do not fail engineering CI.
+- Formal YAML safety fields require exact YAML booleans and positive integer dimensions without string, float, or boolean coercion.
 - Publish phases: **PREPARE** (backup) → **STAGED PACKAGE** (final `suite_summary.json`, `run_manifest.json`, preflight copy) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures write warnings/receipts to control root only).
 - Post-commit cleanup or receipt failures are non-destructive warnings; committed runs are never rolled back.
 - Immutable `suite_summary.json` records staged compliance and atomic publication success but does **not** pre-declare backup cleanup outcome (`transactional_cleanup_complete: null`). Actual cleanup status lives in external `publish_receipt.json`.

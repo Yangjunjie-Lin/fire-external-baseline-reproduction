@@ -4997,6 +4997,14 @@ def test_runtime_cache_scopes_overlap_without_sharing():
 
 
 def test_runtime_cache_scope_a_exit_does_not_clear_b():
+    _assert_runtime_cache_scope_a_exit_does_not_clear_active_b()
+
+
+def test_runtime_cache_scope_a_exit_does_not_clear_active_b():
+    _assert_runtime_cache_scope_a_exit_does_not_clear_active_b()
+
+
+def _assert_runtime_cache_scope_a_exit_does_not_clear_active_b() -> None:
     import threading
 
     from external_baselines.common.method_runtime import runtime_cache_scope
@@ -5030,10 +5038,16 @@ def test_runtime_cache_scope_a_exit_does_not_clear_b():
     thread_a = threading.Thread(target=_run_a)
     thread_b.start()
     thread_a.start()
-    thread_a.join(timeout=60)
     thread_b.join(timeout=60)
+    thread_a.join(timeout=60)
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
     assert not errors, errors
     assert b_marker_seen.is_set()
+
+
+def test_concurrent_suites_with_different_backends_are_isolated(tmp_path):
+    _assert_concurrent_suites_different_backends_isolated(tmp_path)
 
 
 def test_runtime_cache_suite_end_does_not_clear_other_suite(tmp_path):
@@ -5931,6 +5945,33 @@ def test_formal_cli_accepts_formal_run_root_without_legacy_dirs(tmp_path):
     assert paths.decision_dir == tmp_path / "formal" / "decisions"
 
 
+def test_formal_cli_subprocess_accepts_formal_run_root_without_legacy_dirs(tmp_path):
+    """Real CLI subprocess must not fail argparse for missing --prediction-dir/--decision-dir."""
+    import subprocess
+    import sys
+
+    formal_root = tmp_path / "formal"
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "run_decision_comparison_suite.py"),
+        "--runner-bundle",
+        str(tmp_path / "missing-bundle"),
+        "--method-set",
+        "comparison_suite",
+        "--execution-stage",
+        "formal",
+        "--formal-run-root",
+        str(formal_root),
+        "--experiment-manifest",
+        str(tmp_path / "missing-manifest.yaml"),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "the following arguments are required: --prediction-dir" not in combined
+    assert "the following arguments are required: --decision-dir" not in combined
+    assert result.returncode != 0  # missing bundle/manifest still fail-closed later
+
+
 def test_formal_cli_derives_prediction_and_decision_dirs(tmp_path):
     from scripts.run_decision_comparison_suite import resolve_cli_output_paths
 
@@ -6004,7 +6045,7 @@ def test_dry_run_requires_explicit_output_dirs():
     from scripts.run_decision_comparison_suite import resolve_cli_output_paths
 
     args = _cli_args(execution_stage="dry_run")
-    with pytest.raises(CLIValidationError, match="dry_run_output_paths_incomplete"):
+    with pytest.raises(CLIValidationError, match="dry_run_requires_prediction_and_decision_dirs"):
         resolve_cli_output_paths(args)
 
 
@@ -6025,7 +6066,7 @@ def test_dry_run_cli_missing_dirs_returns_structured_error(capsys):
     payload = json.loads(captured.err.strip())
     assert payload["execution_stage"] == "dry_run"
     assert payload["stage"] == "cli_validation"
-    assert payload["error"] == "dry_run_output_paths_incomplete"
+    assert payload["error"] == "dry_run_requires_prediction_and_decision_dirs"
 
 
 def test_build_argument_parser_accepts_recommended_formal_args(tmp_path):
@@ -6539,6 +6580,10 @@ def test_one_close_failure_does_not_skip_other_runtime_cleanup():
 
 
 def test_concurrent_suites_different_backends_do_not_conflict(tmp_path):
+    _assert_concurrent_suites_different_backends_isolated(tmp_path)
+
+
+def _assert_concurrent_suites_different_backends_isolated(tmp_path: Path) -> None:
     import threading
 
     from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
@@ -6601,6 +6646,7 @@ def test_concurrent_suites_different_backends_do_not_conflict(tmp_path):
         thread.start()
     for thread in threads:
         thread.join(timeout=60)
+        assert not thread.is_alive()
     assert not errors, errors
     assert runtime_ids["a"] != runtime_ids["b"]
     assert cache_ids["a"] != cache_ids["b"]

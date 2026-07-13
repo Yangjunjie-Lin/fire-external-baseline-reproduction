@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from external_baselines.common.method_runtime import (
     clear_runtime_cache,
     close_method_runtime,
@@ -295,3 +297,205 @@ def test_runtime_closed_after_method_run(tmp_path: Path) -> None:
     }
     runtime = prepare_dense_runtime(config)
     close_method_runtime(runtime)  # should not raise
+
+
+def test_hybrid_wrapper_is_not_considered_cached(tmp_path: Path) -> None:
+    from external_baselines.common.method_runtime import HybridRuntime, runtime_cache_scope, runtime_is_cached
+
+    clear_runtime_cache()
+    evidence = _evidence(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "evidence_chunks.jsonl").write_text(evidence.read_text(encoding="utf-8"), encoding="utf-8")
+    fake = CountingFakeModel(8)
+    index_dir = tmp_path / "dense_idx"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=index_dir,
+        embedding_model=fake,
+        reject_smoke=True,
+    )
+    config = {
+        "paths": {"corpus_dir": str(corpus)},
+        "dense_rag": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(index_dir),
+            "injected_model": CountingFakeModel(8),
+            "allow_index_rebuild": False,
+        },
+        "hybrid_rag": {"rrf_k": 60, "top_k": 2, "candidate_pool": 5},
+        "llm": {"provider": "heuristic"},
+    }
+    with runtime_cache_scope():
+        dense = prepare_dense_runtime(config)
+        hybrid = prepare_hybrid_runtime(config)
+        assert runtime_is_cached(dense) is True
+        assert runtime_is_cached(hybrid) is False
+        assert hybrid.owns_dense_runtime is False
+        assert isinstance(hybrid, HybridRuntime)
+
+
+def test_shared_dense_remains_open_until_scope_exit(tmp_path: Path) -> None:
+    from external_baselines.common.method_runtime import runtime_cache_scope
+
+    clear_runtime_cache()
+    evidence = _evidence(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "evidence_chunks.jsonl").write_text(evidence.read_text(encoding="utf-8"), encoding="utf-8")
+    index_dir = tmp_path / "dense_idx"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=index_dir,
+        embedding_model=CountingFakeModel(8),
+        reject_smoke=True,
+    )
+    config = {
+        "paths": {"corpus_dir": str(corpus)},
+        "dense_rag": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(index_dir),
+            "injected_model": CountingFakeModel(8),
+            "allow_index_rebuild": False,
+        },
+        "hybrid_rag": {"rrf_k": 60, "top_k": 2, "candidate_pool": 5},
+        "llm": {"provider": "heuristic"},
+    }
+    with runtime_cache_scope():
+        dense = prepare_dense_runtime(config)
+        hybrid = prepare_hybrid_runtime(config)
+        close_method_runtime(hybrid)
+        assert hybrid._closed is True
+        assert dense._closed is False
+    assert dense._closed is True
+
+
+def test_dense_closed_at_scope_exit(tmp_path: Path) -> None:
+    from external_baselines.common.method_runtime import runtime_cache_scope
+
+    clear_runtime_cache()
+    evidence = _evidence(tmp_path)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "evidence_chunks.jsonl").write_text(evidence.read_text(encoding="utf-8"), encoding="utf-8")
+    index_dir = tmp_path / "dense_idx"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=index_dir,
+        embedding_model=CountingFakeModel(8),
+        reject_smoke=True,
+    )
+    config = {
+        "paths": {"corpus_dir": str(corpus)},
+        "dense_rag": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(index_dir),
+            "injected_model": CountingFakeModel(8),
+            "allow_index_rebuild": False,
+        },
+        "llm": {"provider": "heuristic"},
+    }
+    with runtime_cache_scope():
+        dense = prepare_dense_runtime(config)
+        assert dense._closed is False
+    assert dense._closed is True
+
+
+def test_ekell_closed_at_scope_exit(tmp_path: Path) -> None:
+    from external_baselines.common.method_runtime import runtime_cache_scope
+
+    clear_runtime_cache()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "entities.jsonl").write_text('{"entity_id":"e1","name":"hose"}\n', encoding="utf-8")
+    (corpus / "relations.jsonl").write_text('{"relation_id":"r1","name":"r"}\n', encoding="utf-8")
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"r","tail":"fire","source_id":"t1"}\n', encoding="utf-8"
+    )
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '{"chunk_id":"c1","text":"hose","source_id":"s1"}\n', encoding="utf-8"
+    )
+    fake = CountingFakeModel(8)
+    backend = create_embedding_backend(
+        "text2vec", model_name="fake/bge", model_version="v-test", dimension=8, model=fake
+    )
+    kg = FireKG(
+        entities=[{"entity_id": "e1", "name": "hose"}],
+        relations=[{"relation_id": "r1", "name": "r"}],
+        triples=[{"head": "hose", "relation": "r", "tail": "fire", "source_id": "t1"}],
+        evidence_chunks=[{"chunk_id": "c1", "text": "hose", "source_id": "s1"}],
+    )
+    index_dir = tmp_path / "ekell"
+    VectorIndex.from_kg(kg, backend).save_directory(index_dir)
+    config = {
+        "paths": {"corpus_dir": str(corpus)},
+        "ekell_vector": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "index_path": str(index_dir),
+            "injected_model": CountingFakeModel(8),
+        },
+        "llm": {"provider": "heuristic"},
+    }
+    with runtime_cache_scope():
+        runtime = prepare_ekell_runtime(config)
+        assert runtime._closed is False
+    assert runtime._closed is True
+
+
+def test_close_error_does_not_mask_primary_error() -> None:
+    from external_baselines.common.method_runtime import DenseRuntime, runtime_cache_scope
+
+    class _Broken(DenseRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(ValueError, match="primary"):
+        with runtime_cache_scope() as cache:
+            cache[("x",)] = _Broken(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )
+            raise ValueError("primary")
+
+
+def test_close_error_without_primary_error_is_reported() -> None:
+    from external_baselines.common.method_runtime import DenseRuntime, RuntimeCleanupError, runtime_cache_scope
+
+    class _Broken(DenseRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeCleanupError):
+        with runtime_cache_scope() as cache:
+            cache[("x",)] = _Broken(
+                embedding_backend=object(),
+                dense_index=object(),
+                retriever=object(),
+                index_manifest={},
+            )

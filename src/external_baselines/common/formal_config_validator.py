@@ -332,8 +332,11 @@ def validate_dense_config_for_real_run(
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal Dense RAG requires dense_rag.{field} (non-placeholder).")
     dim = dense.get("dimension", dense.get("dim"))
+    validated_dim: int | None = None
     if not (allow_placeholders and _is_placeholder(dim)):
-        _validate_positive_dimension(dim, allow_placeholders=allow_placeholders, field="dense_rag.dimension")
+        validated_dim = _validate_positive_dimension(
+            dim, allow_placeholders=allow_placeholders, field="dense_rag.dimension"
+        )
     if "batch_size" in dense and not allow_placeholders:
         _validate_exact_int(dense["batch_size"], field="dense_rag.batch_size", minimum=1)
     if "normalize_embeddings" not in dense and not allow_placeholders:
@@ -366,7 +369,7 @@ def validate_dense_config_for_real_run(
                     expected_model_name=str(dense.get("model_name") or ""),
                     expected_model_version=str(dense.get("model_version") or ""),
                     expected_backend=backend,
-                    expected_dimension=int(dim) if dim is not None else None,
+                    expected_dimension=validated_dim,
                     expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
                 )
             except DenseIndexError as exc:
@@ -806,7 +809,17 @@ def validate_experiment_manifest(
         if mid in pf_expected and mid in declared_supp:
             errors.append(f"paper-fidelity method {mid!r} listed in supplemental_methods.")
 
-        should_validate = bool(entry.get("enabled", True)) and mid in required_formal_ids
+        if "enabled" not in entry:
+            enabled = True
+        else:
+            raw_enabled = entry.get("enabled")
+            if type(raw_enabled) is not bool:
+                errors.append(
+                    f"methods entry for {mid!r}: enabled must be an exact YAML boolean"
+                )
+                continue
+            enabled = raw_enabled
+        should_validate = enabled and mid in required_formal_ids
         if method_set_name == "comparison_suite" and mid in COMPARISON_FORMAL_METHOD_IDS:
             should_validate = True
         if should_validate:

@@ -214,6 +214,8 @@ python scripts/run_decision_comparison_suite.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
 ```
 
+`--formal-run-root` alone is sufficient for Formal output layout (`predictions/` and `decisions/` are derived). Legacy `--prediction-dir` / `--decision-dir` must share the same Formal root when used.
+
 Legacy combined runner (also no `--limit` in formal):
 
 ```bash

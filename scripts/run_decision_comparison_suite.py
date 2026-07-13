@@ -338,7 +338,7 @@ def resolve_cli_output_paths(args: argparse.Namespace) -> ResolvedOutputPaths:
         return ResolvedOutputPaths(None, layout.prediction_dir, layout.decision_dir)
 
     if pred_arg is None or dec_arg is None:
-        raise CLIValidationError("dry_run_output_paths_incomplete")
+        raise CLIValidationError("dry_run_requires_prediction_and_decision_dirs")
     return ResolvedOutputPaths(None, pred_arg, dec_arg)
 
 

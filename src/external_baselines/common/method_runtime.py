@@ -65,6 +65,7 @@ class HybridRuntime:
     lexical_retriever: Any
     dense_runtime: DenseRuntime
     audit: RuntimeAudit = field(default_factory=RuntimeAudit)
+    owns_dense_runtime: bool = False
     _closed: bool = field(default=False, repr=False, compare=False)
 
     def close(self) -> None:
@@ -74,6 +75,9 @@ class HybridRuntime:
         closer = getattr(self.lexical_retriever, "close", None)
         if callable(closer):
             closer()
+        # Shared Dense is cache-owned; only close when this wrapper uniquely owns it.
+        if self.owns_dense_runtime and self.dense_runtime is not None:
+            self.dense_runtime.close()
 
 
 class RuntimeCleanupError(RuntimeError):
@@ -396,6 +400,7 @@ def prepare_hybrid_runtime(
     runtime = HybridRuntime(
         lexical_retriever=lexical,
         dense_runtime=dense_runtime,
+        owns_dense_runtime=False,
         audit=RuntimeAudit(
             embedding_model_load_count=dense_runtime.audit.embedding_model_load_count,
             index_load_count=dense_runtime.audit.index_load_count,
