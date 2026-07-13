@@ -22,6 +22,7 @@ from external_baselines.common.generation_identity import (
     validate_shared_generation_identity,
 )
 from external_baselines.common.io import read_json, read_jsonl, read_yaml
+from external_baselines.common.strict_config_types import require_exact_int, require_exact_nonempty_string
 from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 from external_baselines.method_registry import canonicalize_method_id
 
@@ -142,6 +143,14 @@ def _validate_runner_bundle_integrity(
             "expected_input_cases_sha256": None,
             "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
             "expected_prediction_schema_sha256": None,
+            "prediction_schema_source": bundle.get("prediction_schema_source"),
+            "prediction_schema_path": bundle.get("prediction_schema_path"),
+            "prediction_schema_declared_sha256": bundle.get("prediction_schema_declared_sha256"),
+            "prediction_schema_inside_bundle": bundle.get("prediction_schema_inside_bundle"),
+            "prediction_schema_checksum_declared": bundle.get("prediction_schema_checksum_declared"),
+            "prediction_schema_checksum_match": bundle.get("prediction_schema_checksum_match"),
+            "prediction_schema_authoritative": bundle.get("prediction_schema_authoritative"),
+            "prediction_schema_formal_eligible": bundle.get("prediction_schema_formal_eligible"),
             "corpus_aggregate_sha256": (
                 (bundle.get("corpus_manifest") or {}).get("aggregate_sha256")
                 if isinstance(bundle.get("corpus_manifest"), dict)
@@ -262,6 +271,18 @@ def _preflight_llm_identity(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _preflight_string(value: Any, *, field: str, formal: bool) -> str:
+    if formal:
+        return require_exact_nonempty_string(value, field=field)
+    return str(value or "")
+
+
+def _preflight_int(value: Any, *, field: str, formal: bool) -> int | None:
+    if formal:
+        return require_exact_int(value, field=field, minimum=1)
+    return int(value or 0) or None
+
+
 def _preflight_method_resources(
     method_id: str,
     config: dict[str, Any],
@@ -295,17 +316,21 @@ def _preflight_method_resources(
             return result
     elif method_id == "dense_rag":
         dense = config.get("dense_rag") or {}
-        index_path = _resolve_path(config, str(dense.get("index_path") or ""))
+        index_path = _resolve_path(config, _preflight_string(dense.get("index_path"), field="dense_rag.index_path", formal=formal))
         from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
 
         try:
             payload = validate_dense_index_directory(
                 index_path,
                 load_embeddings=formal,
-                expected_model_name=str(dense.get("model_name") or ""),
-                expected_model_version=str(dense.get("model_version") or ""),
-                expected_backend=str(dense.get("backend") or ""),
-                expected_dimension=int(dense.get("dimension") or dense.get("dim") or 0) or None,
+                expected_model_name=_preflight_string(dense.get("model_name"), field="dense_rag.model_name", formal=formal),
+                expected_model_version=_preflight_string(dense.get("model_version"), field="dense_rag.model_version", formal=formal),
+                expected_backend=_preflight_string(dense.get("backend"), field="dense_rag.backend", formal=formal),
+                expected_dimension=_preflight_int(
+                    dense["dimension"] if "dimension" in dense else dense.get("dim"),
+                    field="dense_rag.dimension",
+                    formal=formal,
+                ),
                 require_explicit_embedding_evidence=formal,
             )
             result.index_identity = dict(payload.get("manifest") or payload)
@@ -316,7 +341,7 @@ def _preflight_method_resources(
                 "actual_embedding_used": (payload.get("manifest") or {}).get("actual_embedding_used"),
                 "smoke_fallback_used": (payload.get("manifest") or {}).get("smoke_fallback_used"),
             }
-        except DenseIndexError as exc:
+        except (DenseIndexError, ValueError) as exc:
             result.errors.append(str(exc))
             return result
     elif method_id == "hybrid_rag":
@@ -328,20 +353,35 @@ def _preflight_method_resources(
         hybrid = config.get("hybrid_rag") or {}
         index_path = _resolve_path(
             config,
-            str(dense_cfg.get("index_path") or hybrid.get("dense_index_path") or ""),
+            _preflight_string(
+                dense_cfg.get("index_path") or hybrid.get("dense_index_path"),
+                field="dense_rag.index_path",
+                formal=formal,
+            ),
         )
         from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
 
         try:
+            dimension_value = dense_cfg["dimension"] if "dimension" in dense_cfg else hybrid.get("dimension")
             payload = validate_dense_index_directory(
                 index_path,
                 load_embeddings=formal,
-                expected_model_name=str(dense_cfg.get("model_name") or hybrid.get("dense_model_name") or ""),
-                expected_model_version=str(
-                    dense_cfg.get("model_version") or hybrid.get("dense_model_version") or ""
+                expected_model_name=_preflight_string(
+                    dense_cfg.get("model_name") or hybrid.get("dense_model_name"),
+                    field="dense_rag.model_name",
+                    formal=formal,
                 ),
-                expected_backend=str(dense_cfg.get("backend") or hybrid.get("dense_method") or ""),
-                expected_dimension=int(dense_cfg.get("dimension") or hybrid.get("dimension") or 0) or None,
+                expected_model_version=_preflight_string(
+                    dense_cfg.get("model_version") or hybrid.get("dense_model_version"),
+                    field="dense_rag.model_version",
+                    formal=formal,
+                ),
+                expected_backend=_preflight_string(
+                    dense_cfg.get("backend") or hybrid.get("dense_method"),
+                    field="dense_rag.backend",
+                    formal=formal,
+                ),
+                expected_dimension=_preflight_int(dimension_value, field="dense_rag.dimension", formal=formal),
                 require_explicit_embedding_evidence=formal,
             )
             result.index_identity = dict(payload.get("manifest") or payload)
@@ -352,7 +392,7 @@ def _preflight_method_resources(
                 "actual_embedding_used": (payload.get("manifest") or {}).get("actual_embedding_used"),
                 "smoke_fallback_used": (payload.get("manifest") or {}).get("smoke_fallback_used"),
             }
-        except DenseIndexError as exc:
+        except (DenseIndexError, ValueError) as exc:
             result.errors.append(str(exc))
             return result
     elif method_id == "ekell_style_controlled_shared_llm":
@@ -360,17 +400,21 @@ def _preflight_method_resources(
         if result.errors:
             return result
         vector = config.get("ekell_vector") or {}
-        index_path = _resolve_path(config, str(vector.get("index_path") or ""))
+        index_path = _resolve_path(config, _preflight_string(vector.get("index_path"), field="ekell_vector.index_path", formal=formal))
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
 
         try:
             manifest = VectorIndex.validate_directory(
                 index_path,
                 load_embeddings=formal,
-                expected_backend=str(vector.get("backend") or ""),
-                expected_model_name=str(vector.get("model_name") or ""),
-                expected_model_version=str(vector.get("model_version") or ""),
-                expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                expected_backend=_preflight_string(vector.get("backend"), field="ekell_vector.backend", formal=formal),
+                expected_model_name=_preflight_string(vector.get("model_name"), field="ekell_vector.model_name", formal=formal),
+                expected_model_version=_preflight_string(vector.get("model_version"), field="ekell_vector.model_version", formal=formal),
+                expected_dimension=_preflight_int(
+                    vector["dimension"] if "dimension" in vector else vector.get("dim"),
+                    field="ekell_vector.dimension",
+                    formal=formal,
+                ),
                 require_real_embedding=formal,
             )
             result.index_identity = dict(manifest)
@@ -381,7 +425,7 @@ def _preflight_method_resources(
                 "actual_embedding_used": manifest.get("actual_embedding_used"),
                 "smoke_fallback_used": manifest.get("smoke_fallback_used"),
             }
-        except VectorIndexError as exc:
+        except (VectorIndexError, ValueError) as exc:
             result.errors.append(str(exc))
             return result
         prompt_dir_raw = (config.get("ekell_style") or {}).get("prompt_dir") or "configs/prompts/controlled"
@@ -410,7 +454,7 @@ def preflight_decision_suite(
 ) -> dict[str, Any]:
     """Validate all method resources before any LLM client initialization."""
     formal = execution_stage == "formal"
-    bundle = load_runner_bundle(runner_bundle)
+    bundle = load_runner_bundle(runner_bundle, formal=formal)
     freeze = _load_freeze_manifest(experiment_manifest) if formal else None
     scenarios_path = bundle.get("scenarios_path")
     schema_path = bundle.get("prediction_schema_path")

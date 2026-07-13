@@ -1348,6 +1348,7 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
             [
                 "experiment_id: formal_offline_e2e",
                 "schema_version: firebench-interop-v1",
+                "track: A_shared_outcome",
                 f"shared_model_config: {shared.as_posix()}",
                 "base_config: configs/default.yaml",
                 "freeze_status: frozen",
@@ -1552,6 +1553,13 @@ def _formal_method_configs(
 # --- Bundle checksum tests ---
 
 
+def _rewrite_bundle_manifest(bundle_dir: Path, mutate) -> None:
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+
 def test_formal_preflight_validates_bundle_checksum(tmp_path):
     from external_baselines.common.bundle_integrity import validate_formal_runner_bundle_integrity
 
@@ -1561,6 +1569,107 @@ def test_formal_preflight_validates_bundle_checksum(tmp_path):
     result = validate_formal_runner_bundle_integrity(bundle, frozen_identity=frozen)
     assert result["ok"] is True
     assert result["file_checksum_report_ok"] is True
+    assert result["prediction_schema_authority_ok"] is True
+
+
+def test_formal_bundle_requires_manifest_files_prediction_schema(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    _rewrite_bundle_manifest(bundle_dir, lambda manifest: manifest["files"].pop("prediction_schema"))
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_missing"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_rejects_implicit_root_prediction_schema(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    _rewrite_bundle_manifest(bundle_dir, lambda manifest: manifest["files"].pop("prediction_schema"))
+    dry = load_runner_bundle(bundle_dir)
+    assert dry["prediction_schema_source"] == "bundle_implicit_file"
+    assert dry["prediction_schema_authoritative"] is False
+    assert dry["prediction_schema_formal_eligible"] is False
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_missing"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_rejects_repo_local_schema_fallback(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    (bundle_dir / "prediction_schema.json").unlink()
+    _rewrite_bundle_manifest(bundle_dir, lambda manifest: manifest["files"].pop("prediction_schema"))
+    dry = load_runner_bundle(bundle_dir)
+    assert dry["prediction_schema_source"] == "local_development_snapshot"
+    assert dry["prediction_schema_authoritative"] is False
+    assert dry["prediction_schema_formal_eligible"] is False
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_missing"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_must_be_inside_bundle(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    outside = tmp_path / "outside_schema.json"
+    outside.write_text("{}", encoding="utf-8")
+    _rewrite_bundle_manifest(
+        bundle_dir,
+        lambda manifest: manifest["files"].__setitem__("prediction_schema", str(outside)),
+    )
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_outside_bundle"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_must_be_regular_file(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    (bundle_dir / "schema_dir").mkdir()
+    _rewrite_bundle_manifest(
+        bundle_dir,
+        lambda manifest: manifest["files"].__setitem__("prediction_schema", "schema_dir"),
+    )
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_not_file"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_requires_declared_checksum(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    _rewrite_bundle_manifest(bundle_dir, lambda manifest: manifest["checksums"].pop("prediction_schema.json"))
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_checksum_missing"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_rejects_invalid_checksum_format(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    _rewrite_bundle_manifest(
+        bundle_dir,
+        lambda manifest: manifest["checksums"].__setitem__("prediction_schema.json", "not-a-sha"),
+    )
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_checksum_invalid"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_rejects_checksum_mismatch(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    _finalize_bundle_checksums(bundle_dir)
+    _rewrite_bundle_manifest(
+        bundle_dir,
+        lambda manifest: manifest["checksums"].__setitem__("prediction_schema.json", "0" * 64),
+    )
+    with pytest.raises(BundleIntegrityError, match="formal_runner_bundle_prediction_schema_checksum_mismatch"):
+        load_runner_bundle(bundle_dir, formal=True)
+
+
+def test_formal_bundle_schema_provenance_fields(tmp_path):
+    bundle_dir = _make_runner_bundle(tmp_path)
+    bundle = _finalize_bundle_checksums(bundle_dir)
+    formal_bundle = load_runner_bundle(bundle_dir, formal=True)
+    assert formal_bundle["prediction_schema_source"] == "bundle_manifest"
+    assert formal_bundle["prediction_schema_inside_bundle"] is True
+    assert formal_bundle["prediction_schema_declared_sha256"] == bundle["prediction_schema_sha256"]
+    assert formal_bundle["prediction_schema_checksum_match"] is True
+    assert formal_bundle["prediction_schema_authoritative"] is True
+    assert formal_bundle["prediction_schema_formal_eligible"] is True
 
 
 def test_formal_rejects_modified_input_cases(tmp_path):
@@ -2949,6 +3058,7 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
             [
                 "experiment_id: formal_offline_e2e",
                 "schema_version: firebench-interop-v1",
+                "track: A_shared_outcome",
                 f"shared_model_config: {shared.as_posix()}",
                 "base_config: configs/default.yaml",
                 "freeze_status: frozen",
@@ -5327,6 +5437,25 @@ def test_staged_validator_uses_runner_bundle_schema(tmp_path, monkeypatch):
     schema_path, schema_sha = _schema_from_fixture(fixture)
     from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
 
+    result = validate_staged_formal_run_root(
+        fixture["run_root"],
+        method_ids=list(_passing_formal_method_evidences().keys()),
+        expected_case_ids=["FBPUB_000001"],
+        prediction_schema_path=schema_path,
+        expected_prediction_schema_sha256=schema_sha,
+    )
+    assert result["ok"] is True
+
+
+def test_formal_e2e_uses_only_bundle_prediction_schema(tmp_path, monkeypatch):
+    import external_baselines.interop.schema as schema_module
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    local_snapshot = tmp_path / "broken_local_snapshot.schema.json"
+    local_snapshot.write_text('{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"array"}', encoding="utf-8")
+    monkeypatch.setattr(schema_module, "SCHEMA_PATH", local_snapshot)
     result = validate_staged_formal_run_root(
         fixture["run_root"],
         method_ids=list(_passing_formal_method_evidences().keys()),

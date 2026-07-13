@@ -57,6 +57,13 @@ def _verify_bundle_hashes(bundle: dict) -> dict:
     corpus_dir = bundle.get("corpus_dir")
     return {
         "schema_sha256": sha256_file(schema_path) if schema_path else None,
+        "prediction_schema_path": schema_path,
+        "prediction_schema_source": bundle.get("prediction_schema_source"),
+        "prediction_schema_inside_bundle": bundle.get("prediction_schema_inside_bundle"),
+        "prediction_schema_declared_sha256": bundle.get("prediction_schema_declared_sha256"),
+        "prediction_schema_checksum_match": bundle.get("prediction_schema_checksum_match"),
+        "prediction_schema_authoritative": bundle.get("prediction_schema_authoritative"),
+        "prediction_schema_formal_eligible": bundle.get("prediction_schema_formal_eligible"),
         "scenarios_sha256": sha256_file(scenarios_path) if scenarios_path else None,
         "corpus_aggregate_sha256": (bundle.get("corpus_manifest") or {}).get("aggregate_sha256")
         if isinstance(bundle.get("corpus_manifest"), dict)
@@ -251,7 +258,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("Runner Bundle path required via --bundle or experiment manifest.bundle")
 
     assert_no_evaluator_bundle_access(bundle_path)
-    bundle = load_runner_bundle(bundle_path)
+    formal = args.execution_stage == "formal"
+    bundle = load_runner_bundle(bundle_path, formal=formal)
     expected_checksum = args.expected_bundle_checksum or experiment.get("expected_bundle_checksum")
     checksum_report = validate_bundle_checksum(bundle, expected=expected_checksum)
     if not checksum_report["ok"]:
@@ -403,6 +411,16 @@ def main(argv: list[str] | None = None) -> None:
         if isinstance(bundle.get("corpus_manifest"), dict)
         else None,
         "prediction_schema_checksum": bundle.get("prediction_schema_sha256") or sha256_file(SCHEMA_PATH),
+        "prediction_schema_provenance": {
+            "prediction_schema_path": bundle.get("prediction_schema_path"),
+            "prediction_schema_source": bundle.get("prediction_schema_source"),
+            "prediction_schema_inside_bundle": bundle.get("prediction_schema_inside_bundle"),
+            "prediction_schema_declared_sha256": bundle.get("prediction_schema_declared_sha256"),
+            "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
+            "prediction_schema_checksum_match": bundle.get("prediction_schema_checksum_match"),
+            "prediction_schema_authoritative": bundle.get("prediction_schema_authoritative"),
+            "prediction_schema_formal_eligible": bundle.get("prediction_schema_formal_eligible"),
+        },
         "schema_authority": schema_authority,
         "local_schema_snapshot_match": local_schema_snapshot_match,
         "local_schema_snapshot_authoritative": False,
@@ -460,6 +478,7 @@ def main(argv: list[str] | None = None) -> None:
                 "corpus_dir": bundle.get("corpus_dir"),
                 "formal_manifest_files_used": bundle.get("formal_manifest_files_used"),
                 "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
+                "prediction_schema_provenance": enriched_manifest["prediction_schema_provenance"],
                 "schema_authority": schema_authority,
                 "local_schema_snapshot_sha256": local_schema_sha,
                 "local_schema_snapshot_match": local_schema_snapshot_match,

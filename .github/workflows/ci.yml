@@ -60,6 +60,15 @@ jobs:
             tests/test_method_runtime.py \
             tests/test_formal_compliance.py \
             -k "finite or nonempty_string or remote_ref or runtime_cleanup or lightweight"
+      - name: Targeted schema authority tests
+        run: |
+          python -m pytest -q \
+            tests/test_external_schema_validation.py \
+            tests/test_formal_compliance.py \
+            tests/test_formal_enforcement_and_freeze.py \
+            tests/test_experiment_manifest.py \
+            tests/test_formal_config_validator.py \
+            -k "bundle_schema or schema_authority or registry or local_snapshot or manifest_null"
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \
@@ -101,4 +110,16 @@ jobs:
         run: |
           python -m pip install -U pip
           python -m pip install .
-          python -c "import yaml, jsonschema, external_baselines"
+          python - <<'PY'
+          import external_baselines, jsonschema, yaml
+          from external_baselines.interop.schema import validate_against_jsonschema, validate_schema_draft202012
+
+          schema = {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "$id": "urn:test:primary",
+              "$defs": {"record": {"type": "object"}},
+              "$ref": "#/$defs/record",
+          }
+          assert validate_schema_draft202012(schema, primary_schema_name="prediction_schema.json") == []
+          assert validate_against_jsonschema({}, schema=schema, primary_schema_name="prediction_schema.json") == []
+          PY

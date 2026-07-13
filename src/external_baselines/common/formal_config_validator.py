@@ -791,7 +791,10 @@ def validate_experiment_manifest(
     if stage == "template":
         allow_placeholders = True
 
-    manifest = load_experiment_manifest(path)
+    try:
+        manifest = load_experiment_manifest(path)
+    except ValueError as exc:
+        raise FormalConfigError(str(exc)) from exc
     raw = manifest.get("raw") or read_yaml(path)
     if not isinstance(raw, dict):
         raise FormalConfigError(f"Experiment manifest must be a mapping: {path}")
@@ -813,6 +816,43 @@ def validate_experiment_manifest(
             f"{stage} validation rejects .example manifest paths; "
             "copy the template to a non-.example file first."
         )
+
+    if stage == "formal":
+        for key in (
+            "experiment_id",
+            "schema_version",
+            "track",
+            "base_config",
+            "shared_model_config",
+            "freeze_manifest",
+        ):
+            if key not in raw:
+                errors.append(f"formal manifest requires explicit {key}.")
+                continue
+            try:
+                value = _validate_exact_nonempty_string(
+                    raw.get(key),
+                    field=key,
+                    allow_placeholders=allow_placeholders,
+                )
+            except FormalConfigError as exc:
+                errors.append(str(exc))
+                continue
+            if key == "schema_version" and value != "firebench-interop-v1":
+                errors.append(
+                    "schema_version must be exactly 'firebench-interop-v1' "
+                    f"(got {value!r})."
+                )
+        for key in ("output", "run_manifest"):
+            if key in raw:
+                try:
+                    _validate_exact_nonempty_string(
+                        raw.get(key),
+                        field=key,
+                        allow_placeholders=allow_placeholders,
+                    )
+                except FormalConfigError as exc:
+                    errors.append(str(exc))
 
     run_mode = _validate_exact_nonempty_string(
         raw["run_mode"] if "run_mode" in raw else "formal",

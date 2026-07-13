@@ -19,6 +19,14 @@ Also preserved: `language`, `input_mode`, `context`, `dynamic_snapshots` (method
 
 Checksums: validate **per-file** `manifest.checksums`. Aggregate `consumer_computed_bundle_hash` is diagnostic and must not be confused with a producer-declared aggregate checksum.
 
+Formal execution requires `manifest.files.prediction_schema` to identify a schema file located inside the frozen Runner Bundle. The Bundle manifest must declare that schema SHA-256 in `manifest.checksums`, and the consumer-computed hash must match both the Bundle declaration and the frozen experiment identity.
+
+Formal execution never falls back to repository-local schemas. Local schemas are development snapshots only and are not registered as Formal JSON Schema resources. The no-network schema registry is input-driven and registers only the primary Bundle schema plus explicitly checksum-verified Bundle resources; behavior is independent of source checkout, current working directory, editable installation, or wheel installation.
+
+Under the current single-schema Bundle protocol, only internal fragments, the primary schema `$id`, and the primary schema filename may be referenced.
+
+Formal experiment identity fields must be explicitly declared as exact non-empty YAML strings. Explicit `null` values are rejected rather than replaced with defaults.
+
 ## Formal output
 
 Root `schema_version: firebench-interop-v1`. Track A prediction fields match the main-project schema:

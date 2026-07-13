@@ -55,6 +55,14 @@ def compute_runner_bundle_identity(bundle: dict[str, Any]) -> dict[str, Any]:
         "input_cases_sha256": sha256_file(scenarios_path) if scenarios_path and Path(scenarios_path).is_file() else None,
         "prediction_schema_sha256": bundle.get("prediction_schema_sha256")
         or (sha256_file(schema_path) if schema_path and Path(schema_path).is_file() else None),
+        "prediction_schema_source": bundle.get("prediction_schema_source"),
+        "prediction_schema_path": schema_path,
+        "prediction_schema_declared_sha256": bundle.get("prediction_schema_declared_sha256"),
+        "prediction_schema_inside_bundle": bundle.get("prediction_schema_inside_bundle"),
+        "prediction_schema_checksum_declared": bundle.get("prediction_schema_checksum_declared"),
+        "prediction_schema_checksum_match": bundle.get("prediction_schema_checksum_match"),
+        "prediction_schema_authoritative": bundle.get("prediction_schema_authoritative"),
+        "prediction_schema_formal_eligible": bundle.get("prediction_schema_formal_eligible"),
         "corpus_aggregate_sha256": corpus_manifest.get("aggregate_sha256"),
     }
 
@@ -123,6 +131,17 @@ def validate_formal_runner_bundle_integrity(
         for item in file_report.get("mismatches") or []:
             mismatches.append({"type": "file_checksum", "detail": item})
 
+    schema_authority_ok = (
+        live.get("prediction_schema_source") == "bundle_manifest"
+        and live.get("prediction_schema_inside_bundle") is True
+        and live.get("prediction_schema_checksum_declared") is True
+        and live.get("prediction_schema_checksum_match") is True
+        and live.get("prediction_schema_authoritative") is True
+        and live.get("prediction_schema_formal_eligible") is True
+    )
+    if not schema_authority_ok:
+        errors.append("formal_prediction_schema_authority_invalid")
+
     input_cases_integrity = True
     if expected_input:
         actual_input = live.get("input_cases_sha256")
@@ -178,6 +197,7 @@ def validate_formal_runner_bundle_integrity(
         and (producer_checksum_match if producer_required else True)
         and input_cases_integrity
         and prediction_schema_integrity
+        and schema_authority_ok
         and corpus_integrity
     )
 
@@ -191,6 +211,7 @@ def validate_formal_runner_bundle_integrity(
         "consumer_hash_match": consumer_hash_match,
         "input_cases_integrity": input_cases_integrity,
         "prediction_schema_integrity": prediction_schema_integrity,
+        "prediction_schema_authority_ok": schema_authority_ok,
         "corpus_integrity": corpus_integrity,
         "per_file_checksums_checked": file_report_checked,
         "per_file_checksums_ok": file_report_ok,
@@ -198,6 +219,14 @@ def validate_formal_runner_bundle_integrity(
         "expected_input_cases_sha256": expected_input or None,
         "prediction_schema_sha256": live.get("prediction_schema_sha256"),
         "expected_prediction_schema_sha256": expected_schema or None,
+        "prediction_schema_source": live.get("prediction_schema_source"),
+        "prediction_schema_path": live.get("prediction_schema_path"),
+        "prediction_schema_declared_sha256": live.get("prediction_schema_declared_sha256"),
+        "prediction_schema_inside_bundle": live.get("prediction_schema_inside_bundle"),
+        "prediction_schema_checksum_declared": live.get("prediction_schema_checksum_declared"),
+        "prediction_schema_checksum_match": live.get("prediction_schema_checksum_match"),
+        "prediction_schema_authoritative": live.get("prediction_schema_authoritative"),
+        "prediction_schema_formal_eligible": live.get("prediction_schema_formal_eligible"),
         "corpus_aggregate_sha256": live.get("corpus_aggregate_sha256"),
         "expected_corpus_aggregate_sha256": expected_corpus or None,
         "file_checksum_report_ok": file_report_ok,

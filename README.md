@@ -95,7 +95,7 @@ Aliases (e.g. `vanilla_rag` → `bm25_rag`, `ekell_style_faithful` → controlle
 
 All five methods share the same Runner Bundle input and independently emit structured decision + natural-language response + per-method `firebench-interop-v1` JSONL. Natural language is for human review; decision fields are the primary comparison object for the main-project evaluator.
 
-**Execution modes:** Dry run allows `--limit`, heuristic LLM, smoke embedding fixtures, and optional temporary index rebuild for wiring tests. **`formal_result` is always false** in dry run (technical diagnostics may still pass). DEV may use real config and optional `--enable-dev-aliases` on subsets; outputs remain non-formal. Formal requires a frozen non-`.example` experiment manifest, **validates the frozen Runner Bundle identity** (per-file checksums, input cases, prediction schema, corpus), **forbids `--limit`**, processes the **complete** Runner Bundle case set, enforces **one shared generation-model identity** across all five methods (provider, model, version, temperature, top_p, max_tokens, seed, enable_thinking), requires persisted **directory** indexes for Dense and E-KELL with **explicit** `actual_embedding_used=true` and `smoke_fallback_used=false`, runs **five-method resource preflight** (including all E-KELL prompt files and logical components) before any LLM call, enforces strict JSON **array** types in decision parsing, records separate **index checksum** vs **manifest-file SHA**, and publishes predictions **transactionally** (temp dir → atomic publish only after all methods pass). `formal_result=true` requires runtime evidence plus successful transactional publish.
+**Execution modes:** Dry run allows `--limit`, heuristic LLM, smoke embedding fixtures, and optional temporary index rebuild for wiring tests. **`formal_result` is always false** in dry run (technical diagnostics may still pass). DEV may use real config and optional `--enable-dev-aliases` on subsets; outputs remain non-formal. Formal requires a frozen non-`.example` experiment manifest with explicit exact non-empty string identity fields, **validates the frozen Runner Bundle identity** (per-file checksums, input cases, manifest-declared in-bundle prediction schema, corpus), **forbids `--limit`**, processes the **complete** Runner Bundle case set, enforces **one shared generation-model identity** across all five methods (provider, model, version, temperature, top_p, max_tokens, seed, enable_thinking), requires persisted **directory** indexes for Dense and E-KELL with **explicit** `actual_embedding_used=true` and `smoke_fallback_used=false`, runs **five-method resource preflight** (including all E-KELL prompt files and logical components) before any LLM call, enforces strict JSON **array** types in decision parsing, records separate **index checksum** vs **manifest-file SHA**, and publishes predictions **transactionally** (temp dir → atomic publish only after all methods pass). `formal_result=true` requires runtime evidence plus successful transactional publish.
 
 **Pre-formal contract checks (read-only main-project reference):**
 
@@ -261,7 +261,7 @@ python scripts/validate_formal_config.py \
 |---|---|
 | Formal input | Runner Bundle → `manifest.files.input_cases` → `input_cases.jsonl` |
 | Formal output | firebench-interop-v1 JSONL |
-| Schema authority | Bundle `prediction_schema.json` (+ checksum) |
+| Schema authority | Bundle `manifest.files.prediction_schema` file inside the Runner Bundle, with matching SHA-256 in `manifest.checksums` and freeze identity |
 | Scoring authority | `fire-agent-demo` shared evaluator |
 
 **Formal comparison suite compliance (offline-tested):**
@@ -286,10 +286,13 @@ python scripts/validate_formal_config.py \
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL (`embedding_backend_factory`); Direct LLM and BM25 never request an embedding backend.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (including drive-qualified, root-relative, UNC, and device-namespace forms) and must resolve inside the staged run root.
-- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation. Meta-schema and record validation share one no-network `$ref` policy: only internal fragments and registered local schema resources are accepted.
+- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation. Formal execution requires `manifest.files.prediction_schema` to identify a schema file inside the frozen Runner Bundle; the Bundle manifest must declare the schema SHA-256, and the consumer-computed hash must match both the Bundle declaration and frozen experiment identity.
+- Formal execution never falls back to repository-local schemas. Local schemas are development snapshots only and are not registered as Formal JSON Schema resources.
+- The no-network schema registry is input-driven and registers only the primary Bundle schema plus explicitly checksum-verified Bundle resources. Its behavior does not depend on source checkout, current working directory, editable installation, or wheel installation.
+- Under the current single-schema Bundle protocol, Formal schema references are limited to internal fragments, the primary schema `$id`, and the primary schema filename.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
 - Formal safety-critical numeric parameters require exact finite YAML/JSON numeric types; string-to-number, boolean-to-number, NaN, and Infinity coercion are rejected.
-- The frozen Runner Bundle is the sole Formal schema authority. Local schema copies are development snapshots only; local snapshot mismatch is diagnostic and does not invalidate an otherwise valid frozen Bundle.
+- Formal experiment identity fields must be explicitly declared as exact non-empty YAML strings. Explicit `null` values are rejected rather than replaced with defaults.
 - Malformed nested prediction/runtime values produce structured schema errors and do not leak raw `AttributeError` or `TypeError`.
 - Missing optional boolean fields may use documented defaults, but explicitly setting those fields to `null` is invalid.
 - Release-readiness engineering gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.

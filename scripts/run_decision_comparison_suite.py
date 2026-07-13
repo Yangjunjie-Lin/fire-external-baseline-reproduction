@@ -45,6 +45,7 @@ from external_baselines.common.io import (  # noqa: E402
     assert_no_gold_in_prediction_input,
     ensure_dir,
     load_scenarios,
+    read_json,
     to_prediction_input,
     write_json,
     write_jsonl,
@@ -968,6 +969,24 @@ def build_formal_run_manifest(
         for mid in method_ids
         if (decisions_dir / mid / "run_summary.json").is_file()
     }
+    schema_provenance = {}
+    preflight = read_json(preflight_path, default={}) if preflight_path.is_file() else {}
+    if isinstance(preflight, dict):
+        integrity = preflight.get("runner_bundle_integrity") or {}
+        if isinstance(integrity, dict):
+            schema_provenance = {
+                key: integrity.get(key)
+                for key in (
+                    "prediction_schema_path",
+                    "prediction_schema_source",
+                    "prediction_schema_inside_bundle",
+                    "prediction_schema_declared_sha256",
+                    "prediction_schema_sha256",
+                    "prediction_schema_checksum_match",
+                    "prediction_schema_authoritative",
+                    "prediction_schema_formal_eligible",
+                )
+            }
     artifact_hashes: dict[str, str] = {}
     decision_artifact_files: dict[str, dict[str, str]] = {}
     supplemental_files: list[str] = []
@@ -1009,6 +1028,7 @@ def build_formal_run_manifest(
         "decision_summary_files": decision_summary_files,
         "decision_artifact_files": decision_artifact_files,
         "artifact_hashes": artifact_hashes,
+        "prediction_schema_provenance": schema_provenance,
         "formal_result": formal_result,
         "artifact_inventory": {
             "core_files": core_files,
@@ -1497,7 +1517,7 @@ def _run_decision_suite_impl(
         )
 
         load_limit = None if formal else limit
-        coverage = inspect_runner_bundle_case_coverage(runner_bundle, limit=load_limit)
+        coverage = inspect_runner_bundle_case_coverage(runner_bundle, limit=load_limit, formal=formal)
         coverage_warning: str | None = None
         if formal:
             validate_formal_runner_bundle_coverage(coverage)
@@ -1519,7 +1539,7 @@ def _run_decision_suite_impl(
                 runner_bundle=runner_bundle,
             )
 
-        bundle = load_runner_bundle(runner_bundle)
+        bundle = load_runner_bundle(runner_bundle, formal=formal)
         scenarios_path = Path(bundle["scenarios_path"])
         schema_path = Path(bundle.get("prediction_schema_path") or SCHEMA_PATH)
         corpus_dir = bundle.get("corpus_dir")

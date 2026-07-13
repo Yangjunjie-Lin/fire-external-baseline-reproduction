@@ -7,8 +7,10 @@ import urllib.request
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.schema import (
+    SCHEMA_DRAFT_PATH,
     SCHEMA_PATH,
     baseline_row_to_interop,
+    build_no_network_schema_registry,
     load_schema,
     validate_against_jsonschema,
     validate_interop_record,
@@ -102,6 +104,15 @@ def _schema_with_ref(ref: str, *, keyword: str = "$ref") -> dict:
     }
 
 
+def _primary_schema_with_ref(ref: str, *, schema_id: str = "urn:test:primary") -> dict:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": schema_id,
+        "$defs": {"record": {"type": "object"}},
+        "$ref": ref,
+    }
+
+
 def test_schema_allows_internal_fragment_ref():
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -110,6 +121,97 @@ def test_schema_allows_internal_fragment_ref():
     }
     assert validate_schema_draft202012(schema) == []
     assert validate_against_jsonschema({}, schema=schema) == []
+
+
+def test_no_network_registry_registers_primary_schema_id():
+    schema = _primary_schema_with_ref("urn:test:primary#/$defs/record")
+    assert validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json") == []
+    assert validate_against_jsonschema({}, schema=schema, primary_schema_name="bundle_prediction.json") == []
+
+
+def test_no_network_registry_registers_primary_schema_name():
+    schema = _primary_schema_with_ref("bundle_prediction.json#/$defs/record")
+    assert validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json") == []
+    assert validate_against_jsonschema({}, schema=schema, primary_schema_name="bundle_prediction.json") == []
+
+
+def test_no_network_registry_does_not_register_repo_local_schema_name():
+    schema = _primary_schema_with_ref(f"{SCHEMA_PATH.name}#/$defs/record")
+    errors = validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json")
+    assert any("external_schema_reference_not_registered" in err for err in errors)
+
+
+def test_no_network_registry_does_not_register_repo_local_schema_id():
+    local_id = load_schema(SCHEMA_DRAFT_PATH).get("$id")
+    schema = _primary_schema_with_ref(f"{local_id}#/$defs/record", schema_id="urn:test:primary")
+    errors = validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json")
+    assert any("external_schema_reference_not_registered" in err for err in errors)
+
+
+def test_frozen_schema_cannot_reference_repo_local_snapshot_filename():
+    schema = _primary_schema_with_ref(SCHEMA_PATH.name)
+    errors = validate_against_jsonschema({}, schema=schema, primary_schema_name="bundle_prediction.json")
+    assert any("external_schema_reference_not_registered" in err for err in errors)
+
+
+def test_frozen_schema_cannot_reference_repo_local_snapshot_id():
+    local_id = load_schema(SCHEMA_DRAFT_PATH).get("$id")
+    schema = _primary_schema_with_ref(str(local_id), schema_id="urn:test:primary")
+    errors = validate_against_jsonschema({}, schema=schema, primary_schema_name="bundle_prediction.json")
+    assert any("external_schema_reference_not_registered" in err for err in errors)
+
+
+def test_primary_schema_can_reference_its_own_filename():
+    schema = _primary_schema_with_ref(f"{SCHEMA_PATH.name}#/$defs/record")
+    assert validate_schema_draft202012(schema, primary_schema_name=SCHEMA_PATH.name) == []
+    assert validate_against_jsonschema({}, schema=schema, primary_schema_name=SCHEMA_PATH.name) == []
+
+
+def test_primary_schema_can_reference_its_own_id():
+    schema = _primary_schema_with_ref("urn:test:primary#/$defs/record")
+    assert validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json") == []
+    assert validate_against_jsonschema({}, schema=schema, primary_schema_name="bundle_prediction.json") == []
+
+
+def test_no_network_registry_accepts_explicit_additional_resources():
+    schema = _primary_schema_with_ref("common.json#/$defs/shared")
+    common = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "common.json",
+        "$defs": {"shared": {"type": "object"}},
+    }
+    assert validate_schema_draft202012(
+        schema,
+        primary_schema_name="bundle_prediction.json",
+        additional_resources={"common.json": common},
+    ) == []
+    assert validate_against_jsonschema(
+        {},
+        schema=schema,
+        primary_schema_name="bundle_prediction.json",
+        additional_resources={"common.json": common},
+    ) == []
+
+
+def test_registry_behavior_does_not_depend_on_repo_schema_files(monkeypatch):
+    import external_baselines.interop.schema as schema_module
+
+    class PoisonPath:
+        name = "poison.schema.json"
+
+        def exists(self):
+            raise AssertionError("registry must not inspect repo-local schema files")
+
+    monkeypatch.setattr(schema_module, "SCHEMA_PATH", PoisonPath())
+    monkeypatch.setattr(schema_module, "SCHEMA_DRAFT_PATH", PoisonPath())
+    schema = _primary_schema_with_ref("bundle_prediction.json#/$defs/record")
+    assert schema_module.validate_schema_draft202012(schema, primary_schema_name="bundle_prediction.json") == []
+    assert schema_module.validate_against_jsonschema(
+        {},
+        schema=schema,
+        primary_schema_name="bundle_prediction.json",
+    ) == []
+    build_no_network_schema_registry(primary_schema=schema, primary_schema_name="bundle_prediction.json")
 
 
 def test_schema_rejects_https_ref():

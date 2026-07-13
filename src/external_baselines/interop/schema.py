@@ -541,22 +541,19 @@ def _registered_schema_bases(
     *,
     primary_schema: dict[str, Any],
     primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> set[str]:
     bases: set[str] = set()
     for value in (
         primary_schema.get("$id"),
         primary_schema_name,
-        SCHEMA_PATH.name,
-        SCHEMA_DRAFT_PATH.name,
     ):
         if isinstance(value, str) and value.strip():
             bases.add(urldefrag(value.strip()).url)
-    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
-        if candidate.exists():
-            try:
-                payload = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
+    for name, payload in (additional_resources or {}).items():
+        if isinstance(name, str) and name.strip():
+            bases.add(urldefrag(name.strip()).url)
+        if isinstance(payload, dict):
             schema_id = payload.get("$id")
             if isinstance(schema_id, str) and schema_id.strip():
                 bases.add(urldefrag(schema_id.strip()).url)
@@ -592,10 +589,12 @@ def validate_schema_reference_policy(
     payload: dict[str, Any],
     *,
     primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     registered_bases = _registered_schema_bases(
         primary_schema=payload,
         primary_schema_name=primary_schema_name,
+        additional_resources=additional_resources,
     )
     errors: list[str] = []
     for path, ref in collect_schema_refs(payload):
@@ -609,6 +608,7 @@ def build_no_network_schema_registry(
     *,
     primary_schema: dict[str, Any],
     primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
     from referencing import Registry
     from referencing.jsonschema import DRAFT202012
@@ -627,16 +627,12 @@ def build_no_network_schema_registry(
         primary_schema.get("$id") if isinstance(primary_schema.get("$id"), str) else None,
         primary_schema_name,
     )
-    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
-        if candidate.exists():
-            try:
-                payload = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
+    for name, payload in (additional_resources or {}).items():
+        if isinstance(payload, dict):
             _add(
                 payload,
                 payload.get("$id") if isinstance(payload.get("$id"), str) else None,
-                candidate.name,
+                name,
             )
     return registry
 
@@ -645,6 +641,7 @@ def validate_schema_draft202012(
     payload: dict[str, Any],
     *,
     primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Return structured errors when payload is not a valid Draft 2020-12 schema."""
     try:
@@ -661,6 +658,7 @@ def validate_schema_draft202012(
         ref_errors = validate_schema_reference_policy(
             payload,
             primary_schema_name=primary_schema_name,
+            additional_resources=additional_resources,
         )
         if ref_errors:
             return ref_errors
@@ -668,6 +666,7 @@ def validate_schema_draft202012(
         registry = build_no_network_schema_registry(
             primary_schema=payload,
             primary_schema_name=primary_schema_name,
+            additional_resources=additional_resources,
         )
         validator = Draft202012Validator(payload, registry=registry)
         list(validator.iter_errors({}))
@@ -681,29 +680,14 @@ def validate_schema_draft202012(
     return []
 
 
-def _interop_schema_registry() -> Any:
-    from referencing import Registry, Resource
-
-    registry = Registry()
-    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
-        if candidate.exists():
-            try:
-                payload = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            resource = Resource.from_contents(payload)
-            schema_id = str(payload.get("$id") or candidate.name)
-            registry = registry.with_resource(schema_id, resource)
-            registry = registry.with_resource(candidate.name, resource)
-    return registry
-
-
 def validate_against_jsonschema(
     record: dict[str, Any],
     *,
     schema: dict[str, Any] | None = None,
     schema_path: str | Path | None = None,
     expected_schema_sha256: str | None = None,
+    primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Validate with jsonschema Draft 2020-12 against a provided or local schema."""
     try:
@@ -742,10 +726,12 @@ def validate_against_jsonschema(
         if actual != expected_schema_sha256:
             return [f"schema_hash_mismatch:expected={expected_schema_sha256} actual={actual}"]
 
-    primary_schema_name = Path(schema_path).name if schema_path else None
+    if primary_schema_name is None:
+        primary_schema_name = Path(schema_path).name if schema_path else None
     meta_errors = validate_schema_draft202012(
         loaded,
         primary_schema_name=primary_schema_name,
+        additional_resources=additional_resources,
     )
     if meta_errors:
         return meta_errors
@@ -757,6 +743,7 @@ def validate_against_jsonschema(
         registry = build_no_network_schema_registry(
             primary_schema=loaded,
             primary_schema_name=primary_schema_name,
+            additional_resources=additional_resources,
         )
         validator = Draft202012Validator(loaded, registry=registry)
     except SchemaError:
@@ -787,6 +774,8 @@ def validate_interop_record(
     schema_path: str | Path | None = None,
     expected_schema_sha256: str | None = None,
     require_external_schema: bool = False,
+    primary_schema_name: str | None = None,
+    additional_resources: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Validate interop records.
 
@@ -803,6 +792,8 @@ def validate_interop_record(
             schema=schema,
             schema_path=schema_path or SCHEMA_PATH,
             expected_schema_sha256=expected_schema_sha256,
+            primary_schema_name=primary_schema_name,
+            additional_resources=additional_resources,
         )
     # Default: try local schema when jsonschema is installed; else light only.
     try:
@@ -813,4 +804,6 @@ def validate_interop_record(
         record,
         schema_path=schema_path or SCHEMA_PATH,
         expected_schema_sha256=expected_schema_sha256,
+        primary_schema_name=primary_schema_name,
+        additional_resources=additional_resources,
     )

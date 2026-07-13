@@ -173,7 +173,7 @@ Requires:
 - **no** `--limit` (complete Runner Bundle case coverage enforced)
 - **no** `--allow-partial`
 - **no** `--enable-dev-aliases`
-- frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256)
+- frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256; `manifest.files.prediction_schema` must point to an in-bundle schema with a matching `manifest.checksums` SHA-256)
 - manifest method entries resolved before per-method config merge
 - two-phase formal compliance: pre-publish checks (no publish required) → method/cache runtime close → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` at first rename; runtime cleanup failure stops before staged validation and commit
 - formal temp root created only after static validation and five-method preflight; preflight/failure records written to external `.control/` directory (never mutates published run root before commit)
@@ -188,11 +188,13 @@ Requires:
 - embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
 - run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts
 - manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root
-- the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; meta-schema and record validation share one no-network `$ref` policy
+- the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; meta-schema and record validation share one no-network `$ref` policy limited to internal fragments, the primary schema `$id`, and the primary schema filename under the current single-schema Bundle protocol
+- formal execution never falls back to repository-local schemas; local schema snapshots are development/diagnostic resources only and are not registered as Formal JSON Schema resources
+- the no-network schema registry is input-driven and independent of source checkout, current working directory, editable installation, or wheel installation
 - formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata
 - formal numeric parameters require exact finite YAML/JSON numeric types; NaN and Infinity are rejected
-- formal model/backend/version/environment-variable/prompt/index/manifest identity fields require exact non-empty YAML strings without implicit coercion
-- the frozen Runner Bundle is the sole Formal schema authority; local schema snapshots are diagnostics only
+- formal model/backend/version/environment-variable/prompt/index/manifest identity fields require exact non-empty YAML strings without implicit coercion; explicit `null` is rejected instead of replaced with defaults
+- the frozen Runner Bundle is the sole Formal schema authority
 - malformed nested prediction/runtime values produce structured schema errors without raw type exceptions
 - runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects
 - GitHub Actions covers Python 3.10–3.12 with offline compile, lint, tests, hygiene, formal-config validation, E-KELL fidelity audit, package build, reproducibility dry-run, and release-readiness checks

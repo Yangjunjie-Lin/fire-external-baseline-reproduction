@@ -9,6 +9,7 @@ expected labels, annotation notes, or target outputs from an Evaluator Bundle.
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,11 @@ CHECKSUM_FILE_SUFFIXES = {
     ".md", ".xml", ".ttl", ".nt", ".parquet", ".npy", ".npz",
 }
 DETACHED_METADATA_FILES = {"manifest.json"}
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+
+SCHEMA_SOURCE_BUNDLE_MANIFEST = "bundle_manifest"
+SCHEMA_SOURCE_BUNDLE_IMPLICIT_FILE = "bundle_implicit_file"
+SCHEMA_SOURCE_LOCAL_DEVELOPMENT_SNAPSHOT = "local_development_snapshot"
 
 
 class BundleIntegrityError(RuntimeError):
@@ -203,32 +209,206 @@ def _resolve_manifest_file(root: Path, relative: str | None, *, required: bool =
     return resolved
 
 
-def _verify_file_checksums(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+def _normalize_manifest_rel(root: Path, relative: str | Path) -> str:
+    resolved = assert_path_inside_bundle(relative, root, must_exist=True)
+    return resolved.relative_to(root).as_posix()
+
+
+def _exact_nonempty_manifest_string(value: Any, *, error_code: str) -> str:
+    if type(value) is not str or not value.strip():
+        raise BundleIntegrityError(error_code)
+    return value.strip()
+
+
+def _declared_checksum_for_rel(
+    declared: dict[str, Any],
+    rel: str,
+    *,
+    allow_legacy_basename_checksum: bool,
+) -> tuple[Any, str | None]:
+    if rel in declared:
+        return declared.get(rel), rel
+    if allow_legacy_basename_checksum:
+        basename = Path(rel).name
+        if basename in declared:
+            return declared.get(basename), basename
+    return None, None
+
+
+def _checksum_format_ok(value: Any) -> bool:
+    return isinstance(value, str) and bool(SHA256_HEX_RE.fullmatch(value))
+
+
+def _verify_file_checksums(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    required_logical_names: set[str] | None = None,
+    allow_legacy_basename_checksum: bool = True,
+) -> dict[str, Any]:
     declared = manifest.get("checksums") if isinstance(manifest.get("checksums"), dict) else {}
     files_map = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
-    results: dict[str, Any] = {"ok": True, "checked": {}, "mismatches": []}
+    required = set(required_logical_names or set())
+    results: dict[str, Any] = {
+        "ok": True,
+        "checked": {},
+        "mismatches": [],
+        "missing_required": [],
+        "missing_checksums": [],
+        "invalid_checksums": [],
+    }
+    for logical_name in sorted(required):
+        if logical_name not in files_map:
+            results["ok"] = False
+            results["missing_required"].append(logical_name)
     for logical_name, rel in files_map.items():
         if not rel:
             continue
         path = _resolve_manifest_file(root, str(rel), required=True)
         assert path is not None
+        normalized_rel = path.relative_to(root).as_posix()
         actual = sha256_file(path)
-        expected = declared.get(str(rel)) or declared.get(Path(str(rel)).name)
+        expected, checksum_key = _declared_checksum_for_rel(
+            declared,
+            normalized_rel,
+            allow_legacy_basename_checksum=allow_legacy_basename_checksum,
+        )
+        required_checksum = logical_name in required
         entry = {
             "logical_name": logical_name,
-            "path": str(rel),
+            "path": normalized_rel,
+            "checksum_key": checksum_key,
             "actual_sha256": actual,
             "declared_sha256": expected,
+            "checksum_declared": expected is not None,
+            "declared_sha256_valid": _checksum_format_ok(expected) if expected is not None else False,
             "match": expected is None or expected == actual,
         }
         results["checked"][logical_name] = entry
-        if expected is not None and expected != actual:
+        if required_checksum and expected is None:
+            results["ok"] = False
+            results["missing_checksums"].append(entry)
+        elif expected is not None and not _checksum_format_ok(expected):
+            results["ok"] = False
+            results["invalid_checksums"].append(entry)
+        elif expected is not None and expected != actual:
             results["ok"] = False
             results["mismatches"].append(entry)
     return results
 
 
-def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
+def _resolve_prediction_schema(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    formal: bool,
+) -> dict[str, Any]:
+    files_raw = manifest.get("files")
+    files_map = files_raw if isinstance(files_raw, dict) else {}
+    source = ""
+    schema_rel: str | None = None
+    schema_path: Path | None = None
+
+    if formal:
+        if not isinstance(files_raw, dict):
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_missing")
+        schema_rel = _exact_nonempty_manifest_string(
+            files_raw.get("prediction_schema"),
+            error_code="formal_runner_bundle_prediction_schema_missing",
+        )
+        try:
+            schema_path = _resolve_manifest_file(root, schema_rel, required=True)
+        except BundleIntegrityError as exc:
+            message = str(exc)
+            if "escapes Runner Bundle root" in message:
+                raise BundleIntegrityError("formal_runner_bundle_prediction_schema_outside_bundle") from exc
+            if "path is not a file" in message:
+                raise BundleIntegrityError("formal_runner_bundle_prediction_schema_not_file") from exc
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_path_invalid") from exc
+        if schema_path is None:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_missing")
+        if not schema_path.is_file():
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_not_file")
+        source = SCHEMA_SOURCE_BUNDLE_MANIFEST
+    else:
+        schema_value = files_map.get("prediction_schema")
+        if isinstance(schema_value, str) and schema_value.strip():
+            try:
+                schema_path = _resolve_manifest_file(root, schema_value, required=True)
+                schema_rel = schema_path.relative_to(root).as_posix()
+                source = SCHEMA_SOURCE_BUNDLE_MANIFEST
+            except BundleIntegrityError:
+                schema_path = None
+        if schema_path is None:
+            implicit = root / "prediction_schema.json"
+            if implicit.exists():
+                schema_path = assert_path_inside_bundle(implicit, root)
+                schema_rel = schema_path.relative_to(root).as_posix()
+                source = SCHEMA_SOURCE_BUNDLE_IMPLICIT_FILE
+            else:
+                schema_path = Path("schemas/firebench_interop_v1_prediction.schema.json")
+                schema_rel = None
+                source = SCHEMA_SOURCE_LOCAL_DEVELOPMENT_SNAPSHOT
+
+    inside_bundle = False
+    normalized_rel = None
+    if schema_path is not None:
+        try:
+            normalized_rel = schema_path.resolve(strict=True).relative_to(root).as_posix()
+            inside_bundle = True
+        except (FileNotFoundError, OSError, ValueError):
+            inside_bundle = False
+
+    declared = manifest.get("checksums") if isinstance(manifest.get("checksums"), dict) else {}
+    declared_sha = None
+    checksum_key = None
+    if normalized_rel is not None:
+        declared_sha, checksum_key = _declared_checksum_for_rel(
+            declared,
+            normalized_rel,
+            allow_legacy_basename_checksum=not formal,
+        )
+    actual_sha = sha256_file(schema_path) if schema_path and schema_path.exists() and schema_path.is_file() else None
+    checksum_declared = declared_sha is not None
+    checksum_valid = _checksum_format_ok(declared_sha) if declared_sha is not None else False
+    checksum_match = bool(actual_sha and declared_sha and actual_sha == declared_sha)
+
+    if formal:
+        if not inside_bundle:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_outside_bundle")
+        if actual_sha is None:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_not_file")
+        if not checksum_declared:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_checksum_missing")
+        if not checksum_valid:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_checksum_invalid")
+        if not checksum_match:
+            raise BundleIntegrityError("formal_runner_bundle_prediction_schema_checksum_mismatch")
+
+    formal_eligible = (
+        source == SCHEMA_SOURCE_BUNDLE_MANIFEST
+        and inside_bundle
+        and checksum_declared
+        and checksum_valid
+        and checksum_match
+    )
+    return {
+        "prediction_schema_path": str(schema_path) if schema_path is not None else None,
+        "prediction_schema_relpath": normalized_rel or schema_rel,
+        "prediction_schema_sha256": actual_sha,
+        "prediction_schema_declared_sha256": declared_sha,
+        "prediction_schema_checksum_key": checksum_key,
+        "prediction_schema_source": source,
+        "prediction_schema_inside_bundle": inside_bundle,
+        "prediction_schema_checksum_declared": checksum_declared,
+        "prediction_schema_checksum_valid": checksum_valid,
+        "prediction_schema_checksum_match": checksum_match,
+        "prediction_schema_authoritative": formal_eligible,
+        "prediction_schema_formal_eligible": formal_eligible,
+    }
+
+
+def load_runner_bundle(bundle_path: str | Path, *, formal: bool = False) -> dict[str, Any]:
     """Load a firebench-interop-v1 Runner Bundle.
 
     Formal layout prefers ``manifest.files.input_cases`` (JSONL). Legacy
@@ -257,8 +437,16 @@ def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
     _assert_no_forbidden_keys(manifest, location="manifest")
 
     files_map = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    schema_provenance = _resolve_prediction_schema(root, manifest, formal=formal)
     file_checksum_report = (
-        _verify_file_checksums(root, manifest) if files_map else {"ok": True, "checked": {}, "mismatches": []}
+        _verify_file_checksums(
+            root,
+            manifest,
+            required_logical_names={"prediction_schema"} if formal else None,
+            allow_legacy_basename_checksum=not formal,
+        )
+        if files_map
+        else {"ok": True, "checked": {}, "mismatches": [], "missing_required": [], "missing_checksums": [], "invalid_checksums": []}
     )
 
     experiment_config: dict[str, Any] = {}
@@ -328,17 +516,8 @@ def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
             corpus_dir = resolved
             break
 
-    schema_rel = files_map.get("prediction_schema")
-    if schema_rel:
-        schema_path = _resolve_manifest_file(root, str(schema_rel), required=True)
-    else:
-        schema_path = root / "prediction_schema.json"
-        if not schema_path.exists():
-            schema_path = Path("schemas/firebench_interop_v1_prediction.schema.json")
-
     producer_checksum = manifest.get("bundle_checksum") or manifest.get("checksum")
     consumer_hash = recompute_bundle_checksum(root)
-    schema_sha = sha256_file(schema_path) if schema_path and Path(schema_path).exists() else None
 
     corpus_manifest_payload: Any = None
     if corpus_dir:
@@ -355,8 +534,7 @@ def load_runner_bundle(bundle_path: str | Path) -> dict[str, Any]:
         "input_cases_path": str(scenarios_path) if scenarios_path else None,
         "corpus_dir": str(corpus_dir) if corpus_dir else None,
         "corpus_manifest_path": str(corpus_manifest_path) if corpus_manifest_path else None,
-        "prediction_schema_path": str(schema_path),
-        "prediction_schema_sha256": schema_sha,
+        **schema_provenance,
         "bundle_checksum": producer_checksum,
         "producer_declared_checksum": producer_checksum,
         "consumer_computed_bundle_hash": consumer_hash,
@@ -456,11 +634,12 @@ def inspect_runner_bundle_case_coverage(
     bundle_path: str | Path,
     *,
     limit: int | None = None,
+    formal: bool = False,
 ) -> RunnerBundleCoverage:
     """Inspect full Runner Bundle case coverage without truncating input_cases.jsonl."""
     from external_baselines.common.io import load_scenarios
 
-    bundle = load_runner_bundle(bundle_path)
+    bundle = load_runner_bundle(bundle_path, formal=formal)
     scenarios_path = Path(str(bundle.get("scenarios_path") or ""))
     if not scenarios_path.is_file():
         raise BundleIntegrityError(f"Runner Bundle input cases missing: {scenarios_path}")

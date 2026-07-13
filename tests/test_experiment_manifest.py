@@ -215,6 +215,26 @@ def test_manifest_enabled_defaults_true_when_missing(tmp_path):
     assert manifest["methods"][0]["enabled"] is True
 
 
+def test_template_manifest_can_use_documented_defaults(tmp_path):
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = load_experiment_manifest(path)
+    assert manifest["schema_version"] == "firebench-interop-v1"
+    assert manifest["track"] == "A_shared_outcome"
+    assert manifest["base_config"] == "configs/default.yaml"
+    assert manifest["output"] == "outputs/firebench_interop_v1_predictions.jsonl"
+    assert manifest["run_manifest"] == "outputs/interop_run_manifest.json"
+
+
 def test_manifest_paper_final_rejects_string_true(tmp_path):
     path = tmp_path / "exp.yaml"
     path.write_text(

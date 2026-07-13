@@ -78,6 +78,9 @@ def _tiny_corpus(tmp_path: Path) -> Path:
 
 
 def _make_runner_bundle(tmp_path: Path, *, n_cases: int = 2) -> Path:
+    from external_baselines.common.checksums import sha256_file
+    from external_baselines.interop.bundle import recompute_bundle_checksum
+
     bundle = tmp_path / "runner_bundle"
     bundle.mkdir()
     corpus = _tiny_corpus(bundle)
@@ -99,19 +102,20 @@ def _make_runner_bundle(tmp_path: Path, *, n_cases: int = 2) -> Path:
     _write_jsonl(bundle / "input_cases.jsonl", cases)
     shutil.copy(SCHEMA, bundle / "prediction_schema.json")
     (bundle / "experiment_config.json").write_text("{}", encoding="utf-8")
-    (bundle / "manifest.json").write_text(
-        json.dumps(
-            {
-                "bundle_type": "runner",
-                "files": {
-                    "input_cases": "input_cases.jsonl",
-                    "prediction_schema": "prediction_schema.json",
-                    "experiment_config": "experiment_config.json",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    manifest_path = bundle / "manifest.json"
+    files = {
+        "input_cases": "input_cases.jsonl",
+        "prediction_schema": "prediction_schema.json",
+        "experiment_config": "experiment_config.json",
+    }
+    manifest = {
+        "bundle_type": "runner",
+        "files": files,
+        "checksums": {rel: sha256_file(bundle / rel) for rel in files.values()},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest["bundle_checksum"] = recompute_bundle_checksum(bundle)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert corpus.is_dir()
     return bundle
 
