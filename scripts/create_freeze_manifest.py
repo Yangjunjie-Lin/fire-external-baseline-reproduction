@@ -19,12 +19,17 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
     enabled_methods,
     load_experiment_manifest,
 )
-from external_baselines.common.formal_config_validator import FormalConfigError, _is_placeholder  # noqa: E402
+from external_baselines.common.formal_config_validator import (  # noqa: E402
+    FormalConfigError,
+    _is_placeholder,
+    validate_experiment_manifest,
+)
 from external_baselines.common.freeze_manifest import (  # noqa: E402
     build_freeze_manifest_payload,
     validate_freeze_manifest,
 )
 from external_baselines.common.io import read_json, write_json  # noqa: E402
+from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
 from external_baselines.interop.bundle import load_runner_bundle  # noqa: E402
 from external_baselines.method_registry import comparison_suite_methods  # noqa: E402
 
@@ -48,6 +53,13 @@ def _load_index_block(index_dir: str | Path | None, *, kind: str) -> dict:
     if kind == "ekell":
         block["kg_checksum"] = manifest.get("kg_checksum")
     return block
+
+
+def _embedding_normalize_value(block: dict, *, field: str) -> bool:
+    try:
+        return require_exact_bool(block.get("normalize_embeddings", True), field=field)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -89,17 +101,28 @@ def main(argv: list[str] | None = None) -> None:
     corpus_checksum = None
     schema_checksum = None
     bundle_path = args.bundle or experiment.get("bundle")
+    if not args.draft:
+        try:
+            validate_experiment_manifest(
+                args.experiment_manifest,
+                validation_stage="freeze_candidate",
+                method_set="comparison_suite",
+                runtime_bundle_path=bundle_path,
+            )
+        except FormalConfigError as exc:
+            raise SystemExit(f"Freeze-candidate validation failed: {exc}") from exc
+
     bundle = None
     if bundle_path and not _is_placeholder(bundle_path):
         try:
-            bundle = load_runner_bundle(bundle_path)
+            bundle = load_runner_bundle(bundle_path, formal=not args.draft)
             producer_declared_checksum = bundle.get("producer_declared_checksum")
             consumer_computed_hash = bundle.get("consumer_computed_bundle_hash")
             bundle_checksum = consumer_computed_hash
             schema_checksum = bundle.get("prediction_schema_sha256")
             scenarios_path = bundle.get("scenarios_path")
             if scenarios_path:
-                input_cases_sha256 = sha256_file(scenarios_path)
+                input_cases_sha256 = bundle.get("input_cases_sha256") or sha256_file(scenarios_path)
             corpus_manifest = bundle.get("corpus_manifest") or {}
             if isinstance(corpus_manifest, dict):
                 corpus_checksum = corpus_manifest.get("aggregate_sha256")
@@ -107,6 +130,8 @@ def main(argv: list[str] | None = None) -> None:
             if not args.draft:
                 raise SystemExit(f"Failed to load Runner Bundle for freeze: {exc}") from exc
             print(f"WARNING: could not load bundle for checksums: {exc}", file=sys.stderr)
+    elif not args.draft:
+        raise SystemExit("Complete freeze requires a non-placeholder Runner Bundle path.")
 
     methods = enabled_methods(experiment, method_set="comparison_suite")
     dense_index_path = None
@@ -123,7 +148,10 @@ def main(argv: list[str] | None = None) -> None:
                 "model_name": dense.get("model_name"),
                 "model_version": dense.get("model_version"),
                 "dimension": dense.get("dimension"),
-                "normalize_embeddings": bool(dense.get("normalize_embeddings", True)),
+                "normalize_embeddings": _embedding_normalize_value(
+                    dense,
+                    field="dense_rag.normalize_embeddings",
+                ),
             }
         elif mid == "ekell_style_controlled_shared_llm":
             vector = cfg.get("ekell_vector") or {}
@@ -134,7 +162,10 @@ def main(argv: list[str] | None = None) -> None:
                     "model_name": vector.get("model_name"),
                     "model_version": vector.get("model_version"),
                     "dimension": vector.get("dimension"),
-                    "normalize_embeddings": bool(vector.get("normalize_embeddings", True)),
+                    "normalize_embeddings": _embedding_normalize_value(
+                        vector,
+                        field="ekell_vector.normalize_embeddings",
+                    ),
                 }
 
     if not args.draft and embedding.get("model_version") and _is_placeholder(embedding.get("model_version")):
@@ -172,10 +203,12 @@ def main(argv: list[str] | None = None) -> None:
         hybrid_cs = (payload.get("indexes") or {}).get("hybrid_dense_dependency", {}).get("index_checksum")
         if dense_cs and hybrid_cs and str(dense_cs) != str(hybrid_cs):
             raise SystemExit("Hybrid dense dependency checksum must equal Dense index checksum.")
-        write_json(args.output, payload)
+        output_path = Path(args.output)
+        temp_path = output_path.with_name(f"{output_path.name}.tmp")
         try:
+            write_json(temp_path, payload)
             validate_freeze_manifest(
-                args.output,
+                temp_path,
                 experiment_manifest_path=args.experiment_manifest,
                 experiment_raw=raw,
                 require_complete=True,
@@ -190,8 +223,9 @@ def main(argv: list[str] | None = None) -> None:
                 method_config_paths=method_paths,
             )
         except FormalConfigError as exc:
-            Path(args.output).unlink(missing_ok=True)
+            temp_path.unlink(missing_ok=True)
             raise SystemExit(f"Incomplete freeze manifest (use --draft to allow): {exc}") from exc
+        temp_path.replace(output_path)
         print(f"Wrote complete freeze manifest to {args.output}")
         print("Confirm freeze_status=frozen in the experiment manifest only after human review.")
         return

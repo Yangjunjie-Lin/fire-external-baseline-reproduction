@@ -5449,6 +5449,92 @@ def test_staged_validator_uses_runner_bundle_schema(tmp_path, monkeypatch):
     assert result["ok"] is True
 
 
+def test_staged_primary_filename_self_ref(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bundle_prediction.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "urn:test:bundle-prediction",
+                "$defs": {"record": {"type": "object"}},
+                "$ref": "bundle_prediction.json#/$defs/record",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_staged_formal_run_root(
+        fixture["run_root"],
+        method_ids=list(_passing_formal_method_evidences().keys()),
+        expected_case_ids=["FBPUB_000001"],
+        prediction_schema_path=schema_path,
+        expected_prediction_schema_sha256=sha256_file(schema_path),
+    )
+
+    assert result["ok"] is True
+
+
+def test_staged_primary_id_self_ref(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bundle_prediction.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "urn:test:bundle-prediction",
+                "$defs": {"record": {"type": "object"}},
+                "$ref": "urn:test:bundle-prediction#/$defs/record",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_staged_formal_run_root(
+        fixture["run_root"],
+        method_ids=list(_passing_formal_method_evidences().keys()),
+        expected_case_ids=["FBPUB_000001"],
+        prediction_schema_path=schema_path,
+        expected_prediction_schema_sha256=sha256_file(schema_path),
+    )
+
+    assert result["ok"] is True
+
+
+def test_staged_unregistered_filename_ref(tmp_path, monkeypatch):
+    from external_baselines.common.checksums import sha256_file
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path = tmp_path / "bundle_prediction.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "urn:test:bundle-prediction",
+                "$defs": {"record": {"type": "object"}},
+                "$ref": "other_schema.json#/$defs/record",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FormalSuiteExecutionError, match="external_schema_reference_not_registered"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=sha256_file(schema_path),
+        )
+
+
 def test_formal_e2e_uses_only_bundle_prediction_schema(tmp_path, monkeypatch):
     import external_baselines.interop.schema as schema_module
     from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
@@ -5578,6 +5664,48 @@ def test_run_manifest_hashes_unmapped_taxonomy_jsonl(tmp_path, monkeypatch):
     manifest = json.loads((fixture["run_root"] / "run_manifest.json").read_text(encoding="utf-8"))
     rel = "decisions/direct_llm/unmapped_taxonomy.jsonl"
     assert rel in (manifest.get("artifact_hashes") or {})
+
+
+def test_run_manifest_contains_input_cases_provenance(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    manifest = json.loads((fixture["run_root"] / "run_manifest.json").read_text(encoding="utf-8"))
+    preflight = json.loads(
+        (fixture["run_root"] / "diagnostics" / "decision_suite_preflight.json").read_text(encoding="utf-8")
+    )
+    provenance = manifest.get("input_cases_provenance") or {}
+    integrity = preflight.get("runner_bundle_integrity") or {}
+
+    assert "input_cases_provenance" in manifest
+    for key in (
+        "input_cases_relpath",
+        "input_cases_source",
+        "input_cases_declared_sha256",
+        "input_cases_sha256",
+        "input_cases_checksum_match",
+        "input_cases_authoritative",
+        "input_cases_formal_eligible",
+    ):
+        assert provenance.get(key) == integrity.get(key)
+
+
+def test_staged_validator_checks_input_cases_provenance(tmp_path, monkeypatch):
+    fixture, _ = _run_mock_formal_publish(tmp_path, monkeypatch)
+    schema_path, schema_sha = _schema_from_fixture(fixture)
+    manifest_path = fixture["run_root"] / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["input_cases_provenance"]["input_cases_sha256"] = _FAKE_SHA256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    from scripts.run_decision_comparison_suite import validate_staged_formal_run_root
+
+    with pytest.raises(FormalSuiteExecutionError, match="manifest_input_cases_sha256_mismatch"):
+        validate_staged_formal_run_root(
+            fixture["run_root"],
+            method_ids=list(_passing_formal_method_evidences().keys()),
+            expected_case_ids=["FBPUB_000001"],
+            prediction_schema_path=schema_path,
+            expected_prediction_schema_sha256=schema_sha,
+        )
 
 
 def test_staged_validator_rejects_decisions_jsonl_hash_mismatch(tmp_path, monkeypatch):

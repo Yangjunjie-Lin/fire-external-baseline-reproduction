@@ -53,6 +53,32 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
+def read_jsonl_objects_strict(
+    path: str | Path,
+    *,
+    require_nonempty: bool = False,
+) -> list[dict[str, Any]]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"formal_input_cases_invalid_json:line_{line_no}") from exc
+            if not isinstance(value, dict):
+                raise ValueError(f"formal_input_cases_record_must_be_object:line_{line_no}")
+            rows.append(value)
+    if require_nonempty and not rows:
+        raise ValueError("formal_input_cases_empty")
+    return rows
+
+
 def write_jsonl(path: str | Path, rows: list[dict[str, Any]], append: bool = False) -> None:
     path = Path(path)
     ensure_dir(path.parent)

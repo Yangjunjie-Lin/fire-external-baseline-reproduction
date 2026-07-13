@@ -528,6 +528,133 @@ def test_complete_freeze_manifest_passes(tmp_path: Path) -> None:
     assert result["valid"] is True
 
 
+def _run_create_freeze_with_patches(tmp_path: Path, monkeypatch, *, dense_normalize=True, validate_error=None):
+    import scripts.create_freeze_manifest as cfm
+
+    experiment_manifest = tmp_path / "experiment.yaml"
+    experiment_manifest.write_text("experiment_id: freeze_cli\n", encoding="utf-8")
+    evidence = tmp_path / "selected_dev.json"
+    evidence.write_text('{"selected": true}\n', encoding="utf-8")
+    scenarios = tmp_path / "input_cases.jsonl"
+    scenarios.write_text('{"case_id":"FBPUB_000001","input":{"scenario":"smoke"}}\n', encoding="utf-8")
+    output = tmp_path / "freeze.json"
+    bundle_path = tmp_path / "bundle"
+    calls = {"validation": [], "formal_flags": [], "validated_paths": []}
+    experiment = {
+        "bundle": str(bundle_path),
+        "raw": {
+            "shared_model_config": str(tmp_path / "shared.yaml"),
+            "methods": [
+                {"method_id": mid, "config": str(tmp_path / f"{mid}.yaml")}
+                for mid in comparison_suite_methods()
+            ],
+        },
+    }
+
+    def fake_validate(path, **kwargs):
+        calls["validation"].append({"path": path, **kwargs})
+        return {"valid": True}
+
+    def fake_load_bundle(path, *, formal=False):
+        calls["formal_flags"].append(formal)
+        return {
+            "producer_declared_checksum": "p" * 64,
+            "consumer_computed_bundle_hash": "c" * 64,
+            "prediction_schema_sha256": "s" * 64,
+            "scenarios_path": str(scenarios),
+            "input_cases_sha256": "i" * 64,
+            "corpus_manifest": {"aggregate_sha256": "a" * 64},
+        }
+
+    def fake_enabled_methods(_experiment, *, method_set):
+        assert method_set == "comparison_suite"
+        return [{"method_id": mid, "config": str(tmp_path / f"{mid}.yaml")} for mid in comparison_suite_methods()]
+
+    def fake_build_method_config(_experiment, entry):
+        mid = entry["method_id"]
+        if mid == "dense_rag":
+            return {
+                "dense_rag": {
+                    "backend": "text2vec",
+                    "model_name": "fake/bge",
+                    "model_version": "v-test",
+                    "dimension": 8,
+                    "normalize_embeddings": dense_normalize,
+                    "index_path": str(tmp_path / "dense_index"),
+                }
+            }
+        if mid == "ekell_style_controlled_shared_llm":
+            return {
+                "ekell_vector": {
+                    "backend": "text2vec",
+                    "model_name": "fake/bge",
+                    "model_version": "v-test",
+                    "dimension": 8,
+                    "normalize_embeddings": True,
+                    "index_path": str(tmp_path / "ekell_index"),
+                }
+            }
+        return {}
+
+    def fake_validate_freeze(path, **_kwargs):
+        calls["validated_paths"].append(Path(path))
+        if validate_error is not None:
+            raise validate_error
+        assert Path(path).is_file()
+        return {"ok": True}
+
+    monkeypatch.setattr(cfm, "validate_experiment_manifest", fake_validate)
+    monkeypatch.setattr(cfm, "load_experiment_manifest", lambda _path: experiment)
+    monkeypatch.setattr(cfm, "load_runner_bundle", fake_load_bundle)
+    monkeypatch.setattr(cfm, "enabled_methods", fake_enabled_methods)
+    monkeypatch.setattr(cfm, "build_method_config", fake_build_method_config)
+    monkeypatch.setattr(cfm, "validate_freeze_manifest", fake_validate_freeze)
+    cfm.main(
+        [
+            "--experiment-manifest",
+            str(experiment_manifest),
+            "--selected-dev-run",
+            str(evidence),
+            "--bundle",
+            str(bundle_path),
+            "--output",
+            str(output),
+        ]
+    )
+    return output, calls
+
+
+def test_complete_freeze_calls_bundle_loader_with_formal_true(tmp_path: Path, monkeypatch) -> None:
+    output, calls = _run_create_freeze_with_patches(tmp_path, monkeypatch)
+
+    assert output.is_file()
+    assert calls["formal_flags"] == [True]
+    assert calls["validation"][0]["validation_stage"] == "freeze_candidate"
+    assert calls["validation"][0]["method_set"] == "comparison_suite"
+    assert calls["validation"][0]["runtime_bundle_path"]
+    assert calls["validated_paths"][0].name == "freeze.json.tmp"
+    assert not output.with_name(f"{output.name}.tmp").exists()
+
+
+def test_complete_freeze_rejects_string_boolean(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="normalize_embeddings"):
+        _run_create_freeze_with_patches(tmp_path, monkeypatch, dense_normalize="false")
+
+    assert not (tmp_path / "freeze.json").exists()
+
+
+def test_complete_freeze_does_not_leave_output_on_failure(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="Incomplete freeze manifest"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            validate_error=FormalConfigError("forced failure"),
+        )
+
+    assert not (tmp_path / "freeze.json").exists()
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
 def test_comparison_formal_validates_dense() -> None:
     from external_baselines.common.formal_config_validator import validate_dense_config_for_real_run
 

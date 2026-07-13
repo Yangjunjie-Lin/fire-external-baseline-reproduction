@@ -4,6 +4,7 @@
 Stages:
   template  — .example + placeholders allowed; freeze_status must be provisional
   dry_run   — no .example/placeholders; freeze_status provisional|frozen
+  freeze_candidate — Formal strictness before the freeze file exists
   formal    — freeze_status=frozen + freeze_manifest required
 """
 
@@ -32,7 +33,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", required=True, help="Experiment manifest or method config YAML")
     parser.add_argument(
         "--validation-stage",
-        choices=["template", "dry_run", "formal"],
+        choices=["template", "dry_run", "freeze_candidate", "formal"],
         default=None,
         help="Validation stage (default: formal, or template when --allow-placeholders).",
     )
@@ -85,6 +86,7 @@ def main(argv: list[str] | None = None) -> None:
                 method_id=str(cfg.get("method_id") or ""),
                 allow_placeholders=(stage == "template"),
                 require_formal=True,
+                validation_stage=stage,
             )
             result = {
                 "path": str(path),

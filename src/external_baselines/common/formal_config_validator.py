@@ -13,7 +13,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from external_baselines.common.experiment_manifest import build_method_config, load_experiment_manifest
+from external_baselines.common.experiment_manifest import (
+    build_method_config,
+    enabled_methods,
+    load_experiment_manifest,
+)
 from external_baselines.common.io import read_yaml
 from external_baselines.common.strict_config_types import (
     MISSING,
@@ -69,6 +73,7 @@ FORMAL_EKELL_METHODS = frozenset(
 FORMAL_METHOD_IDS = frozenset(main_table_methods()) | frozenset(paper_fidelity_methods())
 COMPARISON_FORMAL_METHOD_IDS = frozenset(comparison_suite_methods())
 COMPARISON_SUITE_EXACT = list(comparison_suite_methods())
+VALIDATION_STAGES = frozenset({"template", "dry_run", "freeze_candidate", "formal"})
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", ""})
 SMOKE_EMBEDDING_BACKENDS = frozenset(
@@ -92,6 +97,14 @@ ROOT_REL = Path(__file__).resolve().parents[3]
 
 class FormalConfigError(ValueError):
     """Raised when a formal config violates paper-facing safety rules."""
+
+
+def _requires_paper_facing_strictness(stage: str) -> bool:
+    return stage in {"freeze_candidate", "formal"}
+
+
+def _requires_existing_freeze(stage: str) -> bool:
+    return stage == "formal"
 
 
 def _is_example_path(path: str) -> bool:
@@ -336,15 +349,16 @@ def validate_llm_for_formal(
 
     if provider in SMOKE_LLM_PROVIDERS:
         raise FormalConfigError(f"Formal config rejects smoke LLM provider: {provider!r}")
-    if stage == "formal" and not provider:
+    strict_stage = _requires_paper_facing_strictness(stage)
+    if strict_stage and not provider:
         raise FormalConfigError("Formal config requires llm.provider (non-empty).")
     if _is_placeholder(model) and not allow_placeholders:
         raise FormalConfigError("Formal config requires llm.model (non-placeholder).")
     if _is_placeholder(model_version) and not allow_placeholders:
         raise FormalConfigError("Formal config requires llm.model_version (non-placeholder).")
-    if stage == "formal" and not allow_placeholders and not api_key_env:
+    if strict_stage and not allow_placeholders and not api_key_env:
         raise FormalConfigError("Formal config requires llm.api_key_env (non-empty).")
-    if stage == "formal" and not allow_placeholders:
+    if strict_stage and not allow_placeholders:
         for field in ("temperature", "top_p", "max_tokens", "seed"):
             if field not in llm:
                 raise FormalConfigError(f"Formal config requires llm.{field} to be set explicitly.")
@@ -415,7 +429,7 @@ def validate_dense_config_for_real_run(
         path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
-        if validation_stage == "formal":
+        if _requires_paper_facing_strictness(validation_stage):
             from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
 
             try:
@@ -563,7 +577,7 @@ def validate_hybrid_config_for_real_run(
                 raise FormalConfigError(f"Hybrid/Dense embedding {field} mismatch.")
         left_cs = dense.get("index_checksum") or config.get("dense_index_checksum")
         right_cs = other.get("index_checksum") or dense_config.get("dense_index_checksum")
-        if validation_stage == "formal" and left_cs and right_cs and str(left_cs) != str(right_cs):
+        if _requires_paper_facing_strictness(validation_stage) and left_cs and right_cs and str(left_cs) != str(right_cs):
             raise FormalConfigError("Hybrid/Dense index_checksum mismatch.")
 
 
@@ -785,8 +799,10 @@ def validate_experiment_manifest(
 ) -> dict[str, Any]:
     path = Path(path)
     stage = str(validation_stage or ("template" if allow_placeholders else "formal")).strip().lower()
-    if stage not in {"template", "dry_run", "formal"}:
+    if stage not in VALIDATION_STAGES:
         raise FormalConfigError(f"Unknown validation_stage={validation_stage!r}")
+    strict_stage = _requires_paper_facing_strictness(stage)
+    requires_existing_freeze = _requires_existing_freeze(stage)
     allow_placeholders = stage == "template" or allow_placeholders
     if stage == "template":
         allow_placeholders = True
@@ -817,7 +833,7 @@ def validate_experiment_manifest(
             "copy the template to a non-.example file first."
         )
 
-    if stage == "formal":
+    if strict_stage:
         for key in (
             "experiment_id",
             "schema_version",
@@ -825,7 +841,6 @@ def validate_experiment_manifest(
             "run_mode",
             "base_config",
             "shared_model_config",
-            "freeze_manifest",
         ):
             if key not in raw:
                 errors.append(f"formal manifest requires explicit {key}.")
@@ -844,6 +859,8 @@ def validate_experiment_manifest(
                     "schema_version must be exactly 'firebench-interop-v1' "
                     f"(got {value!r})."
                 )
+        if requires_existing_freeze and "freeze_manifest" not in raw:
+            errors.append("formal manifest requires explicit freeze_manifest.")
         for key in ("output", "run_manifest"):
             if key in raw:
                 try:
@@ -855,7 +872,7 @@ def validate_experiment_manifest(
                 except FormalConfigError as exc:
                     errors.append(str(exc))
 
-    if stage == "formal" and "run_mode" not in raw:
+    if strict_stage and "run_mode" not in raw:
         run_mode = ""
     else:
         run_mode = _validate_exact_nonempty_string(
@@ -900,6 +917,12 @@ def validate_experiment_manifest(
     elif stage == "dry_run":
         if freeze_status not in {"provisional", "frozen"}:
             errors.append(f"dry_run validation requires freeze_status provisional|frozen (got {freeze_status!r}).")
+    elif stage == "freeze_candidate":
+        if freeze_status not in {"provisional", "frozen"}:
+            errors.append(
+                "freeze_candidate validation requires freeze_status provisional|frozen "
+                f"(got {freeze_status!r})."
+            )
     else:  # formal
         if freeze_status != "frozen":
             errors.append(f"formal validation requires freeze_status=frozen (got {freeze_status!r}).")
@@ -927,6 +950,27 @@ def validate_experiment_manifest(
                     )
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"freeze_manifest validation failed: {exc}")
+
+    if strict_stage and method_set_name == "comparison_suite":
+        bundle_candidate = str(runtime_bundle_path) if runtime_bundle_path is not None else raw.get("bundle")
+        try:
+            bundle_path = _validate_exact_nonempty_string(
+                bundle_candidate,
+                field="bundle",
+                allow_placeholders=allow_placeholders,
+            )
+        except FormalConfigError as exc:
+            errors.append(str(exc))
+        else:
+            if _is_placeholder(bundle_path):
+                errors.append("Formal comparison suite requires non-placeholder Runner Bundle path.")
+            else:
+                try:
+                    from external_baselines.interop.bundle import load_runner_bundle
+
+                    load_runner_bundle(bundle_path, formal=True)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"Formal Runner Bundle authority validation failed: {exc}")
 
     shared = (
         _validate_exact_nonempty_string(
@@ -970,7 +1014,7 @@ def validate_experiment_manifest(
     ]
     declared_comparison: list[str] = []
     raw_comparison_methods = raw.get("comparison_suite_methods")
-    if stage == "formal" and method_set_name == "comparison_suite":
+    if strict_stage and method_set_name == "comparison_suite":
         if "comparison_suite_methods" not in raw:
             errors.append("formal comparison suite requires explicit comparison_suite_methods.")
         elif raw_comparison_methods is None or not isinstance(raw_comparison_methods, list):
@@ -994,7 +1038,7 @@ def validate_experiment_manifest(
             for m in (raw_comparison_methods or [])
         ]
 
-    if method_set_name == "comparison_suite" and (stage == "formal" or declared_comparison):
+    if method_set_name == "comparison_suite" and (strict_stage or declared_comparison):
         if declared_comparison != COMPARISON_SUITE_EXACT:
             errors.append(
                 "comparison_suite_methods must be exactly "
@@ -1029,6 +1073,7 @@ def validate_experiment_manifest(
         required_formal_ids = set(FORMAL_METHOD_IDS)
 
     seen_ids: set[str] = set()
+    entries_by_id: dict[str, dict[str, Any]] = {}
     merged_by_id: dict[str, dict[str, Any]] = {}
     for entry in methods:
         if isinstance(entry, str):
@@ -1063,6 +1108,7 @@ def validate_experiment_manifest(
                 )
                 continue
             enabled = raw_enabled
+        entries_by_id.setdefault(mid, {**entry, "method_id": mid, "enabled": enabled})
         should_validate = enabled and mid in required_formal_ids
         if method_set_name == "comparison_suite" and mid in COMPARISON_FORMAL_METHOD_IDS:
             should_validate = True
@@ -1119,34 +1165,34 @@ def validate_experiment_manifest(
         except FormalConfigError as exc:
             errors.append(f"hybrid_rag/dense_rag identity: {exc}")
 
-    if stage == "formal" and method_set_name == "comparison_suite":
-        method_entry_ids: list[str] = []
-        enabled_entry_ids: list[str] = []
-        for entry in methods:
-            if not isinstance(entry, dict):
-                continue
-            try:
-                mid = canonicalize_method_id(
-                    _validate_exact_nonempty_string(entry.get("method_id"), field="methods[].method_id")
-                )
-            except FormalConfigError:
-                continue
-            method_entry_ids.append(mid)
-            if entry.get("enabled", True) is True:
-                enabled_entry_ids.append(mid)
-            elif mid in COMPARISON_SUITE_EXACT:
-                errors.append(f"Required comparison suite method entry disabled: {mid}.")
-        missing_entries = [m for m in COMPARISON_SUITE_EXACT if m not in method_entry_ids]
-        extra_entries = [m for m in method_entry_ids if m not in COMPARISON_SUITE_EXACT]
+    if strict_stage and method_set_name == "comparison_suite":
+        missing_entries = [m for m in COMPARISON_SUITE_EXACT if m not in entries_by_id]
         if missing_entries:
             errors.append(f"comparison suite methods missing method entries: {missing_entries}.")
-        if extra_entries:
-            errors.append(f"comparison suite methods contain extra method entries: {extra_entries}.")
-        if enabled_entry_ids != COMPARISON_SUITE_EXACT:
+        for mid in COMPARISON_SUITE_EXACT:
+            entry = entries_by_id.get(mid)
+            if entry is not None and entry.get("enabled", True) is not True:
+                errors.append(f"Required comparison suite method entry disabled: {mid}.")
+        for mid, entry in entries_by_id.items():
+            if mid not in COMPARISON_SUITE_EXACT and entry.get("enabled", True) is True:
+                errors.append(
+                    "Non-comparison method entry must be disabled during Formal "
+                    f"comparison suite validation: {mid}."
+                )
+        try:
+            resolved_entries = enabled_methods(manifest, method_set="comparison_suite")
+            resolved_ids = [entry["method_id"] for entry in resolved_entries]
+        except Exception as exc:  # noqa: BLE001
             errors.append(
-                "enabled comparison suite method entries must exactly match "
-                f"{COMPARISON_SUITE_EXACT} (got {enabled_entry_ids})."
+                "comparison suite resolver failed to select the exact declared method set: "
+                f"{exc}"
             )
+        else:
+            if resolved_ids != COMPARISON_SUITE_EXACT:
+                errors.append(
+                    "comparison suite resolver must select exactly "
+                    f"{COMPARISON_SUITE_EXACT} in declared order (got {resolved_ids})."
+                )
 
     enabled_main = [
         canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id"))

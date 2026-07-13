@@ -90,16 +90,16 @@ python scripts/run_interop_baselines.py \
   --output outputs/dry_run/comparison_suite_v1/predictions.jsonl \
   --manifest outputs/dry_run/comparison_suite_v1/run_manifest.json
 
-# 5) After DEV selection — freeze order (do not reverse):
-#    a) set freeze_status=frozen and freeze_manifest path in the experiment manifest
-#    b) save the manifest (checksum includes freeze_manifest path)
-#    c) create freeze manifest (hashes the saved manifest)
+# 5) After DEV selection — complete freeze generation:
+#    create_freeze_manifest.py runs freeze-candidate validation first, then loads
+#    the Runner Bundle with Formal authority and writes the freeze atomically.
 python scripts/create_freeze_manifest.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
   --bundle <runner_bundle> \
   --output configs/freeze/comparison_freeze_manifest_v1.json
-# Use --draft only while fields are incomplete; non-draft requires complete checksums.
+# Use --draft only while fields are incomplete; draft output is not a complete
+# Formal identity. Non-draft requires complete checksums and real identities.
 
 # 6) Formal validation (requires freeze_status=frozen + freeze_manifest)
 python scripts/validate_formal_config.py \
@@ -184,6 +184,7 @@ python scripts/validate_formal_config.py \
 
 - Dense/Hybrid are controlled supplemental baselines; not E-KELL paper-fidelity.
 - `--include-supplemental` is deprecated; use `--method-set comparison_suite`.
+- `comparison_suite_methods` is the sole ordered five-method authority. The `methods` array is an unordered configuration registry and may contain disabled non-comparison entries, but no non-comparison entry may be enabled for a Formal comparison-suite run.
 - Formal model identity is frozen in YAML; env vars supply credentials only.
 - Formal control/diagnostics directory is outside the immutable run root:
 
@@ -208,6 +209,7 @@ outputs/formal/
 - Final suite summary and run manifest are staged before commit; the committed run root is never rewritten after rename.
 - Immutable suite summary records commit success but does not pre-declare backup cleanup success; actual cleanup status is in `publish_receipt.json`.
 - Staged validation reparses predictions against the frozen Runner Bundle prediction schema and schema SHA; verifies exact case IDs, method IDs, summaries, supplemental decision artifacts, and all run-manifest hashes.
+- The immutable run manifest records both input-cases and prediction-schema provenance, and staged validation checks those values against preflight.
 - Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata.
 - Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL.
@@ -215,6 +217,7 @@ outputs/formal/
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (drive-qualified, root-relative, UNC, device namespace, traversal, symlink escape) and must resolve inside the staged run root.
 - Formal execution requires `manifest.files.prediction_schema` to identify a schema file located inside the frozen Runner Bundle. The Bundle manifest must declare the prediction schema SHA-256, and the consumer-computed hash must match both the Bundle declaration and frozen experiment identity.
 - The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`. Meta-schema and record validation use the same no-network `$ref` policy: under the current single-schema Bundle protocol, only internal fragments, the primary schema `$id`, and the primary schema filename may be referenced.
+- Formal `input_cases.jsonl` is strict: every non-empty line must be a JSON object with an exact non-empty string `case_id`; invalid or non-object lines are rejected rather than silently skipped.
 - Formal execution never falls back to repository-local schemas. Local schemas are development snapshots only and are not registered as Formal JSON Schema resources.
 - The no-network schema registry is input-driven and registers only the primary Bundle schema plus explicitly checksum-verified Bundle resources. Its behavior does not depend on source checkout, current working directory, editable installation, or wheel installation.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.checksums import directory_manifest, sha256_file
-from external_baselines.common.io import read_json, read_jsonl, read_yaml
+from external_baselines.common.io import read_json, read_jsonl, read_jsonl_objects_strict, read_yaml
 
 FORBIDDEN_BUNDLE_KEYS = {
     "expected",
@@ -158,8 +158,14 @@ def _assert_no_forbidden_structured_content(root: Path) -> None:
                 with path.open("r", encoding="utf-8") as handle:
                     for line_number, line in enumerate(handle, start=1):
                         if line.strip():
+                            try:
+                                value = json.loads(line)
+                            except json.JSONDecodeError as exc:
+                                raise BundleIntegrityError(
+                                    f"formal_input_cases_invalid_json:line_{line_number}"
+                                ) from exc
                             _assert_no_forbidden_keys(
-                                json.loads(line),
+                                value,
                                 location=f"{relative}:{line_number}",
                             )
         except PermissionError:
@@ -466,6 +472,42 @@ def _path_provenance(
     }
 
 
+def _formal_case_scenario_text(row: dict[str, Any]) -> str:
+    nested = row.get("input")
+    if isinstance(nested, dict) and isinstance(nested.get("scenario"), str):
+        return nested["scenario"].strip()
+    for key in ("scenario_text", "description", "prompt", "task"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def validate_formal_input_case_records(rows: list[dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for line_no, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"formal_input_cases_record_must_be_object:line_{line_no}")
+            continue
+        if "case_id" not in row:
+            errors.append(f"formal_input_cases_case_id_missing:line_{line_no}")
+            continue
+        case_id = row.get("case_id")
+        if type(case_id) is not str:
+            errors.append(f"formal_input_cases_case_id_must_be_string:line_{line_no}")
+            continue
+        if not case_id.strip():
+            errors.append(f"formal_input_cases_case_id_empty:line_{line_no}")
+            continue
+        if case_id in seen:
+            errors.append(f"formal_input_cases_duplicate_case_id:line_{line_no}")
+        seen.add(case_id)
+        if not _formal_case_scenario_text(row):
+            errors.append(f"formal_input_cases_scenario_missing:line_{line_no}")
+    return errors
+
+
 def _resolve_input_cases(
     root: Path,
     manifest: dict[str, Any],
@@ -499,6 +541,8 @@ def _resolve_input_cases(
             raise BundleIntegrityError("formal_runner_bundle_input_cases_missing")
         if not input_path.is_file():
             raise BundleIntegrityError("formal_runner_bundle_input_cases_not_file")
+        if input_path.suffix.lower() != ".jsonl":
+            raise BundleIntegrityError("formal_runner_bundle_input_cases_must_be_jsonl")
         source = INPUT_SOURCE_BUNDLE_MANIFEST
     else:
         input_value = files_map.get("input_cases")
@@ -555,6 +599,13 @@ def _resolve_input_cases(
             raise BundleIntegrityError("formal_runner_bundle_input_cases_checksum_invalid")
         if provenance["input_cases_checksum_match"] is not True:
             raise BundleIntegrityError("formal_runner_bundle_input_cases_checksum_mismatch")
+        try:
+            rows = read_jsonl_objects_strict(input_path, require_nonempty=True)
+        except (OSError, ValueError) as exc:
+            raise BundleIntegrityError(str(exc)) from exc
+        record_errors = validate_formal_input_case_records(rows)
+        if record_errors:
+            raise BundleIntegrityError(", ".join(record_errors))
 
     return provenance
 
@@ -781,10 +832,21 @@ def inspect_runner_bundle_case_coverage(
     if not scenarios_path.is_file():
         raise BundleIntegrityError(f"Runner Bundle input cases missing: {scenarios_path}")
 
-    rows = read_jsonl(scenarios_path)
+    if formal:
+        if scenarios_path.suffix.lower() != ".jsonl":
+            raise BundleIntegrityError("formal_runner_bundle_input_cases_must_be_jsonl")
+        try:
+            rows = read_jsonl_objects_strict(scenarios_path, require_nonempty=True)
+        except (OSError, ValueError) as exc:
+            raise BundleIntegrityError(str(exc)) from exc
+        record_errors = validate_formal_input_case_records(rows)
+        if record_errors:
+            raise BundleIntegrityError(", ".join(record_errors))
+    else:
+        rows = read_jsonl(scenarios_path)
     input_case_ids: list[str] = []
     for row in rows:
-        cid = str(row.get("case_id") or row.get("scenario_id") or "").strip()
+        cid = str(row.get("case_id") if formal else row.get("case_id") or row.get("scenario_id") or "").strip()
         if cid:
             input_case_ids.append(cid)
 

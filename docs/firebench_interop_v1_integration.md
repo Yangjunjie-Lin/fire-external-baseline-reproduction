@@ -13,11 +13,15 @@ Local proxy metrics are **diagnostic only**.
 
 ## Formal input
 
-Prefer `manifest.files.input_cases` → `input_cases.jsonl` with nested `input.scenario`.
+Formal Runner Bundles must declare `manifest.files.input_cases` pointing to an in-bundle `.jsonl` file, normally `input_cases.jsonl`, with nested `input.scenario`.
+
+Every non-empty Formal input line must be a JSON object with an exact non-empty string `case_id`. Invalid JSON, non-object rows, missing/empty/non-string/duplicate `case_id`, and empty input files fail closed rather than being silently skipped. Dry-run loaders retain documented legacy flexibility for local smoke fixtures only.
 
 Also preserved: `language`, `input_mode`, `context`, `dynamic_snapshots` (methods that do not consume dynamic state must set `dynamic_state_consumed=false`).
 
 Checksums: validate **per-file** `manifest.checksums`. Aggregate `consumer_computed_bundle_hash` is diagnostic and must not be confused with a producer-declared aggregate checksum.
+
+Immutable Formal run manifests record `input_cases_provenance` alongside `prediction_schema_provenance`; staged validation compares both provenance blocks with preflight before publish.
 
 Formal execution requires `manifest.files.prediction_schema` to identify a schema file located inside the frozen Runner Bundle. The Bundle manifest must declare that schema SHA-256 in `manifest.checksums`, and the consumer-computed hash must match both the Bundle declaration and the frozen experiment identity.
 

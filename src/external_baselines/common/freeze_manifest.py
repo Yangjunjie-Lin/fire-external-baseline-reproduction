@@ -580,10 +580,14 @@ def validate_frozen_runtime_inputs(
             if emb_freeze.get(field) and block.get(field) and str(emb_freeze[field]) != str(block[field]):
                 raise FormalConfigError(f"freeze embedding.{field} mismatches runtime {mid}.")
         if "normalize_embeddings" in emb_freeze and "normalize_embeddings" in block:
-            if bool(emb_freeze["normalize_embeddings"]) != bool(block["normalize_embeddings"]):
+            if (
+                type(emb_freeze["normalize_embeddings"]) is not bool
+                or type(block["normalize_embeddings"]) is not bool
+                or emb_freeze["normalize_embeddings"] != block["normalize_embeddings"]
+            ):
                 raise FormalConfigError("freeze embedding.normalize_embeddings mismatches runtime.")
         if emb_freeze.get("dimension") is not None and block.get("dimension") is not None:
-            if int(emb_freeze["dimension"]) != int(block["dimension"]):
+            if emb_freeze["dimension"] != block["dimension"]:
                 raise FormalConfigError("freeze embedding.dimension mismatches runtime.")
         break
 

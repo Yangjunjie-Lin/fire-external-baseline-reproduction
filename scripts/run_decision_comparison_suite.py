@@ -585,6 +585,7 @@ def _validate_staged_prediction_file(
     method_id: str,
     expected_case_id_set: set[str],
     prediction_schema: dict[str, Any],
+    primary_schema_name: str,
 ) -> list[str]:
     from external_baselines.common.taxonomy_normalizer import assert_canonical_interop_record
 
@@ -613,6 +614,7 @@ def _validate_staged_prediction_file(
             record,
             schema=prediction_schema,
             require_external_schema=True,
+            primary_schema_name=primary_schema_name,
         )
         if schema_errors:
             errors.append(f"invalid_interop_record_{method_id}:line_{line_no}")
@@ -757,6 +759,7 @@ def validate_staged_formal_run_root(
                     method_id=method_id,
                     expected_case_id_set=expected_case_id_set,
                     prediction_schema=schema_payload,
+                    primary_schema_name=prediction_schema_path.name,
                 )
             )
         method_dir = decisions / method_id
@@ -858,6 +861,19 @@ def validate_staged_formal_run_root(
             if report.get("duplicate_case_ids"):
                 errors.append(f"coverage_duplicate_cases_{method_id}")
 
+    preflight = {}
+    if preflight_path.is_file():
+        try:
+            preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            errors.append("invalid_preflight_json")
+            preflight = {}
+    preflight_integrity = (
+        preflight.get("runner_bundle_integrity") if isinstance(preflight, dict) else {}
+    )
+    if not isinstance(preflight_integrity, dict):
+        preflight_integrity = {}
+
     if run_manifest_path.is_file():
         try:
             manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -933,6 +949,45 @@ def validate_staged_formal_run_root(
                 elif artifact_name in DECISION_SUPPLEMENTAL_ARTIFACTS and not artifact_path.is_file():
                     errors.append(f"missing_supplemental_artifact:{rel}")
 
+        provenance_checks = {
+            "input_cases_provenance": (
+                "input_cases",
+                (
+                    "input_cases_path",
+                    "input_cases_relpath",
+                    "input_cases_source",
+                    "input_cases_inside_bundle",
+                    "input_cases_declared_sha256",
+                    "input_cases_sha256",
+                    "input_cases_checksum_valid",
+                    "input_cases_checksum_match",
+                    "input_cases_authoritative",
+                    "input_cases_formal_eligible",
+                ),
+            ),
+            "prediction_schema_provenance": (
+                "prediction_schema",
+                (
+                    "prediction_schema_path",
+                    "prediction_schema_source",
+                    "prediction_schema_inside_bundle",
+                    "prediction_schema_declared_sha256",
+                    "prediction_schema_sha256",
+                    "prediction_schema_checksum_match",
+                    "prediction_schema_authoritative",
+                    "prediction_schema_formal_eligible",
+                ),
+            ),
+        }
+        for manifest_field, (error_prefix, keys) in provenance_checks.items():
+            recorded = manifest.get(manifest_field)
+            if not isinstance(recorded, dict):
+                errors.append(f"manifest_{error_prefix}_provenance_missing")
+                continue
+            for key in keys:
+                if recorded.get(key) != preflight_integrity.get(key):
+                    errors.append(f"manifest_{key}_mismatch")
+
     if errors:
         raise FormalSuiteExecutionError(
             "staged_formal_run_root_invalid: " + ", ".join(errors)
@@ -970,6 +1025,7 @@ def build_formal_run_manifest(
         if (decisions_dir / mid / "run_summary.json").is_file()
     }
     schema_provenance = {}
+    input_cases_provenance = {}
     preflight = read_json(preflight_path, default={}) if preflight_path.is_file() else {}
     if isinstance(preflight, dict):
         integrity = preflight.get("runner_bundle_integrity") or {}
@@ -985,6 +1041,21 @@ def build_formal_run_manifest(
                     "prediction_schema_checksum_match",
                     "prediction_schema_authoritative",
                     "prediction_schema_formal_eligible",
+                )
+            }
+            input_cases_provenance = {
+                key: integrity.get(key)
+                for key in (
+                    "input_cases_path",
+                    "input_cases_relpath",
+                    "input_cases_source",
+                    "input_cases_inside_bundle",
+                    "input_cases_declared_sha256",
+                    "input_cases_sha256",
+                    "input_cases_checksum_valid",
+                    "input_cases_checksum_match",
+                    "input_cases_authoritative",
+                    "input_cases_formal_eligible",
                 )
             }
     artifact_hashes: dict[str, str] = {}
@@ -1028,6 +1099,7 @@ def build_formal_run_manifest(
         "decision_summary_files": decision_summary_files,
         "decision_artifact_files": decision_artifact_files,
         "artifact_hashes": artifact_hashes,
+        "input_cases_provenance": input_cases_provenance,
         "prediction_schema_provenance": schema_provenance,
         "formal_result": formal_result,
         "artifact_inventory": {

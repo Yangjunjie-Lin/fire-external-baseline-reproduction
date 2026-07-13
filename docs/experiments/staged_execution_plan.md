@@ -127,20 +127,20 @@ Dense/Hybrid are controlled supplemental baselines in `comparison_suite`. They r
 Requirements before TEST:
 
 - DEV selection complete
-- manifest + method configs updated to `freeze_status: frozen` (human decision)
-- `freeze_manifest` path set on the experiment manifest **before** creating the freeze file
+- manifest + method configs updated with real paper-facing values
+- freeze-candidate validation passes before creating the complete freeze file
 - config checksums recorded
 - prompt hash fixed
 - LLM `model` / `model_version` frozen in YAML (`model_source=yaml_config`)
 - embedding `model_version` fixed (replace `REQUIRED_BEFORE_REAL_INDEX_BUILD`)
 
-Freeze order (do not reverse — avoids self-referential checksum drift):
+Freeze order:
 
 1. Finish DEV selection
-2. Set `freeze_status: frozen` and `freeze_manifest:` path in the experiment manifest
-3. Save the experiment manifest
-4. Run `create_freeze_manifest.py` (hashes the saved manifest + indexes + bundle)
-5. Do not edit the experiment manifest again after freeze creation
+2. Save a non-`.example` experiment manifest with real model, method, Bundle, and index identities
+3. Run `create_freeze_manifest.py`; non-draft mode performs `freeze_candidate` validation and Formal Runner Bundle loading before writing the freeze atomically
+4. Treat `--draft` output as development-only and incomplete
+5. Use final Formal validation only after the reviewed manifest is frozen and references the existing complete freeze file
 
 Install for real Dense/Hybrid/E-KELL embeddings: `pip install -e ".[llm,embeddings]"` (or `requirements-optional-embeddings.txt`). First `text2vec` encode may download the model; pre-cache before formal runs.
 
@@ -150,6 +150,11 @@ python scripts/create_freeze_manifest.py \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
   --bundle <runner_bundle> \
   --output configs/freeze/comparison_freeze_manifest_v1.json
+
+python scripts/validate_formal_config.py \
+  --validation-stage freeze_candidate \
+  --method-set comparison_suite \
+  --config configs/experiments/controlled_main_table_v1.yaml
 
 python scripts/validate_formal_config.py \
   --validation-stage formal \
@@ -175,6 +180,7 @@ Requires:
 - **no** `--enable-dev-aliases`
 - frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256; `manifest.files.prediction_schema` must point to an in-bundle schema with a matching `manifest.checksums` SHA-256)
 - manifest method entries resolved before per-method config merge
+- `comparison_suite_methods` is the sole ordered five-method authority; `methods` is an unordered configuration registry and may retain disabled non-comparison entries only
 - two-phase formal compliance: pre-publish checks (no publish required) → method/cache runtime close → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` at first rename; runtime cleanup failure stops before staged validation and commit
 - formal temp root created only after static validation and five-method preflight; preflight/failure records written to external `.control/` directory (never mutates published run root before commit)
 - single same-filesystem `--formal-run-root` publication (one directory rename); **no core formal artifact rewritten after commit**
@@ -187,8 +193,10 @@ Requires:
 - runtime caches are scoped to one comparison-suite invocation and cannot leak across runs
 - embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
 - run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts
+- run manifests directly record input-cases provenance and prediction-schema provenance, both checked against preflight during staged validation
 - manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root
 - the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; meta-schema and record validation share one no-network `$ref` policy limited to internal fragments, the primary schema `$id`, and the primary schema filename under the current single-schema Bundle protocol
+- formal `input_cases.jsonl` is strict and fail-closed: every non-empty line must be a JSON object with an exact non-empty string `case_id`
 - formal execution never falls back to repository-local schemas; local schema snapshots are development/diagnostic resources only and are not registered as Formal JSON Schema resources
 - the no-network schema registry is input-driven and independent of source checkout, current working directory, editable installation, or wheel installation
 - formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata
