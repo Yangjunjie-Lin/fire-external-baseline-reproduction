@@ -167,7 +167,7 @@ def test_ekell_formal_rejects_missing_runtime() -> None:
             config={
                 "paper_final": True,
                 "ekell_vector": {"reject_smoke": True, "backend": "text2vec", "model_name": "x", "model_version": "y"},
-                "llm": {"provider": "heuristic"},
+                "llm": {"provider": "heuristic", "model": "unit-test-heuristic", "model_version": "unit-test"},
             },
             method="ekell_style_controlled_shared_llm",
             track="controlled_shared_llm",

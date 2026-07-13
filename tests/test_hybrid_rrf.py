@@ -177,6 +177,6 @@ def test_hybrid_does_not_silently_fallback_to_bm25(tmp_path: Path) -> None:
                     "reject_smoke": True,
                     "index_path": str(tmp_path / "nope"),
                 },
-                "llm": {"provider": "heuristic"},
+                "llm": {"provider": "heuristic", "model": "unit-test-heuristic", "model_version": "unit-test"},
             },
         )

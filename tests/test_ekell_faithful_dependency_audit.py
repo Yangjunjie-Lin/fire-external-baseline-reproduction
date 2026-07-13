@@ -106,3 +106,12 @@ def test_main_table_and_fidelity_tracks():
     assert PAPER_FIDELITY_METHODS == ("ekell_style_paper_fidelity",)
     assert "ekell_style_enhanced" in SUPPLEMENTAL_METHODS
     assert "ekell_style_paper_fidelity" not in MAIN_TABLE_METHODS
+
+
+def test_ci_fidelity_audit_accepts_runtime_vector_retriever_wiring():
+    from scripts.audit.audit_ekell_fidelity import build_audit
+
+    audit = build_audit()
+    vector_check = next(item for item in audit["checks"] if item["id"] == "vector_retriever")
+    assert vector_check["wired_in_pipeline"] is True
+    assert audit["all_pass"] is True

@@ -55,6 +55,7 @@ CHECKS: list[dict[str, Any]] = [
         "module": "src/external_baselines/ekell_style/vector_retriever.py",
         "caller": "src/external_baselines/ekell_style/full_pipeline.py",
         "symbol": "VectorRetriever",
+        "symbols": ["VectorRetriever", "runtime.vector_retriever"],
         "status": "implemented_but_not_empirically_run",
     },
     {
@@ -99,12 +100,13 @@ def _file_exists(rel: str) -> bool:
     return (ROOT / rel).is_file()
 
 
-def _caller_uses_symbol(caller_rel: str, symbol: str) -> bool:
+def _caller_uses_symbol(caller_rel: str, symbol: str | list[str]) -> bool:
     path = ROOT / caller_rel
     if not path.is_file():
         return False
     text = path.read_text(encoding="utf-8")
-    return symbol in text
+    symbols = [symbol] if isinstance(symbol, str) else symbol
+    return any(item in text for item in symbols)
 
 
 def _no_fire_agent_imports() -> bool:
@@ -130,7 +132,7 @@ def build_audit() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for check in CHECKS:
         module_ok = _file_exists(check["module"])
-        wired = _caller_uses_symbol(check["caller"], check["symbol"])
+        wired = _caller_uses_symbol(check["caller"], check.get("symbols", check["symbol"]))
         items.append(
             {
                 **check,
