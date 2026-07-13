@@ -150,6 +150,88 @@ def test_build_method_config_requires_mapping():
         build_method_config({}, "not-a-mapping")  # type: ignore[arg-type]
 
 
+def _minimal_manifest(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        f"""
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+{body}
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_manifest_enabled_rejects_string_false(tmp_path):
+    path = _minimal_manifest(
+        tmp_path,
+        """
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+    enabled: "false"
+""",
+    )
+    with pytest.raises(ValueError, match="enabled must be an exact boolean"):
+        load_experiment_manifest(path)
+
+
+def test_manifest_enabled_rejects_zero(tmp_path):
+    path = _minimal_manifest(
+        tmp_path,
+        """
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+    enabled: 0
+""",
+    )
+    with pytest.raises(ValueError, match="enabled must be an exact boolean"):
+        load_experiment_manifest(path)
+
+
+def test_manifest_enabled_accepts_exact_false(tmp_path):
+    path = _minimal_manifest(
+        tmp_path,
+        """
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+    enabled: false
+""",
+    )
+    manifest = load_experiment_manifest(path)
+    assert manifest["methods"][0]["enabled"] is False
+
+
+def test_manifest_enabled_defaults_true_when_missing(tmp_path):
+    path = _minimal_manifest(
+        tmp_path,
+        """
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""",
+    )
+    manifest = load_experiment_manifest(path)
+    assert manifest["methods"][0]["enabled"] is True
+
+
+def test_manifest_paper_final_rejects_string_true(tmp_path):
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+paper_final: "true"
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="paper_final must be an exact boolean"):
+        load_experiment_manifest(path)
+
+
 def test_run_interop_rejects_multi_config():
     import runpy
     import sys

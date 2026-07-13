@@ -12,6 +12,10 @@ from external_baselines.common.generation_identity import (
     extract_generation_identity,
     validate_runtime_generation_identity,
 )
+from external_baselines.common.strict_config_types import (
+    require_exact_int,
+    require_exact_number,
+)
 from external_baselines.retrieval.embedding_backends import embedding_backend_identity
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", "mock", "fake", ""})
@@ -226,9 +230,24 @@ def collect_hybrid_runtime_evidence(
     evidence.dense_dependency_backend = evidence.embedding_backend
     evidence.dense_dependency_actual_embedding_used = evidence.actual_embedding_used
     evidence.dense_dependency_smoke_fallback_used = evidence.smoke_fallback_used
-    evidence.rrf_k = float(hybrid_cfg.get("rrf_k")) if hybrid_cfg.get("rrf_k") is not None else None
+    evidence.rrf_k = (
+        require_exact_number(
+            hybrid_cfg["rrf_k"],
+            field="hybrid_rag.rrf_k",
+            minimum=0,
+            minimum_inclusive=False,
+        )
+        if "rrf_k" in hybrid_cfg
+        else None
+    )
     evidence.candidate_pool = (
-        int(hybrid_cfg.get("candidate_pool")) if hybrid_cfg.get("candidate_pool") is not None else None
+        require_exact_int(
+            hybrid_cfg["candidate_pool"],
+            field="hybrid_rag.candidate_pool",
+            minimum=0,
+        )
+        if "candidate_pool" in hybrid_cfg
+        else None
     )
     return evidence
 

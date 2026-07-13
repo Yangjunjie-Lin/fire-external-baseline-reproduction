@@ -215,6 +215,9 @@ outputs/formal/
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (drive-qualified, root-relative, UNC, device namespace, traversal, symlink escape) and must resolve inside the staged run root.
 - The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
+- Formal safety-critical numeric parameters require exact YAML/JSON numeric types; string-to-number and boolean-to-number coercion are rejected.
+- Missing optional boolean fields may use documented defaults, but explicitly setting those fields to `null` is invalid.
+- Engineering release-readiness gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.
 - Formal 推荐使用 `--formal-run-root`；提供 formal run root 时无需额外 `--prediction-dir` / `--decision-dir`。
 - Legacy 双目录模式仅允许共享同一 run root；`jsonschema` 为核心运行依赖；Hybrid wrapper 不拥有共享 Dense runtime 的关闭权。
 - Engineering readiness 与 empirical/paper readiness 分离；CI 不声称远程 workflow 已通过。

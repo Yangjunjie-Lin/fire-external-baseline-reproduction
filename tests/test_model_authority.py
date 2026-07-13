@@ -9,6 +9,7 @@ from external_baselines.common.llm_client import (
     llm_config_summary,
     resolve_siliconflow_model,
 )
+from external_baselines.common.strict_config_types import MISSING, require_exact_bool
 
 
 def test_yaml_model_wins_over_siliconflow_model_env(monkeypatch) -> None:
@@ -100,3 +101,19 @@ def test_llm_summary_records_resolved_model(monkeypatch) -> None:
     )
     assert summary["model"] == "yaml/canonical"
     assert summary["model_source"] == "yaml_config"
+
+
+def test_missing_allow_model_env_override_defaults_false():
+    assert (
+        require_exact_bool(
+            MISSING,
+            field="llm.allow_model_env_override",
+            default=False,
+        )
+        is False
+    )
+
+
+def test_null_allow_model_env_override_is_rejected_runtime():
+    with pytest.raises(ValueError, match="exact boolean"):
+        require_exact_bool(None, field="llm.allow_model_env_override")

@@ -34,6 +34,22 @@ class MethodEntryError(ValueError):
     """Raised when an experiment manifest lacks a usable method entry."""
 
 
+def _manifest_exact_bool(raw: dict[str, Any], key: str, *, path: str) -> None:
+    if key in raw and type(raw[key]) is not bool:
+        raise ValueError(f"Experiment manifest {path} must be an exact boolean")
+
+
+def _method_enabled(entry: dict[str, Any], *, index: int) -> bool:
+    if "enabled" not in entry:
+        return True
+    raw_enabled = entry["enabled"]
+    if type(raw_enabled) is not bool:
+        raise ValueError(
+            f"Experiment manifest methods[{index}].enabled must be an exact boolean"
+        )
+    return raw_enabled
+
+
 def get_method_entry(
     manifest: dict[str, Any],
     method_id: str,
@@ -71,8 +87,11 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     if not isinstance(methods, list) or not methods:
         raise ValueError("Experiment manifest requires non-empty methods list")
 
+    for key in ("paper_final", "require_bundle_checksum", "require_external_schema"):
+        _manifest_exact_bool(raw, key, path=key)
+
     resolved: list[dict[str, Any]] = []
-    for entry in methods:
+    for index, entry in enumerate(methods):
         if isinstance(entry, str):
             entry = {"method_id": entry}
         if not isinstance(entry, dict) or not entry.get("method_id"):
@@ -91,7 +110,7 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
             "method_id": method_id,
             "config": method_config_path,
             "paper_table_role": role,
-            "enabled": bool(entry.get("enabled", True)),
+            "enabled": _method_enabled(entry, index=index),
         })
 
     return {

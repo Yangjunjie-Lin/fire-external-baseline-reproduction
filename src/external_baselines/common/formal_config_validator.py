@@ -15,6 +15,7 @@ from typing import Any
 
 from external_baselines.common.experiment_manifest import build_method_config, load_experiment_manifest
 from external_baselines.common.io import read_yaml
+from external_baselines.common.strict_config_types import MISSING, exact_bool, exact_int, exact_number
 from external_baselines.method_registry import (
     canonicalize_method_id,
     comparison_suite_methods,
@@ -134,16 +135,110 @@ def _validate_exact_bool(
     field: str,
     allow_placeholders: bool = False,
     required: bool | None = None,
+    default: Any = MISSING,
 ) -> bool | None:
     if allow_placeholders and _is_placeholder(value):
         return None
-    if value is None:
-        raise FormalConfigError(f"{field} must be an exact boolean.")
-    if type(value) is not bool:
-        raise FormalConfigError(f"{field} must be an exact boolean (got {value!r}).")
-    if required is not None and value is not required:
+    try:
+        if value is MISSING:
+            resolved = exact_bool(MISSING, field=field, default=False if default is MISSING else default)
+        else:
+            resolved = exact_bool(value, field=field)
+    except ValueError as exc:
+        raise FormalConfigError(str(exc)) from exc
+    if required is not None and resolved is not required:
         raise FormalConfigError(f"{field} must be {str(required).lower()}.")
-    return value
+    return resolved
+
+
+def _validate_exact_int(
+    value: Any,
+    *,
+    field: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    minimum_inclusive: bool = True,
+    maximum_inclusive: bool = True,
+    allow_placeholders: bool = False,
+) -> int:
+    if allow_placeholders and _is_placeholder(value):
+        return 0
+    try:
+        return exact_int(
+            value,
+            field=field,
+            minimum=minimum,
+            maximum=maximum,
+            minimum_inclusive=minimum_inclusive,
+            maximum_inclusive=maximum_inclusive,
+        )
+    except ValueError as exc:
+        raise FormalConfigError(str(exc)) from exc
+
+
+def _validate_exact_number(
+    value: Any,
+    *,
+    field: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    minimum_inclusive: bool = True,
+    maximum_inclusive: bool = True,
+    allow_placeholders: bool = False,
+) -> float:
+    if allow_placeholders and _is_placeholder(value):
+        return 0.0
+    try:
+        return exact_number(
+            value,
+            field=field,
+            minimum=minimum,
+            maximum=maximum,
+            minimum_inclusive=minimum_inclusive,
+            maximum_inclusive=maximum_inclusive,
+        )
+    except ValueError as exc:
+        raise FormalConfigError(str(exc)) from exc
+
+
+def _validate_llm_numeric_params_for_formal(llm: dict[str, Any]) -> None:
+    _validate_exact_number(
+        llm["temperature"],
+        field="llm.temperature",
+        minimum=0,
+        minimum_inclusive=True,
+    )
+    _validate_exact_number(
+        llm["top_p"],
+        field="llm.top_p",
+        minimum=0,
+        maximum=1,
+        minimum_inclusive=False,
+        maximum_inclusive=True,
+    )
+    _validate_exact_int(llm["max_tokens"], field="llm.max_tokens", minimum=1)
+    _validate_exact_int(llm["seed"], field="llm.seed")
+    optional_numeric = (
+        ("timeout_sec", 0, False),
+        ("connect_timeout_sec", 0, False),
+        ("read_timeout_sec", 0, False),
+        ("write_timeout_sec", 0, False),
+    )
+    for field, minimum, inclusive in optional_numeric:
+        if field in llm:
+            _validate_exact_number(
+                llm[field],
+                field=f"llm.{field}",
+                minimum=minimum,
+                minimum_inclusive=inclusive,
+            )
+    if "max_retries" in llm:
+        _validate_exact_int(
+            llm["max_retries"],
+            field="llm.max_retries",
+            minimum=0,
+            minimum_inclusive=True,
+        )
 
 
 def _walk_strings(obj: Any, path: str = "") -> list[tuple[str, str]]:
@@ -178,11 +273,14 @@ def validate_llm_for_formal(
     validation_stage: str = "formal",
 ) -> None:
     llm = _llm_block(config)
-    allow_override = _validate_exact_bool(
-        llm.get("allow_model_env_override", False),
-        field="llm.allow_model_env_override",
-        allow_placeholders=allow_placeholders,
-    )
+    if "allow_model_env_override" in llm:
+        allow_override = _validate_exact_bool(
+            llm["allow_model_env_override"],
+            field="llm.allow_model_env_override",
+            allow_placeholders=allow_placeholders,
+        )
+    else:
+        allow_override = False
     raw_paper_final = config.get("paper_final", False)
     if type(raw_paper_final) is bool and raw_paper_final is True and allow_override is True:
         raise FormalConfigError(
@@ -209,7 +307,8 @@ def validate_llm_for_formal(
             if field not in llm:
                 raise FormalConfigError(f"Formal config requires llm.{field} to be set explicitly.")
         if "enable_thinking" in llm:
-            _validate_exact_bool(llm.get("enable_thinking"), field="llm.enable_thinking")
+            _validate_exact_bool(llm["enable_thinking"], field="llm.enable_thinking")
+        _validate_llm_numeric_params_for_formal(llm)
         smoke_tokens = ("heuristic", "smoke", "fixture", "mock", "fake")
         model_lower = model.lower()
         if any(token in model_lower for token in smoke_tokens):
@@ -235,6 +334,8 @@ def validate_dense_config_for_real_run(
     dim = dense.get("dimension", dense.get("dim"))
     if not (allow_placeholders and _is_placeholder(dim)):
         _validate_positive_dimension(dim, allow_placeholders=allow_placeholders, field="dense_rag.dimension")
+    if "batch_size" in dense and not allow_placeholders:
+        _validate_exact_int(dense["batch_size"], field="dense_rag.batch_size", minimum=1)
     if "normalize_embeddings" not in dense and not allow_placeholders:
         raise FormalConfigError("Formal Dense RAG requires dense_rag.normalize_embeddings to be set.")
     elif "normalize_embeddings" in dense and not allow_placeholders:
@@ -301,22 +402,34 @@ def validate_hybrid_config_for_real_run(
     dim = dense.get("dimension", hybrid.get("dimension"))
     if not (allow_placeholders and _is_placeholder(dim)):
         _validate_positive_dimension(dim, allow_placeholders=allow_placeholders, field="hybrid_rag.dimension")
-    try:
-        top_k = int(hybrid.get("top_k", (config.get("retrieval") or {}).get("top_k", 5)))
-        candidate_pool = int(hybrid.get("candidate_pool", top_k))
-        rrf_k = float(hybrid.get("rrf_k", 0))
-        lexical_weight = float(hybrid.get("lexical_weight", 0))
-        dense_weight = float(hybrid.get("dense_weight", 0))
-    except (TypeError, ValueError) as exc:
-        raise FormalConfigError(f"Formal Hybrid RAG has invalid RRF parameters: {exc}") from exc
-    if top_k <= 0:
-        raise FormalConfigError("Formal Hybrid RAG requires top_k > 0.")
+    top_k_raw = hybrid.get("top_k", (config.get("retrieval") or {}).get("top_k", 5))
+    top_k = _validate_exact_int(top_k_raw, field="hybrid_rag.top_k", minimum=1)
+    candidate_pool_raw = hybrid.get("candidate_pool", top_k)
+    candidate_pool = _validate_exact_int(
+        candidate_pool_raw,
+        field="hybrid_rag.candidate_pool",
+        minimum=top_k,
+    )
+    _validate_exact_number(
+        hybrid.get("rrf_k", 0),
+        field="hybrid_rag.rrf_k",
+        minimum=0,
+        minimum_inclusive=False,
+    )
+    _validate_exact_number(
+        hybrid.get("lexical_weight", 0),
+        field="hybrid_rag.lexical_weight",
+        minimum=0,
+        minimum_inclusive=False,
+    )
+    _validate_exact_number(
+        hybrid.get("dense_weight", 0),
+        field="hybrid_rag.dense_weight",
+        minimum=0,
+        minimum_inclusive=False,
+    )
     if candidate_pool < top_k:
         raise FormalConfigError("Formal Hybrid RAG requires candidate_pool >= top_k.")
-    if rrf_k <= 0:
-        raise FormalConfigError("Formal Hybrid RAG requires rrf_k > 0.")
-    if lexical_weight <= 0 or dense_weight <= 0:
-        raise FormalConfigError("Formal Hybrid RAG requires lexical_weight > 0 and dense_weight > 0.")
     index_path = dense.get("index_path") or hybrid.get("index_path")
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Hybrid RAG requires non-placeholder dense index_path.")
@@ -562,10 +675,10 @@ def validate_experiment_manifest(
     if run_mode != "formal":
         errors.append(f"run_mode must be 'formal' for paper-facing manifest (got {run_mode!r})")
 
-    if not bool(raw.get("paper_final", False)):
-        errors.append("paper_final must be true for formal experiment manifest.")
-    elif type(raw.get("paper_final")) is not bool:
+    if not isinstance(raw.get("paper_final"), bool):
         errors.append("paper_final must be an exact boolean for formal experiment manifest.")
+    elif raw.get("paper_final") is not True:
+        errors.append("paper_final must be true for formal experiment manifest.")
 
     for key in (
         "require_bundle_checksum",

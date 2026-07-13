@@ -7,6 +7,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from external_baselines.common.strict_config_types import (
+    read_exact_bool,
+    read_exact_int,
+    read_exact_number,
+    require_exact_bool,
+    require_exact_number,
+)
+
 
 class LLMClient(Protocol):
     def complete(
@@ -399,21 +407,6 @@ DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
 
 
-def require_exact_bool(
-    value: Any,
-    *,
-    field: str,
-    default: bool | None = None,
-) -> bool:
-    if value is None:
-        if default is not None:
-            return default
-        raise ValueError(f"{field} must be an exact boolean")
-    if type(value) is not bool:
-        raise ValueError(f"{field} must be an exact boolean")
-    return value
-
-
 def _maybe_load_dotenv() -> None:
     """Deprecated wrapper — use load_local_environment()."""
     from external_baselines.common.environment import load_local_environment
@@ -427,8 +420,9 @@ def resolve_siliconflow_model(llm_cfg: dict[str, Any], *, paper_final: bool = Fa
     Returns (model, model_source).
     """
     yaml_model = str(llm_cfg.get("model") or "").strip()
-    allow_override = require_exact_bool(
-        llm_cfg.get("allow_model_env_override", False),
+    allow_override = read_exact_bool(
+        llm_cfg,
+        "allow_model_env_override",
         field="llm.allow_model_env_override",
         default=False,
     )
@@ -598,8 +592,9 @@ def build_llm_client(
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
-    paper_final = require_exact_bool(
-        (config or {}).get("paper_final", False),
+    paper_final = read_exact_bool(
+        config or {},
+        "paper_final",
         field="paper_final",
         default=False,
     )
@@ -608,16 +603,68 @@ def build_llm_client(
     # Align with fire-agent-demo SiliconFlow OpenAI-compatible client.
     if provider in {"siliconflow", "silicon-flow"}:
         model, model_source = resolve_siliconflow_model(llm_cfg, paper_final=paper_final)
+        timeout_sec = read_exact_number(
+            llm_cfg,
+            "timeout_sec",
+            field="llm.timeout_sec",
+            default=read_exact_number(
+                llm_cfg,
+                "read_timeout_sec",
+                field="llm.read_timeout_sec",
+                default=120.0,
+                minimum=0,
+                minimum_inclusive=False,
+            ),
+            minimum=0,
+            minimum_inclusive=False,
+        )
+        connect_timeout = (
+            require_exact_number(
+                llm_cfg["connect_timeout_sec"],
+                field="llm.connect_timeout_sec",
+                minimum=0,
+                minimum_inclusive=False,
+            )
+            if "connect_timeout_sec" in llm_cfg
+            else None
+        )
+        read_timeout = (
+            require_exact_number(
+                llm_cfg["read_timeout_sec"],
+                field="llm.read_timeout_sec",
+                minimum=0,
+                minimum_inclusive=False,
+            )
+            if "read_timeout_sec" in llm_cfg
+            else None
+        )
+        write_timeout = (
+            require_exact_number(
+                llm_cfg["write_timeout_sec"],
+                field="llm.write_timeout_sec",
+                minimum=0,
+                minimum_inclusive=False,
+            )
+            if "write_timeout_sec" in llm_cfg
+            else None
+        )
+        max_retries = read_exact_int(
+            llm_cfg,
+            "max_retries",
+            field="llm.max_retries",
+            default=0,
+            minimum=0,
+        )
         inner: Any = OpenAIChatClient(
             model=model,
             api_key_env=str(llm_cfg.get("api_key_env", "SILICONFLOW_API_KEY")),
             base_url_env=str(llm_cfg.get("base_url_env", "SILICONFLOW_BASE_URL")),
             provider="siliconflow",
-            timeout_sec=float(llm_cfg.get("timeout_sec", llm_cfg.get("read_timeout_sec", 120.0))),
-            connect_timeout_sec=float(llm_cfg["connect_timeout_sec"]) if llm_cfg.get("connect_timeout_sec") is not None else None,
-            read_timeout_sec=float(llm_cfg["read_timeout_sec"]) if llm_cfg.get("read_timeout_sec") is not None else None,
-            write_timeout_sec=float(llm_cfg["write_timeout_sec"]) if llm_cfg.get("write_timeout_sec") is not None else None,
-            max_retries=int(llm_cfg.get("max_retries", 0)),
+            timeout_sec=timeout_sec,
+            connect_timeout_sec=connect_timeout,
+            read_timeout_sec=read_timeout,
+            write_timeout_sec=write_timeout,
+            max_retries=max_retries,
             model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or model),
             default_base_url=DEFAULT_SILICONFLOW_BASE_URL,
             enable_thinking=(
@@ -636,8 +683,21 @@ def build_llm_client(
             api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")),
             base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")),
             provider=provider,
-            timeout_sec=float(llm_cfg.get("timeout_sec", 60.0)),
-            max_retries=int(llm_cfg.get("max_retries", 2)),
+            timeout_sec=read_exact_number(
+                llm_cfg,
+                "timeout_sec",
+                field="llm.timeout_sec",
+                default=60.0,
+                minimum=0,
+                minimum_inclusive=False,
+            ),
+            max_retries=read_exact_int(
+                llm_cfg,
+                "max_retries",
+                field="llm.max_retries",
+                default=2,
+                minimum=0,
+            ),
             model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or "") or None,
         )
         setattr(inner, "model_source", "yaml_config")
@@ -667,8 +727,9 @@ def llm_runtime_snapshot(llm: Any | None = None) -> dict[str, Any]:
 def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = None) -> dict[str, Any]:
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider") or getattr(llm, "provider", "heuristic"))
-    paper_final = require_exact_bool(
-        (config or {}).get("paper_final", False),
+    paper_final = read_exact_bool(
+        config or {},
+        "paper_final",
         field="paper_final",
         default=False,
     )

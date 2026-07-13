@@ -4088,10 +4088,6 @@ def test_publish_receipt_failure_does_not_remove_committed_run(tmp_path, monkeyp
     assert (fixture["run_root"] / "suite_summary.json").is_file()
 
 
-def test_final_run_root_survives_post_commit_warning_failure(tmp_path, monkeypatch):
-    test_publish_receipt_failure_does_not_remove_committed_run(tmp_path, monkeypatch)
-
-
 def test_publish_rejects_same_temp_and_final_root(tmp_path):
     from scripts.run_decision_comparison_suite import FormalSuiteExecutionError, publish_formal_run_root_transactionally
 
@@ -4178,10 +4174,6 @@ def test_formal_cli_path_error_is_structured_json(tmp_path):
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
     assert result.returncode == 1
     assert '"ok": false' in result.stderr.lower()
-
-
-def test_formal_cli_validation_error_exits_one(tmp_path):
-    test_formal_cli_limit_error_is_structured_json(tmp_path)
 
 
 def test_formal_cli_validation_does_not_create_final_run_root(tmp_path):
@@ -5242,10 +5234,6 @@ def test_staged_validator_rejects_record_valid_only_under_local_schema(tmp_path,
         )
 
 
-def test_staged_validator_passes_valid_frozen_schema(tmp_path, monkeypatch):
-    test_staged_validator_uses_runner_bundle_schema(tmp_path, monkeypatch)
-
-
 @pytest.mark.parametrize(
     "method_id",
     ["dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"],
@@ -5261,26 +5249,6 @@ def test_embedding_factory_not_called_for_non_vector_methods(method_id):
     from scripts.run_decision_comparison_suite import EMBEDDING_METHODS
 
     assert method_id not in EMBEDDING_METHODS
-
-
-def test_embedding_factory_called_for_dense():
-    test_embedding_factory_called_for_vector_methods("dense_rag")
-
-
-def test_embedding_factory_called_for_hybrid():
-    test_embedding_factory_called_for_vector_methods("hybrid_rag")
-
-
-def test_embedding_factory_called_for_ekell():
-    test_embedding_factory_called_for_vector_methods("ekell_style_controlled_shared_llm")
-
-
-def test_embedding_factory_not_called_for_direct_llm():
-    test_embedding_factory_not_called_for_non_vector_methods("direct_llm")
-
-
-def test_embedding_factory_not_called_for_bm25():
-    test_embedding_factory_not_called_for_non_vector_methods("bm25_rag")
 
 
 def test_embedding_factory_total_call_count_is_three(tmp_path, monkeypatch):
@@ -5532,34 +5500,6 @@ def test_manifest_accepts_normal_relative_path(tmp_path):
     target.relative_to(run_root.resolve())
 
 
-def test_manifest_rejects_windows_root_relative_path(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, r"\outside.json", "manifest_artifact_path_windows_root_relative")
-
-
-def test_manifest_rejects_windows_drive_absolute_path(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, r"C:\outside.json", "manifest_artifact_path_drive_qualified")
-
-
-def test_manifest_rejects_windows_drive_relative_path(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, "C:outside.json", "manifest_artifact_path_drive_qualified")
-
-
-def test_manifest_rejects_unc_path(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, r"\\server\share\file.json", "manifest_artifact_path_unc")
-
-
-def test_manifest_rejects_device_namespace(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, r"\\?\C:\outside.json", "manifest_artifact_path_device_namespace")
-
-
-def test_manifest_rejects_posix_absolute_path(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, "/outside.json", "manifest_artifact_path_absolute")
-
-
-def test_manifest_rejects_traversal(tmp_path):
-    test_manifest_artifact_path_classification(tmp_path, "../outside.json", "manifest_artifact_path_traversal")
-
-
 @pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="symlink unsupported")
 def test_manifest_symlink_escape_rejected(tmp_path):
     from external_baselines.common.safe_paths import ManifestArtifactPathError, resolve_manifest_artifact_path
@@ -5727,10 +5667,6 @@ def test_staged_schema_rejects_unknown_type(tmp_path, monkeypatch):
             prediction_schema_path=schema_path,
             expected_prediction_schema_sha256=sha256_file(schema_path),
         )
-
-
-def test_staged_schema_rejects_non_schema_object(tmp_path, monkeypatch):
-    test_staged_validator_rejects_schema_array_root(tmp_path, monkeypatch)
 
 
 def test_staged_schema_rejects_unresolvable_ref(tmp_path, monkeypatch):
@@ -5996,7 +5932,13 @@ def test_formal_cli_accepts_formal_run_root_without_legacy_dirs(tmp_path):
 
 
 def test_formal_cli_derives_prediction_and_decision_dirs(tmp_path):
-    test_formal_cli_accepts_formal_run_root_without_legacy_dirs(tmp_path)
+    from scripts.run_decision_comparison_suite import resolve_cli_output_paths
+
+    args = _cli_args(formal_run_root=str(tmp_path / "formal"))
+    paths = resolve_cli_output_paths(args)
+    assert paths.formal_run_root == tmp_path / "formal"
+    assert paths.prediction_dir == tmp_path / "formal" / "predictions"
+    assert paths.decision_dir == tmp_path / "formal" / "decisions"
 
 
 def test_formal_cli_rejects_only_prediction_dir(tmp_path):
@@ -6188,6 +6130,196 @@ def test_hybrid_wrapper_is_not_marked_cached_only_because_dense_is_cached(tmp_pa
         hybrid = prepare_hybrid_runtime(hybrid_config, embedding_backend=backend)
         assert runtime_is_cached(dense) is True
         assert runtime_is_cached(hybrid) is False
+
+
+def test_hybrid_closed_when_runtime_evidence_collection_fails(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    closed: list[str] = []
+    real_close = suite.close_method_runtime_safely
+
+    def _recording_close(runtime, **kwargs):
+        closer = getattr(runtime, "close", None)
+        if callable(closer):
+            closed.append(type(runtime).__name__)
+        return real_close(runtime, **kwargs)
+
+    monkeypatch.setattr(suite, "close_method_runtime_safely", _recording_close)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(_valid_payload(), case_id=prediction_input["case_id"], method_id="direct_llm", strict=True)
+        return decision_output_to_legacy_row(parsed)
+
+    def _evidence(**kwargs):
+        if kwargs["method_id"] == "hybrid_rag":
+            raise RuntimeError("evidence failed")
+        return _passing_formal_method_evidences()[kwargs["method_id"]]
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", _evidence)
+    with pytest.raises(RuntimeError, match="evidence failed"):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+            llm_transport_factory=_offline_heuristic_transport_factory,
+            embedding_backend_factory=_offline_embedding_backend_factory,
+        )
+    assert "HybridRuntime" in closed
+
+
+def test_hybrid_closed_when_pipeline_signature_inspection_fails(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    closed: list[str] = []
+    real_close = suite.close_method_runtime_safely
+
+    def _recording_close(runtime, **kwargs):
+        closer = getattr(runtime, "close", None)
+        if callable(closer):
+            closed.append(type(runtime).__name__)
+        return real_close(runtime, **kwargs)
+
+    monkeypatch.setattr(suite, "close_method_runtime_safely", _recording_close)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+
+    real_prepare = suite.prepare_method_runtime
+    active_method: dict[str, str | None] = {"id": None}
+
+    def _prepare_and_track(method_id, config, **kwargs):
+        active_method["id"] = method_id
+        return real_prepare(method_id, config, **kwargs)
+
+    monkeypatch.setattr(suite, "prepare_method_runtime", _prepare_and_track)
+
+    def _failing_inspection(_pipeline):
+        if active_method["id"] == "hybrid_rag":
+            raise RuntimeError("signature inspection failed")
+        return True
+    monkeypatch.setattr(suite, "pipeline_accepts_runtime", _failing_inspection)
+
+    with pytest.raises(RuntimeError, match="signature inspection failed"):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+            llm_transport_factory=_offline_heuristic_transport_factory,
+            embedding_backend_factory=_offline_embedding_backend_factory,
+        )
+    assert "HybridRuntime" in closed
+
+
+def test_runtime_prepare_failure_does_not_attempt_close(tmp_path, monkeypatch):
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    closed: list[str] = []
+    real_close = suite.close_method_runtime_safely
+
+    def _recording_close(runtime, **kwargs):
+        closed.append(type(runtime).__name__)
+        return real_close(runtime, **kwargs)
+
+    monkeypatch.setattr(suite, "close_method_runtime_safely", _recording_close)
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id="direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+
+    real_prepare = suite.prepare_method_runtime
+
+    def _prepare_fail(method_id, config, **kwargs):
+        if method_id == "hybrid_rag":
+            raise RuntimeError("prepare failed")
+        return real_prepare(method_id, config, **kwargs)
+
+    monkeypatch.setattr(suite, "prepare_method_runtime", _prepare_fail)
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+            llm_transport_factory=_offline_heuristic_transport_factory,
+            embedding_backend_factory=_offline_embedding_backend_factory,
+        )
+    assert closed == []
 
 
 def test_hybrid_wrapper_closed_after_method_execution():
@@ -6475,56 +6607,43 @@ def test_concurrent_suites_different_backends_do_not_conflict(tmp_path):
     assert identities["a"] != identities["b"]
 
 
-def test_concurrent_suite_a_exit_does_not_clear_active_suite_b(tmp_path):
+def _assert_concurrent_suite_a_cleanup_before_b(tmp_path: Path) -> None:
     import threading
 
     from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
 
     fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
     index_a = _build_fake_dense_index_variant(
-        tmp_path,
-        name="dense_idx_a",
-        model_name="fake/bge-a",
-        model_version="v-a",
-        dim=8,
+        tmp_path, name="dense_idx_a", model_name="fake/bge-a", model_version="v-a", dim=8
     )
     index_b = _build_fake_dense_index_variant(
-        tmp_path,
-        name="dense_idx_b",
-        model_name="fake/bge-b",
-        model_version="v-b",
-        dim=16,
+        tmp_path, name="dense_idx_b", model_name="fake/bge-b", model_version="v-b", dim=16
     )
     config_a = _dense_config_for_index(
-        fixture,
-        index_dir=index_a,
-        model_name="fake/bge-a",
-        model_version="v-a",
-        dimension=8,
+        fixture, index_dir=index_a, model_name="fake/bge-a", model_version="v-a", dimension=8
     )
     config_b = _dense_config_for_index(
-        fixture,
-        index_dir=index_b,
-        model_name="fake/bge-b",
-        model_version="v-b",
-        dimension=16,
+        fixture, index_dir=index_b, model_name="fake/bge-b", model_version="v-b", dimension=16
     )
-    backend_a = _embedding_backend_for("fake/bge-a", "v-a", 8)
     backend_b = _embedding_backend_for("fake/bge-b", "v-b", 16)
     b_ready = threading.Event()
-    a_may_exit = threading.Event()
+    a_has_exited = threading.Event()
     b_done = threading.Event()
     b_runtime_holder: dict[str, Any] = {}
+    b_cache_holder: dict[str, Any] = {}
     errors: list[BaseException] = []
 
     def _run_b() -> None:
         try:
-            with runtime_cache_scope():
+            with runtime_cache_scope() as cache:
                 runtime = prepare_dense_runtime(config_b, embedding_backend=backend_b)
                 b_runtime_holder["runtime"] = runtime
+                b_cache_holder["cache"] = cache
                 b_ready.set()
-                assert a_may_exit.wait(timeout=10)
+                assert a_has_exited.wait(timeout=10)
                 assert runtime is b_runtime_holder["runtime"]
+                assert runtime._closed is False
+                assert any(b_runtime_holder["runtime"] is value for value in cache.values())
                 b_done.set()
         except BaseException as exc:
             errors.append(exc)
@@ -6532,9 +6651,12 @@ def test_concurrent_suite_a_exit_does_not_clear_active_suite_b(tmp_path):
     def _run_a() -> None:
         try:
             with runtime_cache_scope():
-                prepare_dense_runtime(config_a, embedding_backend=backend_a)
+                prepare_dense_runtime(
+                    config_a,
+                    embedding_backend=_embedding_backend_for("fake/bge-a", "v-a", 8),
+                )
                 assert b_ready.wait(timeout=10)
-                a_may_exit.set()
+            a_has_exited.set()
         except BaseException as exc:
             errors.append(exc)
 
@@ -6542,10 +6664,54 @@ def test_concurrent_suite_a_exit_does_not_clear_active_suite_b(tmp_path):
     thread_a = threading.Thread(target=_run_a)
     thread_b.start()
     thread_a.start()
-    thread_b.join(timeout=60)
     thread_a.join(timeout=60)
+    thread_b.join(timeout=60)
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
     assert not errors, errors
+    assert a_has_exited.is_set()
     assert b_done.wait(timeout=0.1)
+
+
+def test_concurrent_suite_a_cleanup_completes_before_b_assertion(tmp_path):
+    _assert_concurrent_suite_a_cleanup_before_b(tmp_path)
+
+
+def test_concurrent_suite_a_exit_does_not_clear_active_suite_b(tmp_path):
+    _assert_concurrent_suite_a_cleanup_before_b(tmp_path)
+
+
+def test_b_runtime_closes_only_when_b_scope_exits(tmp_path):
+    import threading
+
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    index_b = _build_fake_dense_index_variant(
+        tmp_path, name="dense_idx_b", model_name="fake/bge-b", model_version="v-b", dim=16
+    )
+    config_b = _dense_config_for_index(
+        fixture, index_dir=index_b, model_name="fake/bge-b", model_version="v-b", dimension=16
+    )
+    backend_b = _embedding_backend_for("fake/bge-b", "v-b", 16)
+    closed = threading.Event()
+    errors: list[BaseException] = []
+
+    def _run_b() -> None:
+        try:
+            with runtime_cache_scope():
+                runtime = prepare_dense_runtime(config_b, embedding_backend=backend_b)
+                assert runtime._closed is False
+            closed.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_run_b)
+    thread.start()
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert closed.is_set()
 
 
 def test_concurrent_runtimes_keep_own_embedding_identity(tmp_path):

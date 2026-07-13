@@ -50,7 +50,8 @@ jobs:
           python -m pytest -q \
             tests/test_release_readiness.py \
             tests/test_formal_config_validator.py \
-            tests/test_model_authority.py
+            tests/test_model_authority.py \
+            tests/test_experiment_manifest.py
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \

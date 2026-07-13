@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from external_baselines.common.checksums import sha256_file
 from external_baselines.common.environment import environment_variable_presence, load_local_environment
 from external_baselines.common.experiment_manifest import (
     build_method_config,
@@ -14,6 +15,7 @@ from external_baselines.common.experiment_manifest import (
 from external_baselines.common.formal_config_validator import _is_placeholder
 from external_baselines.common.io import read_yaml
 from external_baselines.common.main_project_readiness import assess_main_project_readiness
+from external_baselines.common.strict_config_types import read_exact_int, read_exact_number
 from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -162,8 +164,6 @@ def _check_dense(config: dict[str, Any], *, corpus: Path) -> dict[str, Any]:
         corpus_checksum = None
         evidence = corpus / "evidence_chunks.jsonl"
         if evidence.is_file():
-            from external_baselines.common.checksums import sha256_file
-
             corpus_checksum = sha256_file(evidence)
         payload = load_dense_index(
             path,
@@ -227,11 +227,52 @@ def _check_hybrid(
         reasons.append("hybrid_dense_index_path_mismatch")
 
     try:
-        top_k = int(hybrid.get("top_k", (config.get("retrieval") or {}).get("top_k", 5)))
-        candidate_pool = int(hybrid.get("candidate_pool", top_k))
-        rrf_k = float(hybrid.get("rrf_k", 60))
-        lexical_weight = float(hybrid.get("lexical_weight", 1.0))
-        dense_weight = float(hybrid.get("dense_weight", 1.0))
+        retrieval = config.get("retrieval") or {}
+        default_top_k = read_exact_int(
+            retrieval,
+            "top_k",
+            field="retrieval.top_k",
+            default=5,
+            minimum=1,
+        )
+        top_k = read_exact_int(
+            hybrid,
+            "top_k",
+            field="hybrid_rag.top_k",
+            default=default_top_k,
+            minimum=1,
+        )
+        candidate_pool = read_exact_int(
+            hybrid,
+            "candidate_pool",
+            field="hybrid_rag.candidate_pool",
+            default=top_k,
+            minimum=0,
+        )
+        rrf_k = read_exact_number(
+            hybrid,
+            "rrf_k",
+            field="hybrid_rag.rrf_k",
+            default=60.0,
+            minimum=0,
+            minimum_inclusive=False,
+        )
+        lexical_weight = read_exact_number(
+            hybrid,
+            "lexical_weight",
+            field="hybrid_rag.lexical_weight",
+            default=1.0,
+            minimum=0,
+            minimum_inclusive=False,
+        )
+        dense_weight = read_exact_number(
+            hybrid,
+            "dense_weight",
+            field="hybrid_rag.dense_weight",
+            default=1.0,
+            minimum=0,
+            minimum_inclusive=False,
+        )
         if candidate_pool < top_k:
             reasons.append("hybrid_candidate_pool_lt_top_k")
         if rrf_k <= 0:

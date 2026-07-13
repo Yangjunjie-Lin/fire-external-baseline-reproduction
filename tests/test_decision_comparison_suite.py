@@ -442,11 +442,6 @@ def test_each_method_writes_independent_prediction_jsonl(tmp_path):
         assert (dec_dir / mid / "responses.jsonl").is_file()
         assert (dec_dir / mid / "run_summary.json").is_file()
 
-
-def test_prediction_file_contains_single_method_id(tmp_path):
-    test_each_method_writes_independent_prediction_jsonl(tmp_path)
-
-
 def test_prediction_count_matches_input_count(tmp_path):
     import importlib.util
     import sys

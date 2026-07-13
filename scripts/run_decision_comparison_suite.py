@@ -1657,25 +1657,26 @@ def _run_decision_suite_impl(
                 )
                 llm = build_llm_client(method_config, transport=transport)
                 pipeline = resolve_pipeline(method_id)
-                runtime = prepare_method_runtime(
-                    method_id,
-                    method_config,
-                    embedding_backend=injected_embedding,
-                )
-                evidence = collect_method_runtime_evidence(
-                    method_id=method_id,
-                    config=method_config,
-                    llm=llm,
-                    runtime=runtime,
-                )
-                method_evidences[method_id] = evidence
-                accepts_runtime = pipeline_accepts_runtime(pipeline)
+                runtime = None
+                body_exception: BaseException | None = None
                 interop_rows: list[dict[str, Any]] = []
                 parsing_failures = 0
                 schema_failures = 0
                 t0 = time.perf_counter()
-                body_exception: BaseException | None = None
                 try:
+                    runtime = prepare_method_runtime(
+                        method_id,
+                        method_config,
+                        embedding_backend=injected_embedding,
+                    )
+                    evidence = collect_method_runtime_evidence(
+                        method_id=method_id,
+                        config=method_config,
+                        llm=llm,
+                        runtime=runtime,
+                    )
+                    method_evidences[method_id] = evidence
+                    accepts_runtime = pipeline_accepts_runtime(pipeline)
                     for scenario in scenarios:
                         usage_before = (
                             llm.usage_snapshot()

@@ -108,7 +108,7 @@ def test_readiness_external_schema_gate_reads_manifest_flag(monkeypatch):
     monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: flag == "require_external_schema")
     monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
     monkeypatch.setattr(audit, "_exists", lambda rel: True)
-    assert audit._external_schema_required() is True
+    assert audit._external_schema_enforcement_components_present() is True
 
 
 def test_readiness_external_schema_gate_fails_when_flag_false(monkeypatch):
@@ -117,7 +117,7 @@ def test_readiness_external_schema_gate_fails_when_flag_false(monkeypatch):
     monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: False)
     monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
     monkeypatch.setattr(audit, "_exists", lambda rel: True)
-    assert audit._external_schema_required() is False
+    assert audit._external_schema_enforcement_components_present() is False
 
 
 def test_readiness_checksum_gate_reads_manifest_flag(monkeypatch):
@@ -126,7 +126,7 @@ def test_readiness_checksum_gate_reads_manifest_flag(monkeypatch):
     monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: flag == "require_bundle_checksum")
     monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
     monkeypatch.setattr(audit, "_exists", lambda rel: True)
-    assert audit._checksum_policy_enabled() is True
+    assert audit._checksum_enforcement_components_present() is True
 
 
 def test_readiness_checksum_gate_fails_when_tamper_tests_missing(monkeypatch):
@@ -139,15 +139,83 @@ def test_readiness_checksum_gate_fails_when_tamper_tests_missing(monkeypatch):
         "_exists",
         lambda rel: rel != "tests/test_bundle_integrity.py",
     )
-    assert audit._checksum_policy_enabled() is False
+    assert audit._checksum_enforcement_components_present() is False
 
 
 def test_readiness_has_no_unconditional_security_true_gate():
     import scripts.audit_release_readiness as audit
 
     source = (ROOT / "scripts/audit_release_readiness.py").read_text(encoding="utf-8")
-    assert '"external_schema_required": True' not in source
-    assert '"checksum_policy_enabled": True' not in source
+    assert '"external_schema_enforcement_components_present": True' not in source
+    assert '"checksum_enforcement_components_present": True' not in source
     gates = audit._engineering_gate_values()
-    assert isinstance(gates["external_schema_required"], bool)
-    assert isinstance(gates["checksum_policy_enabled"], bool)
+    assert isinstance(gates["external_schema_enforcement_components_present"], bool)
+    assert isinstance(gates["checksum_enforcement_components_present"], bool)
+
+
+def test_empirical_string_false_does_not_become_true(tmp_path, monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    cross_path = tmp_path / "outputs/diagnostics/cross_repo_contract.json"
+    cross_path.parent.mkdir(parents=True, exist_ok=True)
+    cross_path.write_text('{"cross_repository_contract_verified": "false"}\n', encoding="utf-8")
+    gates = audit._empirical_gate_values()
+    assert gates["cross_repo_contract_verified"] is False
+
+
+def test_empirical_exact_true_is_verified(tmp_path, monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    cross_path = tmp_path / "outputs/diagnostics/cross_repo_contract.json"
+    cross_path.parent.mkdir(parents=True, exist_ok=True)
+    cross_path.write_text('{"cross_repository_contract_verified": true}\n', encoding="utf-8")
+    gates = audit._empirical_gate_values()
+    assert gates["cross_repo_contract_verified"] is True
+
+
+def test_empirical_missing_field_is_false(tmp_path, monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    gates = audit._empirical_gate_values()
+    assert gates["cross_repo_contract_verified"] is False
+
+
+def test_empirical_string_true_is_invalid_not_verified(tmp_path, monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    cross_path = tmp_path / "outputs/diagnostics/cross_repo_contract.json"
+    cross_path.parent.mkdir(parents=True, exist_ok=True)
+    cross_path.write_text('{"cross_repository_contract_verified": "true"}\n', encoding="utf-8")
+    gates = audit._empirical_gate_values()
+    assert gates["cross_repo_contract_verified"] is False
+
+
+def test_readiness_gate_names_describe_structural_checks():
+    import scripts.audit_release_readiness as audit
+
+    assert "external_schema_enforcement_components_present" in audit.ENGINEERING_GATE_KEYS
+    assert "checksum_enforcement_components_present" in audit.ENGINEERING_GATE_KEYS
+    assert "external_schema_required" not in audit.ENGINEERING_GATE_KEYS
+
+
+def test_readiness_report_declares_behavioral_validation_source(monkeypatch, tmp_path):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        audit,
+        "_engineering_gate_values",
+        lambda: {key: True for key in audit.ENGINEERING_GATE_KEYS},
+    )
+    monkeypatch.setattr(
+        audit,
+        "_empirical_gate_values",
+        lambda: {key: False for key in audit.EMPIRICAL_GATE_KEYS},
+    )
+    report = audit.build_report()
+    assert report["assurance_model"]["engineering_gates"] == "structural"
+    assert report["assurance_model"]["behavioral_validation"] == "pytest_and_formal_e2e"

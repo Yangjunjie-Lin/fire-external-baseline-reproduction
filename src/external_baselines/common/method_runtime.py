@@ -12,7 +12,11 @@ from typing import Any, Callable, Iterator
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.common.decision_suite_guard import sanitize_error_message
-from external_baselines.common.llm_client import require_exact_bool
+from external_baselines.common.strict_config_types import (
+    read_exact_bool,
+    read_exact_int,
+    require_exact_bool,
+)
 from external_baselines.interop.schema import canonicalize_method_id
 from external_baselines.retrieval.embedding_backends import (
     EmbeddingBackendError,
@@ -201,12 +205,14 @@ def prepare_dense_runtime(
     backend = str(dense_cfg.get("backend", "smoke_hash_embedding"))
     model_name = str(dense_cfg.get("model_name", "smoke-hash-embedding"))
     model_version = str(dense_cfg.get("model_version", "v0-smoke"))
-    dim = resolve_dimension(dense_cfg, 64)
-    paper_final = require_exact_bool(
-        config.get("paper_final", False),
-        field="paper_final",
-        default=False,
+    dim = read_exact_int(
+        dense_cfg,
+        "dimension",
+        field="dense_rag.dimension",
+        default=read_exact_int(dense_cfg, "dim", field="dense_rag.dim", default=64, minimum=1),
+        minimum=1,
     )
+    paper_final = read_exact_bool(config, "paper_final", field="paper_final", default=False)
     if "reject_smoke" in dense_cfg:
         reject_smoke_cfg = require_exact_bool(
             dense_cfg["reject_smoke"],
@@ -215,8 +221,9 @@ def prepare_dense_runtime(
     else:
         reject_smoke_cfg = False
     reject_smoke = reject_smoke_cfg or paper_final
-    allow_rebuild = require_exact_bool(
-        dense_cfg.get("allow_index_rebuild", False),
+    allow_rebuild = read_exact_bool(
+        dense_cfg,
+        "allow_index_rebuild",
         field="dense_rag.allow_index_rebuild",
         default=False,
     )
@@ -307,8 +314,19 @@ def prepare_dense_runtime(
             dim=dim,
             cache_path=cache_path,
             embedding_model=dense_cfg.get("injected_model"),
-            batch_size=int(dense_cfg.get("batch_size", 16)),
-            normalize_embeddings=bool(dense_cfg.get("normalize_embeddings", True)),
+            batch_size=read_exact_int(
+                dense_cfg,
+                "batch_size",
+                field="dense_rag.batch_size",
+                default=16,
+                minimum=1,
+            ),
+            normalize_embeddings=read_exact_bool(
+                dense_cfg,
+                "normalize_embeddings",
+                field="dense_rag.normalize_embeddings",
+                default=True,
+            ),
             paper_final=paper_final,
             reject_smoke=reject_smoke,
             corpus_checksum=corpus_checksum,
@@ -399,11 +417,7 @@ def prepare_ekell_runtime(
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     ekell_cfg = config.get("ekell_style") or {}
     vector_cfg = config.get("ekell_vector") or ekell_cfg.get("vector") or {}
-    paper_final = require_exact_bool(
-        config.get("paper_final", False),
-        field="paper_final",
-        default=False,
-    )
+    paper_final = read_exact_bool(config, "paper_final", field="paper_final", default=False)
     if "reject_smoke" in vector_cfg:
         reject_smoke = require_exact_bool(
             vector_cfg["reject_smoke"],
@@ -418,7 +432,13 @@ def prepare_ekell_runtime(
         or ("deterministic-hash-smoke" if "smoke" in backend_name or "hash" in backend_name else "")
     )
     model_version = str(vector_cfg.get("model_version") or "unspecified")
-    dimension = int(vector_cfg.get("dimension", vector_cfg.get("dim", 64)) or 64)
+    dimension = read_exact_int(
+        vector_cfg,
+        "dimension",
+        field="ekell_vector.dimension",
+        default=read_exact_int(vector_cfg, "dim", field="ekell_vector.dim", default=64, minimum=1),
+        minimum=1,
+    )
 
     if index_path:
         manifest_checksum = _index_manifest_checksum(str(index_path))

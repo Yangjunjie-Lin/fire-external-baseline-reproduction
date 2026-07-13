@@ -283,6 +283,9 @@ python scripts/validate_formal_config.py \
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (including drive-qualified, root-relative, UNC, and device-namespace forms) and must resolve inside the staged run root.
 - The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
+- Formal safety-critical numeric parameters require exact YAML/JSON numeric types; string-to-number and boolean-to-number coercion are rejected.
+- Missing optional boolean fields may use documented defaults, but explicitly setting those fields to `null` is invalid.
+- Release-readiness engineering gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.
 - Runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects.
 - GitHub Actions covers Python 3.10–3.12 with offline compile, lint, tests, hygiene, formal-config validation, E-KELL fidelity audit, package build, reproducibility dry-run, and release-readiness checks.
 - Offline full E2E exercises real guard/freeze/preflight/runtime/pipeline while injecting only external LLM transport and embedding-compute boundaries via `embedding_backend_factory`.

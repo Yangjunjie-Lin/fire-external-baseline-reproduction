@@ -26,8 +26,8 @@ ENGINEERING_GATE_KEYS = (
     "smoke_config_separated",
     "gold_isolation_tests_present",
     "schema_authority_clear",
-    "external_schema_required",
-    "checksum_policy_enabled",
+    "external_schema_enforcement_components_present",
+    "checksum_enforcement_components_present",
     "interop_contract_tests_present",
     "cross_repository_contract_tool_ready",
     "environment_dependency_spec_present",
@@ -77,7 +77,7 @@ def _source_contains(rel: str, needle: str) -> bool:
     return needle in _read_text(rel)
 
 
-def _external_schema_required() -> bool:
+def _external_schema_enforcement_components_present() -> bool:
     manifest_flag = _manifest_template_flag_exact_true("require_external_schema")
     staged_validator = (
         _source_contains(
@@ -95,7 +95,7 @@ def _external_schema_required() -> bool:
     return manifest_flag and staged_validator and contract_tests
 
 
-def _checksum_policy_enabled() -> bool:
+def _checksum_enforcement_components_present() -> bool:
     manifest_flag = _manifest_template_flag_exact_true("require_bundle_checksum")
     bundle_validator = _source_contains(
         "src/external_baselines/interop/bundle.py",
@@ -144,8 +144,8 @@ def _engineering_gate_values() -> dict[str, bool]:
         "smoke_config_separated": _exists("configs/smoke/deterministic_heuristic.yaml"),
         "gold_isolation_tests_present": _exists("tests/test_gold_isolation.py"),
         "schema_authority_clear": _exists("schemas/firebench_interop_v1/README.md"),
-        "external_schema_required": _external_schema_required(),
-        "checksum_policy_enabled": _checksum_policy_enabled(),
+        "external_schema_enforcement_components_present": _external_schema_enforcement_components_present(),
+        "checksum_enforcement_components_present": _checksum_enforcement_components_present(),
         "interop_contract_tests_present": _exists("tests/interop/test_main_project_contract.py"),
         "cross_repository_contract_tool_ready": _exists("scripts/verify_cross_repo_contract.py"),
         "environment_dependency_spec_present": _exists("constraints.txt") or _exists("requirements.lock"),
@@ -162,11 +162,11 @@ def _empirical_gate_values() -> dict[str, bool]:
     cross_verified = False
     if cross_repo_path.is_file():
         try:
-            cross_verified = bool(
-                json.loads(cross_repo_path.read_text(encoding="utf-8")).get(
-                    "cross_repository_contract_verified"
-                )
+            value = json.loads(cross_repo_path.read_text(encoding="utf-8")).get(
+                "cross_repository_contract_verified",
+                False,
             )
+            cross_verified = value if type(value) is bool else False
         except json.JSONDecodeError:
             cross_verified = False
     return {
@@ -191,6 +191,11 @@ def build_report() -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_head": _git(["log", "-1", "--oneline"]),
         "ci_result_verified_externally": False,
+        "assurance_model": {
+            "engineering_gates": "structural",
+            "behavioral_validation": "pytest_and_formal_e2e",
+            "ci_result_verified_externally": False,
+        },
         "engineering": {
             "ready": not engineering_failed,
             "passed": engineering_passed,

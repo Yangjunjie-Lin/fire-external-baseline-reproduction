@@ -11,6 +11,7 @@ from external_baselines.common.formal_config_validator import (
     _validate_exact_bool,
     _validate_positive_dimension,
     validate_dense_config_for_real_run,
+    validate_hybrid_config_for_real_run,
     validate_llm_for_formal,
     validate_method_config,
 )
@@ -207,3 +208,120 @@ def test_controlled_ekell_hook_accepts_exact_false():
         method_id="ekell_style_controlled_shared_llm",
         allow_placeholders=True,
     )
+
+
+def _hybrid_config(**hybrid_overrides):
+    base = {
+        "paper_final": True,
+        "dense_rag": {
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v1",
+            "dimension": 8,
+            "reject_smoke": True,
+            "normalize_embeddings": True,
+            "allow_index_rebuild": False,
+            "index_path": "indexes/dense",
+        },
+        "hybrid_rag": {
+            "reject_smoke": True,
+            "top_k": 3,
+            "candidate_pool": 5,
+            "rrf_k": 60.0,
+            "lexical_weight": 1.0,
+            "dense_weight": 1.0,
+        },
+    }
+    base["hybrid_rag"].update(hybrid_overrides)
+    return base
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", "0.0"),
+        ("temperature", True),
+        ("top_p", "1.0"),
+        ("top_p", False),
+        ("max_tokens", 1024.0),
+        ("max_tokens", True),
+        ("seed", "42"),
+        ("max_retries", True),
+    ],
+)
+def test_formal_llm_numeric_rejects_invalid_types(field, value):
+    config = _formal_llm_config(**{field: value})
+    with pytest.raises(FormalConfigError):
+        validate_llm_for_formal(config, validation_stage="formal")
+
+
+def test_formal_llm_top_p_rejects_out_of_range():
+    with pytest.raises(FormalConfigError, match="llm.top_p"):
+        validate_llm_for_formal(_formal_llm_config(top_p=1.5), validation_stage="formal")
+
+
+def test_formal_hybrid_top_k_rejects_bool():
+    with pytest.raises(FormalConfigError, match="hybrid_rag.top_k"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(top_k=True),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_hybrid_top_k_rejects_string():
+    with pytest.raises(FormalConfigError, match="hybrid_rag.top_k"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(top_k="5"),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_hybrid_candidate_pool_rejects_float():
+    with pytest.raises(FormalConfigError, match="hybrid_rag.candidate_pool"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(candidate_pool=10.0),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_hybrid_rrf_k_rejects_string():
+    with pytest.raises(FormalConfigError, match="hybrid_rag.rrf_k"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(rrf_k="60"),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_hybrid_weight_rejects_bool():
+    with pytest.raises(FormalConfigError, match="hybrid_rag.lexical_weight"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(lexical_weight=False),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_hybrid_valid_numeric_types_pass():
+    validate_hybrid_config_for_real_run(
+        _hybrid_config(top_k=3, candidate_pool=5, rrf_k=60, lexical_weight=1, dense_weight=1),
+        allow_placeholders=True,
+        validation_stage="template",
+    )
+
+
+def test_null_allow_model_env_override_is_rejected():
+    with pytest.raises(FormalConfigError, match="allow_model_env_override"):
+        validate_llm_for_formal(
+            _formal_llm_config(allow_model_env_override=None),
+            validation_stage="formal",
+        )
+
+
+def test_missing_allow_model_env_override_defaults_false():
+    config = _formal_llm_config()
+    del config["llm"]["allow_model_env_override"]
+    validate_llm_for_formal(config, validation_stage="formal")
