@@ -112,8 +112,8 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         "legacy_output": raw.get("legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
         "run_manifest": raw.get("run_manifest") or "outputs/interop_run_manifest.json",
         "limit": raw.get("limit"),
-        "paper_final": bool(raw.get("paper_final", False)),
-        "require_bundle_checksum": bool(raw.get("require_bundle_checksum", True)),
+        "paper_final": raw.get("paper_final", False),
+        "require_bundle_checksum": raw.get("require_bundle_checksum", True),
         "notes": raw.get("notes") or [],
         "freeze_status": raw.get("freeze_status") or "provisional",
         "raw": raw,
@@ -133,9 +133,9 @@ def build_method_config(manifest: dict[str, Any], method_entry: dict[str, Any]) 
     if method_entry.get("config"):
         paths.append(method_entry["config"])
     config = load_config(*paths)
-    config["paper_final"] = bool(manifest.get("paper_final", config.get("paper_final", False)))
-    config["require_bundle_checksum"] = bool(
-        manifest.get("require_bundle_checksum", config.get("require_bundle_checksum", False))
+    config["paper_final"] = manifest.get("paper_final", config.get("paper_final", False))
+    config["require_bundle_checksum"] = manifest.get(
+        "require_bundle_checksum", config.get("require_bundle_checksum", False)
     )
     config.setdefault("experiment", {})
     config["experiment"]["experiment_id"] = manifest.get("experiment_id")

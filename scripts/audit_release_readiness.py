@@ -55,6 +55,69 @@ def _exists(rel: str) -> bool:
     return (ROOT / rel).is_file()
 
 
+def _read_text(rel: str) -> str:
+    path = ROOT / rel
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _manifest_template_flag_exact_true(flag: str) -> bool:
+    text = _read_text("configs/experiments/controlled_main_table_v1.yaml.example")
+    if not text:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{flag}:") and stripped.split(":", 1)[1].strip() == "true":
+            return True
+    return False
+
+
+def _source_contains(rel: str, needle: str) -> bool:
+    return needle in _read_text(rel)
+
+
+def _external_schema_required() -> bool:
+    manifest_flag = _manifest_template_flag_exact_true("require_external_schema")
+    staged_validator = (
+        _source_contains(
+            "scripts/run_decision_comparison_suite.py",
+            "prediction_schema_path: Path",
+        )
+        and _source_contains(
+            "scripts/run_decision_comparison_suite.py",
+            "require_external_schema=True",
+        )
+    )
+    contract_tests = _exists("tests/test_external_schema_validation.py") or _exists(
+        "tests/interop/test_main_project_contract.py"
+    )
+    return manifest_flag and staged_validator and contract_tests
+
+
+def _checksum_policy_enabled() -> bool:
+    manifest_flag = _manifest_template_flag_exact_true("require_bundle_checksum")
+    bundle_validator = _source_contains(
+        "src/external_baselines/interop/bundle.py",
+        "def validate_bundle_checksum",
+    ) and _source_contains(
+        "src/external_baselines/interop/bundle.py",
+        "_verify_file_checksums",
+    )
+    staged_rehash = _source_contains(
+        "scripts/run_decision_comparison_suite.py",
+        "artifact_hashes",
+    ) and _source_contains(
+        "scripts/run_decision_comparison_suite.py",
+        "sha256_file",
+    )
+    tamper_tests = _exists("tests/test_bundle_integrity.py") and _source_contains(
+        "tests/test_bundle_integrity.py",
+        "tamper",
+    )
+    return manifest_flag and bundle_validator and staged_rehash and tamper_tests
+
+
 def _read_deprecated(path: str) -> bool:
     p = ROOT / path
     if not p.is_file():
@@ -81,8 +144,8 @@ def _engineering_gate_values() -> dict[str, bool]:
         "smoke_config_separated": _exists("configs/smoke/deterministic_heuristic.yaml"),
         "gold_isolation_tests_present": _exists("tests/test_gold_isolation.py"),
         "schema_authority_clear": _exists("schemas/firebench_interop_v1/README.md"),
-        "external_schema_required": True,
-        "checksum_policy_enabled": True,
+        "external_schema_required": _external_schema_required(),
+        "checksum_policy_enabled": _checksum_policy_enabled(),
         "interop_contract_tests_present": _exists("tests/interop/test_main_project_contract.py"),
         "cross_repository_contract_tool_ready": _exists("scripts/verify_cross_repo_contract.py"),
         "environment_dependency_spec_present": _exists("constraints.txt") or _exists("requirements.lock"),

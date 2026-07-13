@@ -6,6 +6,25 @@
 
 ## A. Five-method comparison suite (recommended system contrast)
 
+**Artifact layouts (do not mix):**
+
+| Workflow | Entrypoint | Evaluator handoff |
+|----------|------------|-------------------|
+| Formal unified suite | `run_decision_comparison_suite.py` + `--formal-run-root` | `outputs/formal/test_public/predictions/` |
+| Dry-run diagnostics | `run_decision_comparison_suite.py` + `--execution-stage dry_run` | non-formal; `outputs/interop/dry_run/predictions/` + `outputs/decision_runs/dry_run/` |
+| Legacy combined JSONL | `run_interop_baselines.py` | `outputs/interop/comparison_suite_v1/predictions.jsonl` (not the unified Formal layout) |
+
+Formal unified run root:
+
+```text
+outputs/formal/test_public/
+├── predictions/
+├── decisions/
+├── suite_summary.json
+├── run_manifest.json
+└── diagnostics/
+```
+
 ```bash
 cp .env.example .env
 # edit .env → set SILICONFLOW_API_KEY=...

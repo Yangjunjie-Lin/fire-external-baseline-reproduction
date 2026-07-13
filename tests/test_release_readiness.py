@@ -100,3 +100,54 @@ def test_report_only_mode_exits_zero(monkeypatch, tmp_path):
     assert excinfo.value.code == 0
     payload = json.loads((tmp_path / "release_readiness.json").read_text(encoding="utf-8"))
     assert payload["engineering"]["ready"] is False
+
+
+def test_readiness_external_schema_gate_reads_manifest_flag(monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: flag == "require_external_schema")
+    monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
+    monkeypatch.setattr(audit, "_exists", lambda rel: True)
+    assert audit._external_schema_required() is True
+
+
+def test_readiness_external_schema_gate_fails_when_flag_false(monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: False)
+    monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
+    monkeypatch.setattr(audit, "_exists", lambda rel: True)
+    assert audit._external_schema_required() is False
+
+
+def test_readiness_checksum_gate_reads_manifest_flag(monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: flag == "require_bundle_checksum")
+    monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
+    monkeypatch.setattr(audit, "_exists", lambda rel: True)
+    assert audit._checksum_policy_enabled() is True
+
+
+def test_readiness_checksum_gate_fails_when_tamper_tests_missing(monkeypatch):
+    import scripts.audit_release_readiness as audit
+
+    monkeypatch.setattr(audit, "_manifest_template_flag_exact_true", lambda flag: True)
+    monkeypatch.setattr(audit, "_source_contains", lambda rel, needle: True)
+    monkeypatch.setattr(
+        audit,
+        "_exists",
+        lambda rel: rel != "tests/test_bundle_integrity.py",
+    )
+    assert audit._checksum_policy_enabled() is False
+
+
+def test_readiness_has_no_unconditional_security_true_gate():
+    import scripts.audit_release_readiness as audit
+
+    source = (ROOT / "scripts/audit_release_readiness.py").read_text(encoding="utf-8")
+    assert '"external_schema_required": True' not in source
+    assert '"checksum_policy_enabled": True' not in source
+    gates = audit._engineering_gate_values()
+    assert isinstance(gates["external_schema_required"], bool)
+    assert isinstance(gates["checksum_policy_enabled"], bool)

@@ -139,7 +139,24 @@ outputs/formal/test_public/
 └── diagnostics/
 ```
 
-Legacy layout (same parent required):
+Formal comparison-suite artifacts (recommended unified entrypoint: `run_decision_comparison_suite.py`):
+
+```text
+outputs/formal/test_public/
+├── predictions/          ← hand to fire-agent-demo evaluator
+├── decisions/
+├── suite_summary.json
+├── run_manifest.json
+└── diagnostics/
+```
+
+Evaluator handoff path:
+
+```text
+outputs/formal/test_public/predictions/
+```
+
+Legacy Formal layout (same parent required; equivalent to `--formal-run-root` above):
 
 ```bash
 python scripts/run_decision_comparison_suite.py \
@@ -151,12 +168,22 @@ python scripts/run_decision_comparison_suite.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml
 ```
 
-Artifacts:
+Dry-run diagnostic artifacts (non-formal wiring checks; `formal_result` is always false):
 
-- `outputs/interop/<split>/predictions/<method_id>.jsonl` — hand to `fire-agent-demo` evaluator
-- `outputs/decision_runs/<split>/<method_id>/{decisions,responses}.jsonl` + `run_summary.json`
+```text
+outputs/interop/dry_run/predictions/
+outputs/decision_runs/dry_run/
+```
 
 ### Legacy combined interop runner
+
+Separate entrypoint (`run_interop_baselines.py`); **not** the recommended Formal artifact layout for the five-method comparison suite:
+
+```text
+outputs/interop/comparison_suite_v1/predictions.jsonl
+outputs/dry_run/comparison_suite_v1/predictions.jsonl
+outputs/dry_run/comparison_suite_v1/run_manifest.json
+```
 
 ```bash
 pip install -e ".[llm,embeddings]"

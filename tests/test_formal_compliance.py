@@ -2284,7 +2284,7 @@ def test_formal_writes_to_temporary_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
     bundle = _make_runner_bundle(tmp_path, n_cases=1)
@@ -2394,7 +2394,7 @@ def test_formal_middle_method_failure_publishes_no_partial_results(tmp_path, mon
     monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(
         suite,
         "collect_method_runtime_evidence",
@@ -2479,7 +2479,7 @@ def test_formal_success_atomically_publishes_all_methods(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _fake_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
     summary = run_decision_suite(
@@ -2838,7 +2838,7 @@ def test_formal_publish_second_target_failure_rolls_back_both_targets(tmp_path, 
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(
         suite,
         "collect_method_runtime_evidence",
@@ -3043,7 +3043,7 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
     monkeypatch.setattr(suite, "build_llm_client", lambda _c, **kwargs: ContractLLM())
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
 
     run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path, name="published")
@@ -3110,7 +3110,7 @@ def test_formal_pre_publish_failure_raises_formal_run_failed(tmp_path, monkeypat
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(
         suite,
         "collect_method_runtime_evidence",
@@ -3361,7 +3361,7 @@ def test_publish_success_includes_final_suite_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", _runtime_evidence)
     run_decision_suite(
         runner_bundle=_make_runner_bundle(tmp_path, n_cases=1),
@@ -3599,7 +3599,7 @@ def test_preflight_report_copied_into_staged_run_root(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -3676,7 +3676,7 @@ def test_final_suite_summary_written_before_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -3727,7 +3727,7 @@ def test_staged_summary_has_formal_result_true(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -3785,7 +3785,7 @@ def test_no_suite_summary_write_after_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -3838,7 +3838,7 @@ def test_summary_write_failure_prevents_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     with pytest.raises(FormalRunFailed):
         run_decision_suite(
@@ -3880,7 +3880,7 @@ def test_staged_run_validation_failure_prevents_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     with pytest.raises(FormalRunFailed):
         run_decision_suite(
@@ -3936,7 +3936,7 @@ def test_run_manifest_written_before_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -3982,7 +3982,7 @@ def test_cleanup_failure_keeps_formal_result_true(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     summary = run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -4029,7 +4029,7 @@ def test_cleanup_warning_written_only_to_control_root(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -4075,7 +4075,7 @@ def test_publish_receipt_failure_does_not_remove_committed_run(tmp_path, monkeyp
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
     summary = run_decision_suite(
         runner_bundle=fixture["bundle_dir"],
@@ -4421,7 +4421,7 @@ def _run_mock_formal_publish(tmp_path, monkeypatch, *, n_cases: int = 1):
     monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
     monkeypatch.setattr(suite, "resolve_pipeline", lambda mid: _pipeline_for(mid))
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)
-    monkeypatch.setattr(suite, "close_method_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(suite, "close_method_runtime_safely", lambda *_a, **_k: None)
     monkeypatch.setattr(
         suite,
         "collect_method_runtime_evidence",
@@ -4656,19 +4656,66 @@ def _dense_method_config(fixture: dict) -> dict[str, Any]:
     return config
 
 
-def _matching_embedding_backend():
+def _build_fake_dense_index_variant(
+    tmp_path: Path,
+    *,
+    name: str,
+    model_name: str,
+    model_version: str,
+    dim: int,
+) -> Path:
+    from external_baselines.dense_rag.pipeline import build_dense_index
+    from tests.test_dense_real_index import FakeEmbeddingModel, _evidence
+
+    evidence = _evidence(tmp_path)
+    index_dir = tmp_path / name
+    build_dense_index(
+        evidence,
+        model_name=model_name,
+        model_version=model_version,
+        backend="text2vec",
+        dim=dim,
+        cache_path=index_dir,
+        embedding_model=FakeEmbeddingModel(dim),
+        reject_smoke=True,
+    )
+    return index_dir
+
+
+def _dense_config_for_index(
+    fixture: dict,
+    *,
+    index_dir: Path,
+    model_name: str,
+    model_version: str,
+    dimension: int,
+) -> dict[str, Any]:
+    from external_baselines.interop.bundle import load_runner_bundle
+
+    bundle = load_runner_bundle(fixture["bundle_dir"])
+    config = _formal_method_configs(str(bundle["corpus_dir"]), dense_index=index_dir)["dense_rag"]
+    config["dense_rag"]["index_path"] = str(index_dir)
+    config["dense_rag"]["model_name"] = model_name
+    config["dense_rag"]["model_version"] = model_version
+    config["dense_rag"]["dimension"] = dimension
+    return config
+
+
+def _embedding_backend_for(model_name: str, model_version: str, dimension: int):
     from external_baselines.retrieval.embedding_backends import create_embedding_backend
     from tests.test_dense_real_index import FakeEmbeddingModel
 
     return create_embedding_backend(
         "text2vec",
-        model_name="fake/bge",
-        model_version="v-test",
-        dimension=8,
+        model_name=model_name,
+        model_version=model_version,
+        dimension=dimension,
         paper_final=True,
         reject_smoke=True,
-        model=FakeEmbeddingModel(8),
+        model=FakeEmbeddingModel(dimension),
     )
+def _matching_embedding_backend():
+    return _embedding_backend_for("fake/bge", "v-test", 8)
 
 
 def _wrong_embedding_backend():
@@ -6011,11 +6058,104 @@ def test_formal_cli_rejects_legacy_dirs_with_different_parents(tmp_path):
 
 
 def test_dry_run_requires_explicit_output_dirs():
+    from external_baselines.common.decision_suite_guard import CLIValidationError
     from scripts.run_decision_comparison_suite import resolve_cli_output_paths
 
     args = _cli_args(execution_stage="dry_run")
-    with pytest.raises(SystemExit, match="Dry run requires"):
+    with pytest.raises(CLIValidationError, match="dry_run_output_paths_incomplete"):
         resolve_cli_output_paths(args)
+
+
+def test_dry_run_cli_missing_dirs_returns_structured_error(capsys):
+    from scripts.run_decision_comparison_suite import main
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "--runner-bundle",
+                "bundle",
+                "--execution-stage",
+                "dry_run",
+            ]
+        )
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err.strip())
+    assert payload["execution_stage"] == "dry_run"
+    assert payload["stage"] == "cli_validation"
+    assert payload["error"] == "dry_run_output_paths_incomplete"
+
+
+def test_build_argument_parser_accepts_recommended_formal_args(tmp_path):
+    from scripts.run_decision_comparison_suite import RECOMMENDED_FORMAL_ARGS, build_argument_parser
+
+    parser = build_argument_parser()
+    argv = list(RECOMMENDED_FORMAL_ARGS)
+    argv[argv.index("outputs/formal/test_public")] = str(tmp_path / "formal")
+    args = parser.parse_args(argv)
+    assert args.execution_stage == "formal"
+    assert args.formal_run_root == str(tmp_path / "formal")
+
+
+def test_main_recommended_formal_command_reaches_suite(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import RECOMMENDED_FORMAL_ARGS, main
+
+    captured: dict[str, Any] = {}
+
+    def _fake_suite(**kwargs):
+        captured.update(kwargs)
+        return {
+            "case_count": 1,
+            "methods": ["direct_llm"],
+            "formal_compliance": {"formal_result": True},
+        }
+
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite.run_decision_suite",
+        _fake_suite,
+    )
+    argv = list(RECOMMENDED_FORMAL_ARGS)
+    argv[argv.index("outputs/formal/test_public")] = str(tmp_path / "formal")
+    main(argv)
+    assert captured["execution_stage"] == "formal"
+    assert captured["formal_run_root"] == tmp_path / "formal"
+
+
+def test_main_passes_derived_formal_paths(tmp_path, monkeypatch):
+    from scripts.run_decision_comparison_suite import main
+
+    captured: dict[str, Any] = {}
+    formal_root = tmp_path / "formal"
+
+    def _fake_suite(**kwargs):
+        captured.update(kwargs)
+        return {
+            "case_count": 1,
+            "methods": ["direct_llm"],
+            "formal_compliance": {"formal_result": True},
+        }
+
+    monkeypatch.setattr(
+        "scripts.run_decision_comparison_suite.run_decision_suite",
+        _fake_suite,
+    )
+    main(
+        [
+            "--runner-bundle",
+            "bundle",
+            "--method-set",
+            "comparison_suite",
+            "--execution-stage",
+            "formal",
+            "--formal-run-root",
+            str(formal_root),
+            "--experiment-manifest",
+            "manifest.yaml",
+        ]
+    )
+    assert captured["prediction_dir"] == formal_root / "predictions"
+    assert captured["decision_dir"] == formal_root / "decisions"
+    assert captured["formal_run_root"] == formal_root
 
 
 def test_documented_formal_command_matches_cli_contract():
@@ -6072,7 +6212,132 @@ def test_hybrid_wrapper_closed_after_method_execution():
 
 
 def test_hybrid_close_does_not_close_shared_dense():
-    test_hybrid_wrapper_closed_after_method_execution()
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        close_method_runtime,
+        runtime_is_cached,
+    )
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = HybridRuntime(lexical_retriever=object(), dense_runtime=dense)
+    assert runtime_is_cached(hybrid) is False
+    close_method_runtime(hybrid)
+    assert hybrid._closed is True
+    assert dense._closed is False
+
+
+def test_method_close_error_does_not_mask_pipeline_error():
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        close_method_runtime_safely,
+    )
+
+    class _BrokenHybrid(HybridRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = _BrokenHybrid(lexical_retriever=object(), dense_runtime=dense)
+
+    with pytest.raises(RuntimeError, match="pipeline"):
+        body_exception: BaseException | None = None
+        try:
+            raise RuntimeError("pipeline")
+        except BaseException as exc:
+            body_exception = exc
+            raise
+        finally:
+            close_method_runtime_safely(hybrid, body_exception=body_exception)
+
+
+def test_method_close_error_without_pipeline_error_is_reported():
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        RuntimeCleanupError,
+        close_method_runtime_safely,
+    )
+
+    class _BrokenHybrid(HybridRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = _BrokenHybrid(lexical_retriever=object(), dense_runtime=dense)
+    with pytest.raises(RuntimeCleanupError):
+        close_method_runtime_safely(hybrid, body_exception=None)
+
+
+def test_hybrid_wrapper_close_warning_is_sanitized(caplog):
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        close_method_runtime_safely,
+    )
+
+    class _BrokenHybrid(HybridRuntime):
+        def close(self) -> None:
+            bad_suffix = "x" * 24
+            raise RuntimeError("failed " + "sk-" + bad_suffix)
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = _BrokenHybrid(lexical_retriever=object(), dense_runtime=dense)
+    with pytest.raises(RuntimeError, match="pipeline"):
+        body_exception: BaseException | None = None
+        try:
+            raise RuntimeError("pipeline")
+        except BaseException as exc:
+            body_exception = exc
+            raise
+        finally:
+            with caplog.at_level("WARNING"):
+                close_method_runtime_safely(hybrid, body_exception=body_exception)
+    assert "sk-" not in caplog.text
+    assert "details redacted" in caplog.text
+
+
+def test_hybrid_close_failure_does_not_close_dense():
+    from external_baselines.common.method_runtime import (
+        DenseRuntime,
+        HybridRuntime,
+        close_method_runtime_safely,
+    )
+
+    class _BrokenHybrid(HybridRuntime):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    dense = DenseRuntime(
+        embedding_backend=object(),
+        dense_index=object(),
+        retriever=object(),
+        index_manifest={},
+    )
+    hybrid = _BrokenHybrid(lexical_retriever=object(), dense_runtime=dense)
+    close_method_runtime_safely(hybrid, body_exception=RuntimeError("pipeline"))
+    assert dense._closed is False
 
 
 def test_close_error_does_not_mask_original_exception():
@@ -6142,5 +6407,208 @@ def test_one_close_failure_does_not_skip_other_runtime_cleanup():
 
 
 def test_concurrent_suites_different_backends_do_not_conflict(tmp_path):
-    test_concurrent_suites_same_index_have_distinct_runtime(tmp_path)
+    import threading
+
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
+    from external_baselines.retrieval.embedding_backends import embedding_backend_identity
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    index_a = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_a",
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dim=8,
+    )
+    index_b = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_b",
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dim=16,
+    )
+    config_a = _dense_config_for_index(
+        fixture,
+        index_dir=index_a,
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dimension=8,
+    )
+    config_b = _dense_config_for_index(
+        fixture,
+        index_dir=index_b,
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dimension=16,
+    )
+    backend_a = _embedding_backend_for("fake/bge-a", "v-a", 8)
+    backend_b = _embedding_backend_for("fake/bge-b", "v-b", 16)
+    barrier = threading.Barrier(2, timeout=30)
+    runtime_ids: dict[str, int] = {}
+    cache_ids: dict[str, int] = {}
+    identities: dict[str, dict[str, Any]] = {}
+    errors: list[BaseException] = []
+
+    def _run(label: str, config, backend) -> None:
+        try:
+            with runtime_cache_scope() as cache:
+                runtime = prepare_dense_runtime(config, embedding_backend=backend)
+                runtime_ids[label] = id(runtime)
+                cache_ids[label] = id(cache)
+                identities[label] = embedding_backend_identity(backend)
+                barrier.wait(timeout=10)
+                barrier.wait(timeout=10)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_run, args=("a", config_a, backend_a)),
+        threading.Thread(target=_run, args=("b", config_b, backend_b)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert runtime_ids["a"] != runtime_ids["b"]
+    assert cache_ids["a"] != cache_ids["b"]
+    assert identities["a"] != identities["b"]
+
+
+def test_concurrent_suite_a_exit_does_not_clear_active_suite_b(tmp_path):
+    import threading
+
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    index_a = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_a",
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dim=8,
+    )
+    index_b = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_b",
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dim=16,
+    )
+    config_a = _dense_config_for_index(
+        fixture,
+        index_dir=index_a,
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dimension=8,
+    )
+    config_b = _dense_config_for_index(
+        fixture,
+        index_dir=index_b,
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dimension=16,
+    )
+    backend_a = _embedding_backend_for("fake/bge-a", "v-a", 8)
+    backend_b = _embedding_backend_for("fake/bge-b", "v-b", 16)
+    b_ready = threading.Event()
+    a_may_exit = threading.Event()
+    b_done = threading.Event()
+    b_runtime_holder: dict[str, Any] = {}
+    errors: list[BaseException] = []
+
+    def _run_b() -> None:
+        try:
+            with runtime_cache_scope():
+                runtime = prepare_dense_runtime(config_b, embedding_backend=backend_b)
+                b_runtime_holder["runtime"] = runtime
+                b_ready.set()
+                assert a_may_exit.wait(timeout=10)
+                assert runtime is b_runtime_holder["runtime"]
+                b_done.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _run_a() -> None:
+        try:
+            with runtime_cache_scope():
+                prepare_dense_runtime(config_a, embedding_backend=backend_a)
+                assert b_ready.wait(timeout=10)
+                a_may_exit.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread_b = threading.Thread(target=_run_b)
+    thread_a = threading.Thread(target=_run_a)
+    thread_b.start()
+    thread_a.start()
+    thread_b.join(timeout=60)
+    thread_a.join(timeout=60)
+    assert not errors, errors
+    assert b_done.wait(timeout=0.1)
+
+
+def test_concurrent_runtimes_keep_own_embedding_identity(tmp_path):
+    import threading
+
+    from external_baselines.common.method_runtime import prepare_dense_runtime, runtime_cache_scope
+    from external_baselines.retrieval.embedding_backends import embedding_backend_identity
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    index_a = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_a",
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dim=8,
+    )
+    index_b = _build_fake_dense_index_variant(
+        tmp_path,
+        name="dense_idx_b",
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dim=16,
+    )
+    config_a = _dense_config_for_index(
+        fixture,
+        index_dir=index_a,
+        model_name="fake/bge-a",
+        model_version="v-a",
+        dimension=8,
+    )
+    config_b = _dense_config_for_index(
+        fixture,
+        index_dir=index_b,
+        model_name="fake/bge-b",
+        model_version="v-b",
+        dimension=16,
+    )
+    backend_a = _embedding_backend_for("fake/bge-a", "v-a", 8)
+    backend_b = _embedding_backend_for("fake/bge-b", "v-b", 16)
+    barrier = threading.Barrier(2, timeout=30)
+    observed: dict[str, dict[str, Any]] = {}
+    errors: list[BaseException] = []
+
+    def _run(label: str, config, backend, expected) -> None:
+        try:
+            with runtime_cache_scope():
+                runtime = prepare_dense_runtime(config, embedding_backend=backend)
+                observed[label] = embedding_backend_identity(runtime.embedding_backend)
+                assert observed[label] == expected
+                barrier.wait(timeout=10)
+                barrier.wait(timeout=10)
+        except BaseException as exc:
+            errors.append(exc)
+
+    expected_a = embedding_backend_identity(backend_a)
+    expected_b = embedding_backend_identity(backend_b)
+    threads = [
+        threading.Thread(target=_run, args=("a", config_a, backend_a, expected_a)),
+        threading.Thread(target=_run, args=("b", config_b, backend_b, expected_b)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
 

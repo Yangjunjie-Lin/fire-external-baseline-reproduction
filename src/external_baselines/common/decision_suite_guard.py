@@ -67,6 +67,14 @@ class FormalRunFailed(RuntimeError):
         self.summary = summary or {}
 
 
+class CLIValidationError(ValueError):
+    """Raised when CLI arguments fail validation before suite execution."""
+
+    def __init__(self, message: str, *, stage: str = "cli_validation") -> None:
+        super().__init__(message)
+        self.stage = stage
+
+
 _SENSITIVE_ERROR_PATTERNS = (
     "sk-",
     "bearer ",

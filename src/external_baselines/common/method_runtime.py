@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.common.decision_suite_guard import sanitize_error_message
+from external_baselines.common.llm_client import require_exact_bool
 from external_baselines.interop.schema import canonicalize_method_id
 from external_baselines.retrieval.embedding_backends import (
     EmbeddingBackendError,
@@ -201,9 +202,24 @@ def prepare_dense_runtime(
     model_name = str(dense_cfg.get("model_name", "smoke-hash-embedding"))
     model_version = str(dense_cfg.get("model_version", "v0-smoke"))
     dim = resolve_dimension(dense_cfg, 64)
-    reject_smoke = bool(dense_cfg.get("reject_smoke", False) or config.get("paper_final", False))
-    paper_final = bool(config.get("paper_final", False))
-    allow_rebuild = bool(dense_cfg.get("allow_index_rebuild", False))
+    paper_final = require_exact_bool(
+        config.get("paper_final", False),
+        field="paper_final",
+        default=False,
+    )
+    if "reject_smoke" in dense_cfg:
+        reject_smoke_cfg = require_exact_bool(
+            dense_cfg["reject_smoke"],
+            field="dense_rag.reject_smoke",
+        )
+    else:
+        reject_smoke_cfg = False
+    reject_smoke = reject_smoke_cfg or paper_final
+    allow_rebuild = require_exact_bool(
+        dense_cfg.get("allow_index_rebuild", False),
+        field="dense_rag.allow_index_rebuild",
+        default=False,
+    )
     if paper_final or reject_smoke:
         allow_rebuild = False
     cache_path = dense_cfg.get("index_path") or str(
@@ -383,8 +399,18 @@ def prepare_ekell_runtime(
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     ekell_cfg = config.get("ekell_style") or {}
     vector_cfg = config.get("ekell_vector") or ekell_cfg.get("vector") or {}
-    paper_final = bool(config.get("paper_final", False))
-    reject_smoke = bool(vector_cfg.get("reject_smoke", paper_final))
+    paper_final = require_exact_bool(
+        config.get("paper_final", False),
+        field="paper_final",
+        default=False,
+    )
+    if "reject_smoke" in vector_cfg:
+        reject_smoke = require_exact_bool(
+            vector_cfg["reject_smoke"],
+            field="ekell_vector.reject_smoke",
+        )
+    else:
+        reject_smoke = paper_final
     index_path = vector_cfg.get("index_path")
     backend_name = str(vector_cfg.get("backend", "smoke"))
     model_name = str(
@@ -528,6 +554,24 @@ def close_method_runtime(runtime: Any | None) -> None:
     closer = getattr(runtime, "close", None)
     if callable(closer):
         closer()
+
+
+def close_method_runtime_safely(
+    runtime: Any | None,
+    *,
+    body_exception: BaseException | None = None,
+) -> list[str]:
+    if runtime is None or runtime_is_cached(runtime):
+        return []
+    try:
+        close_method_runtime(runtime)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        message = sanitize_error_message(str(exc))
+        if body_exception is not None:
+            logger.warning("method_runtime_close_failed: %s", message)
+            return [message]
+        raise RuntimeCleanupError(message) from exc
 
 
 def _close_cache_runtimes_safely(cache: dict[tuple[str, ...], Any]) -> list[str]:

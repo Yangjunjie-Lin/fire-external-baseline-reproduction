@@ -25,7 +25,7 @@ def test_yaml_model_wins_over_siliconflow_model_env(monkeypatch) -> None:
 
 
 def test_formal_rejects_model_env_override() -> None:
-    with pytest.raises(FormalConfigError):
+    with pytest.raises(FormalConfigError, match="allow_model_env_override"):
         validate_llm_for_formal(
             {
                 "paper_final": True,
@@ -36,6 +36,24 @@ def test_formal_rejects_model_env_override() -> None:
                     "allow_model_env_override": True,
                 },
             }
+        )
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_runtime_model_resolver_rejects_non_bool_override(value) -> None:
+    with pytest.raises(ValueError, match="llm.allow_model_env_override must be an exact boolean"):
+        resolve_siliconflow_model({"allow_model_env_override": value}, paper_final=False)
+
+
+def test_runtime_model_resolver_does_not_interpret_string_false_as_true(monkeypatch) -> None:
+    monkeypatch.setenv("SILICONFLOW_MODEL", "env/should-not-win")
+    with pytest.raises(ValueError, match="exact boolean"):
+        resolve_siliconflow_model(
+            {
+                "model": "yaml/model",
+                "allow_model_env_override": "false",
+            },
+            paper_final=False,
         )
 
 

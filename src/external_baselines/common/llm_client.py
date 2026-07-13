@@ -399,6 +399,21 @@ DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 DEFAULT_SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
 
 
+def require_exact_bool(
+    value: Any,
+    *,
+    field: str,
+    default: bool | None = None,
+) -> bool:
+    if value is None:
+        if default is not None:
+            return default
+        raise ValueError(f"{field} must be an exact boolean")
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be an exact boolean")
+    return value
+
+
 def _maybe_load_dotenv() -> None:
     """Deprecated wrapper — use load_local_environment()."""
     from external_baselines.common.environment import load_local_environment
@@ -412,13 +427,16 @@ def resolve_siliconflow_model(llm_cfg: dict[str, Any], *, paper_final: bool = Fa
     Returns (model, model_source).
     """
     yaml_model = str(llm_cfg.get("model") or "").strip()
-    allow_override = bool(llm_cfg.get("allow_model_env_override", False))
+    allow_override = require_exact_bool(
+        llm_cfg.get("allow_model_env_override", False),
+        field="llm.allow_model_env_override",
+        default=False,
+    )
     env_model = str(os.getenv("SILICONFLOW_MODEL") or "").strip()
 
     if paper_final and allow_override:
         raise ValueError(
-            "paper_final=true forbids llm.allow_model_env_override=true. "
-            "Formal model identity must come from YAML."
+            "paper_final=true requires llm.allow_model_env_override=false"
         )
 
     if allow_override and not paper_final and env_model:
@@ -580,7 +598,11 @@ def build_llm_client(
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider", "heuristic")).lower()
     model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
-    paper_final = bool((config or {}).get("paper_final", False))
+    paper_final = require_exact_bool(
+        (config or {}).get("paper_final", False),
+        field="paper_final",
+        default=False,
+    )
     model_source = "yaml_config"
 
     # Align with fire-agent-demo SiliconFlow OpenAI-compatible client.
@@ -599,8 +621,11 @@ def build_llm_client(
             model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or model),
             default_base_url=DEFAULT_SILICONFLOW_BASE_URL,
             enable_thinking=(
-                bool(llm_cfg.get("enable_thinking"))
-                if llm_cfg.get("enable_thinking") is not None
+                require_exact_bool(
+                    llm_cfg["enable_thinking"],
+                    field="llm.enable_thinking",
+                )
+                if "enable_thinking" in llm_cfg
                 else None
             ),
         )
@@ -642,7 +667,11 @@ def llm_runtime_snapshot(llm: Any | None = None) -> dict[str, Any]:
 def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = None) -> dict[str, Any]:
     llm_cfg = _llm_cfg(config)
     provider = str(llm_cfg.get("provider") or getattr(llm, "provider", "heuristic"))
-    paper_final = bool((config or {}).get("paper_final", False))
+    paper_final = require_exact_bool(
+        (config or {}).get("paper_final", False),
+        field="paper_final",
+        default=False,
+    )
     model_source = "yaml_config"
     if provider.lower() in {"siliconflow", "silicon-flow"}:
         model, model_source = resolve_siliconflow_model(llm_cfg, paper_final=paper_final)

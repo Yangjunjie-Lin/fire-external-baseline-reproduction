@@ -178,6 +178,16 @@ def validate_llm_for_formal(
     validation_stage: str = "formal",
 ) -> None:
     llm = _llm_block(config)
+    allow_override = _validate_exact_bool(
+        llm.get("allow_model_env_override", False),
+        field="llm.allow_model_env_override",
+        allow_placeholders=allow_placeholders,
+    )
+    raw_paper_final = config.get("paper_final", False)
+    if type(raw_paper_final) is bool and raw_paper_final is True and allow_override is True:
+        raise FormalConfigError(
+            "paper_final=true requires llm.allow_model_env_override=false"
+        )
     provider = str(llm.get("provider", "heuristic")).lower().strip()
     model = str(llm.get("model") or "").strip()
     model_version = str(llm.get("model_version") or llm.get("version") or "").strip()
@@ -204,19 +214,6 @@ def validate_llm_for_formal(
         model_lower = model.lower()
         if any(token in model_lower for token in smoke_tokens):
             raise FormalConfigError(f"Formal config rejects smoke/heuristic LLM model name: {model!r}")
-    if type(config.get("paper_final", False)) is bool and config.get("paper_final") is True:
-        override = llm.get("allow_model_env_override", False)
-        if type(override) is bool and override is True:
-            raise FormalConfigError(
-                "paper_final=true forbids llm.allow_model_env_override=true; "
-                "formal model identity must come from YAML."
-            )
-    elif not allow_placeholders and stage == "formal":
-        _validate_exact_bool(
-            llm.get("allow_model_env_override", False),
-            field="llm.allow_model_env_override",
-            required=False,
-        )
 
 def validate_dense_config_for_real_run(
     config: dict[str, Any],
@@ -400,7 +397,12 @@ def validate_paper_fidelity_method_config(
         raise FormalConfigError("paper-fidelity requires controlled_output_format=false.")
     if config.get("official_reproduction") is not False:
         raise FormalConfigError("paper-fidelity requires official_reproduction=false.")
-    if bool(config.get("paper_fidelity_model_run")):
+    model_run = _validate_exact_bool(
+        config.get("paper_fidelity_model_run", False),
+        field="paper_fidelity_model_run",
+        allow_placeholders=allow_placeholders,
+    )
+    if model_run is True:
         validate_llm_for_formal(config, allow_placeholders=False)
         validate_ekell_vector_for_formal(config, allow_placeholders=False)
         evidence = str(config.get("paper_fidelity_run_evidence") or "").strip()
@@ -447,7 +449,10 @@ def validate_method_config(
     if str(config.get("method_id") or "") != mid and config.get("method_id"):
         warnings.append(f"method_id canonicalized {config.get('method_id')!r} → {mid!r}")
 
-    paper_final = bool(config.get("paper_final", False))
+    raw_paper_final = config.get("paper_final", False)
+    if type(raw_paper_final) is not bool:
+        raise FormalConfigError("paper_final must be an exact boolean")
+    paper_final = raw_paper_final
     formal_ids = FORMAL_METHOD_IDS | COMPARISON_FORMAL_METHOD_IDS
     if require_formal or paper_final:
         if "llm" in config and _llm_block(config):
@@ -486,9 +491,15 @@ def validate_method_config(
                 "self_consistency",
                 "structured_verification",
             ):
-                if bool(enhanced.get(flag)):
+                raw = enhanced.get(flag, False)
+                if type(raw) is not bool:
                     raise FormalConfigError(
-                        f"Controlled E-KELL forbids enhanced hook ekell_style.{flag}=true"
+                        f"ekell_style.{flag} must be an exact boolean"
+                    )
+                if raw is True:
+                    raise FormalConfigError(
+                        f"Controlled E-KELL forbids enhanced hook "
+                        f"ekell_style.{flag}=true"
                     )
 
     _check_no_secrets(config)

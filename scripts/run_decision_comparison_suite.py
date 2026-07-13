@@ -29,6 +29,7 @@ from external_baselines.common.decision_output import (  # noqa: E402
 )
 from external_baselines.common.decision_suite_guard import (  # noqa: E402
     FORMAL_LIMIT_FORBIDDEN_MESSAGE,
+    CLIValidationError,
     FormalCoverageError,
     FormalRunFailed,
     FormalSuiteExecutionError,
@@ -54,7 +55,7 @@ from external_baselines.common.llm_client import (  # noqa: E402
     build_llm_client,
 )
 from external_baselines.common.method_runtime import (  # noqa: E402
-    close_method_runtime,
+    close_method_runtime_safely,
     pipeline_accepts_runtime,
     prepare_method_runtime,
     runtime_cache_scope,
@@ -337,7 +338,7 @@ def resolve_cli_output_paths(args: argparse.Namespace) -> ResolvedOutputPaths:
         return ResolvedOutputPaths(None, layout.prediction_dir, layout.decision_dir)
 
     if pred_arg is None or dec_arg is None:
-        raise SystemExit("Dry run requires --prediction-dir and --decision-dir.")
+        raise CLIValidationError("dry_run_output_paths_incomplete")
     return ResolvedOutputPaths(None, pred_arg, dec_arg)
 
 
@@ -1218,6 +1219,29 @@ def validate_cli_args(args: argparse.Namespace) -> None:
         )
 
 
+def _emit_cli_error(
+    *,
+    execution_stage: str,
+    stage: str,
+    error: str,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "execution_stage": execution_stage,
+                "stage": stage,
+                "formal_result": False,
+                "error": sanitize_error_message(error),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
 def _emit_formal_cli_error(
     exc: FormalRunFailed,
     *,
@@ -1650,6 +1674,7 @@ def _run_decision_suite_impl(
                 parsing_failures = 0
                 schema_failures = 0
                 t0 = time.perf_counter()
+                body_exception: BaseException | None = None
                 try:
                     for scenario in scenarios:
                         usage_before = (
@@ -1715,9 +1740,15 @@ def _run_decision_suite_impl(
                                     f"{prediction_input['case_id']}: {errors}"
                                 )
                         interop_rows.append(interop)
+                except BaseException as exc:
+                    body_exception = exc
+                    raise
                 finally:
                     if runtime is not None and not runtime_is_cached(runtime):
-                        close_method_runtime(runtime)
+                        close_method_runtime_safely(
+                            runtime,
+                            body_exception=body_exception,
+                        )
 
                 pred_path = write_prediction_dir / f"{method_id}.jsonl"
                 write_jsonl(pred_path, interop_rows)
@@ -1985,7 +2016,7 @@ def _run_decision_suite_impl(
             )
         raise
 
-def main(argv: list[str] | None = None) -> None:
+def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Five-method decision comparison suite")
     parser.add_argument("--runner-bundle", required=True)
     parser.add_argument("--method-set", choices=["comparison_suite"], default="comparison_suite")
@@ -2009,6 +2040,25 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Retain formal temporary directories when a formal run fails (debug only).",
     )
+    return parser
+
+
+RECOMMENDED_FORMAL_ARGS = (
+    "--runner-bundle",
+    "bundle",
+    "--method-set",
+    "comparison_suite",
+    "--execution-stage",
+    "formal",
+    "--formal-run-root",
+    "outputs/formal/test_public",
+    "--experiment-manifest",
+    "configs/experiments/controlled_main_table_v1.yaml",
+)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_argument_parser()
     args = parser.parse_args(argv)
     run_id = time.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
 
@@ -2017,6 +2067,12 @@ def main(argv: list[str] | None = None) -> None:
         output_paths = resolve_cli_output_paths(args)
     except FormalRunFailed as exc:
         _emit_formal_cli_error(exc, control_root=None, run_id=run_id)
+    except CLIValidationError as exc:
+        _emit_cli_error(
+            execution_stage=args.execution_stage,
+            stage=exc.stage,
+            error=str(exc),
+        )
 
     prediction_dir = output_paths.prediction_dir
     decision_dir = output_paths.decision_dir
