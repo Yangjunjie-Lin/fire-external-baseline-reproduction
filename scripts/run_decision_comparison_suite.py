@@ -55,6 +55,7 @@ from external_baselines.common.llm_client import (  # noqa: E402
     build_llm_client,
 )
 from external_baselines.common.method_runtime import (  # noqa: E402
+    RuntimeCleanupError,
     close_method_runtime_safely,
     pipeline_accepts_runtime,
     prepare_method_runtime,
@@ -549,7 +550,10 @@ def load_and_validate_frozen_prediction_schema(
 
     from external_baselines.interop.schema import validate_schema_draft202012
 
-    draft_errors = validate_schema_draft202012(payload)
+    draft_errors = validate_schema_draft202012(
+        payload,
+        primary_schema_name=schema_path.name,
+    )
     for code in draft_errors:
         if code == "external_schema_invalid_draft202012":
             errors.append("staged_prediction_schema_invalid_draft202012")
@@ -1424,28 +1428,27 @@ def run_decision_suite(
         prediction_dir=prediction_dir,
         decision_dir=decision_dir,
     ) or (decision_dir.parent.parent / ".formal.control")
-    with runtime_cache_scope():
-        return _run_decision_suite_impl(
-            formal=formal,
-            run_id=run_id,
-            temp_root=temp_root,
-            write_prediction_dir=write_prediction_dir,
-            write_decision_dir=write_decision_dir,
-            layout=layout,
-            control_root=control_root,
-            runner_bundle=runner_bundle,
-            prediction_dir=prediction_dir,
-            decision_dir=decision_dir,
-            execution_stage=execution_stage,
-            limit=limit,
-            experiment_manifest=experiment_manifest,
-            methods=methods,
-            dev_aliases_enabled=dev_aliases_enabled,
-            keep_failed_temp_artifacts=keep_failed_temp_artifacts,
-            formal_run_root=formal_run_root,
-            llm_transport_factory=llm_transport_factory,
-            embedding_backend_factory=embedding_backend_factory,
-        )
+    return _run_decision_suite_impl(
+        formal=formal,
+        run_id=run_id,
+        temp_root=temp_root,
+        write_prediction_dir=write_prediction_dir,
+        write_decision_dir=write_decision_dir,
+        layout=layout,
+        control_root=control_root,
+        runner_bundle=runner_bundle,
+        prediction_dir=prediction_dir,
+        decision_dir=decision_dir,
+        execution_stage=execution_stage,
+        limit=limit,
+        experiment_manifest=experiment_manifest,
+        methods=methods,
+        dev_aliases_enabled=dev_aliases_enabled,
+        keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+        formal_run_root=formal_run_root,
+        llm_transport_factory=llm_transport_factory,
+        embedding_backend_factory=embedding_backend_factory,
+    )
 
 
 def _run_decision_suite_impl(
@@ -1643,170 +1646,202 @@ def _run_decision_suite_impl(
         all_coverage_ok = True
 
         try:
-            for method_id in method_ids:
-                method_config = method_configs[method_id]
-                transport = (
-                    llm_transport_factory(method_id, method_config)
-                    if llm_transport_factory is not None
-                    else None
-                )
-                injected_embedding = (
-                    embedding_backend_factory(method_id, method_config)
-                    if embedding_backend_factory is not None and method_id in EMBEDDING_METHODS
-                    else None
-                )
-                llm = build_llm_client(method_config, transport=transport)
-                pipeline = resolve_pipeline(method_id)
-                runtime = None
-                body_exception: BaseException | None = None
-                interop_rows: list[dict[str, Any]] = []
-                parsing_failures = 0
-                schema_failures = 0
-                t0 = time.perf_counter()
-                try:
-                    runtime = prepare_method_runtime(
-                        method_id,
-                        method_config,
-                        embedding_backend=injected_embedding,
+            with runtime_cache_scope():
+                for method_id in method_ids:
+                    method_config = method_configs[method_id]
+                    transport = (
+                        llm_transport_factory(method_id, method_config)
+                        if llm_transport_factory is not None
+                        else None
                     )
-                    evidence = collect_method_runtime_evidence(
-                        method_id=method_id,
-                        config=method_config,
-                        llm=llm,
-                        runtime=runtime,
+                    injected_embedding = (
+                        embedding_backend_factory(method_id, method_config)
+                        if embedding_backend_factory is not None and method_id in EMBEDDING_METHODS
+                        else None
                     )
-                    method_evidences[method_id] = evidence
-                    accepts_runtime = pipeline_accepts_runtime(pipeline)
-                    for scenario in scenarios:
-                        usage_before = (
-                            llm.usage_snapshot()
-                            if isinstance(llm, UsageTrackingLLMClient)
-                            else TokenUsage()
+                    llm = build_llm_client(method_config, transport=transport)
+                    pipeline = resolve_pipeline(method_id)
+                    runtime = None
+                    body_exception: BaseException | None = None
+                    interop_rows: list[dict[str, Any]] = []
+                    parsing_failures = 0
+                    schema_failures = 0
+                    t0 = time.perf_counter()
+                    try:
+                        runtime = prepare_method_runtime(
+                            method_id,
+                            method_config,
+                            embedding_backend=injected_embedding,
                         )
-                        prediction_input = to_prediction_input(scenario, config=method_config)
-                        assert_no_gold_in_prediction_input(prediction_input)
-                        for forbidden in ("category", "severity", "gold", "expected", "annotation"):
-                            if forbidden in prediction_input:
-                                raise AssertionError(f"{forbidden} leaked into prediction input")
-                        try:
-                            if accepts_runtime and runtime is not None:
-                                out = pipeline(
-                                    prediction_input, config=method_config, llm=llm, runtime=runtime
-                                )
-                            else:
-                                out = pipeline(prediction_input, config=method_config, llm=llm)
-                        except DecisionParseError:
-                            parsing_failures += 1
-                            if formal:
-                                raise
-                            continue
-                        case_usage = (
-                            llm.usage_delta(usage_before)
-                            if isinstance(llm, UsageTrackingLLMClient)
-                            else TokenUsage()
+                        evidence = collect_method_runtime_evidence(
+                            method_id=method_id,
+                            config=method_config,
+                            llm=llm,
+                            runtime=runtime,
                         )
-                        ms = out.setdefault("method_specific", {})
-                        runtime_block = ms.setdefault("runtime", {})
-                        runtime_block.update(
-                            {
-                                "llm_calls": case_usage.llm_calls,
-                                "token_usage": case_usage.to_dict(),
-                            }
-                        )
-                        if ms.get("parsing_failure"):
-                            parsing_failures += 1
-                            if formal:
-                                raise RuntimeError(
-                                    f"Formal parsing failure for {method_id} case "
-                                    f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
-                                )
-                        interop = unified_row_to_interop(out)
-                        interop["case_id"] = prediction_input["case_id"]
-                        interop["method_id"] = method_id
-                        interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
-                        assert_canonical_interop_record(
-                            interop,
-                            dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
-                        )
-                        errors = validate_interop_record(
-                            interop,
-                            schema_path=schema_path,
-                            expected_schema_sha256=schema_sha,
-                        )
-                        if errors:
-                            schema_failures += 1
-                            if formal:
-                                raise RuntimeError(
-                                    f"Schema failure for {method_id} case "
-                                    f"{prediction_input['case_id']}: {errors}"
-                                )
-                        interop_rows.append(interop)
-                except BaseException as exc:
-                    body_exception = exc
-                    raise
-                finally:
-                    if runtime is not None and not runtime_is_cached(runtime):
-                        close_method_runtime_safely(
-                            runtime,
-                            body_exception=body_exception,
-                        )
+                        method_evidences[method_id] = evidence
+                        accepts_runtime = pipeline_accepts_runtime(pipeline)
+                        for scenario in scenarios:
+                            usage_before = (
+                                llm.usage_snapshot()
+                                if isinstance(llm, UsageTrackingLLMClient)
+                                else TokenUsage()
+                            )
+                            prediction_input = to_prediction_input(scenario, config=method_config)
+                            assert_no_gold_in_prediction_input(prediction_input)
+                            for forbidden in ("category", "severity", "gold", "expected", "annotation"):
+                                if forbidden in prediction_input:
+                                    raise AssertionError(f"{forbidden} leaked into prediction input")
+                            try:
+                                if accepts_runtime and runtime is not None:
+                                    out = pipeline(
+                                        prediction_input, config=method_config, llm=llm, runtime=runtime
+                                    )
+                                else:
+                                    out = pipeline(prediction_input, config=method_config, llm=llm)
+                            except DecisionParseError:
+                                parsing_failures += 1
+                                if formal:
+                                    raise
+                                continue
+                            case_usage = (
+                                llm.usage_delta(usage_before)
+                                if isinstance(llm, UsageTrackingLLMClient)
+                                else TokenUsage()
+                            )
+                            ms = out.setdefault("method_specific", {})
+                            runtime_block = ms.setdefault("runtime", {})
+                            runtime_block.update(
+                                {
+                                    "llm_calls": case_usage.llm_calls,
+                                    "token_usage": case_usage.to_dict(),
+                                }
+                            )
+                            if ms.get("parsing_failure"):
+                                parsing_failures += 1
+                                if formal:
+                                    raise RuntimeError(
+                                        f"Formal parsing failure for {method_id} case "
+                                        f"{prediction_input['case_id']}: {ms.get('parsing_errors')}"
+                                    )
+                            interop = unified_row_to_interop(out)
+                            interop["case_id"] = prediction_input["case_id"]
+                            interop["method_id"] = method_id
+                            interop["prediction"]["final_response"]["real_world_execution_allowed"] = False
+                            assert_canonical_interop_record(
+                                interop,
+                                dev_aliases_enabled=bool(method_config.get("dev_aliases_enabled", False)),
+                            )
+                            errors = validate_interop_record(
+                                interop,
+                                schema_path=schema_path,
+                                expected_schema_sha256=schema_sha,
+                            )
+                            if errors:
+                                schema_failures += 1
+                                if formal:
+                                    raise RuntimeError(
+                                        f"Schema failure for {method_id} case "
+                                        f"{prediction_input['case_id']}: {errors}"
+                                    )
+                            interop_rows.append(interop)
+                    except BaseException as exc:
+                        body_exception = exc
+                        raise
+                    finally:
+                        if runtime is not None and not runtime_is_cached(runtime):
+                            close_method_runtime_safely(
+                                runtime,
+                                body_exception=body_exception,
+                            )
 
-                pred_path = write_prediction_dir / f"{method_id}.jsonl"
-                write_jsonl(pred_path, interop_rows)
-                coverage_report = _assert_method_coverage(
-                    case_ids=case_ids,
-                    method_id=method_id,
-                    rows=interop_rows,
-                    formal=formal,
-                )
-                if coverage_report.get("errors"):
-                    all_coverage_ok = False
-                taxonomy_valid = _interop_taxonomy_valid(interop_rows)
-                compliance = method_formal_compliance(
-                    evidence,
-                    formal=formal,
-                    method_id=method_id,
-                    coverage_ok=not coverage_report.get("errors"),
-                    parsing_failures=parsing_failures,
-                    schema_failures=schema_failures,
-                    taxonomy_valid=taxonomy_valid,
-                )
-                method_compliance_reports[method_id] = compliance
-                summary = _write_decision_artifacts(
-                    write_decision_dir,
-                    method_id,
-                    interop_rows,
-                    input_cases_sha256=input_cases_sha,
-                    prediction_schema_sha256=schema_sha,
-                    prediction_file=pred_path,
-                    formal=formal,
-                    coverage_ok=not coverage_report.get("errors"),
-                    runtime_evidence=evidence,
-                    method_compliance=compliance,
-                    execution_stage=execution_stage,
-                )
-                summary["execution_contract"] = {
-                    "execution_stage": execution_stage,
-                    "experiment_manifest_provided": bool(experiment_manifest),
-                    "heuristic_llm_used": bool(evidence.llm_is_smoke),
-                    "smoke_embedding_used": bool(evidence.smoke_fallback_used),
-                    "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
-                    "strict_required_fields": formal,
-                    "canonical_output_only": True,
-                }
-                summary["parsing_failure_count"] = parsing_failures
-                summary["schema_failure_count"] = schema_failures
-                summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
-                write_json(write_decision_dir / method_id / "run_summary.json", summary)
-                suite_summary["method_summaries"][method_id] = summary
-                suite_summary["coverage"][method_id] = coverage_report
-                if not (summary.get("taxonomy_validation") or {}).get("valid", False):
-                    suite_summary["taxonomy_contract"]["all_methods_valid"] = False
-                if formal and (parsing_failures or schema_failures):
-                    raise RuntimeError(
-                        f"Formal run failed for {method_id}: "
-                        f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
+                    pred_path = write_prediction_dir / f"{method_id}.jsonl"
+                    write_jsonl(pred_path, interop_rows)
+                    coverage_report = _assert_method_coverage(
+                        case_ids=case_ids,
+                        method_id=method_id,
+                        rows=interop_rows,
+                        formal=formal,
                     )
+                    if coverage_report.get("errors"):
+                        all_coverage_ok = False
+                    taxonomy_valid = _interop_taxonomy_valid(interop_rows)
+                    compliance = method_formal_compliance(
+                        evidence,
+                        formal=formal,
+                        method_id=method_id,
+                        coverage_ok=not coverage_report.get("errors"),
+                        parsing_failures=parsing_failures,
+                        schema_failures=schema_failures,
+                        taxonomy_valid=taxonomy_valid,
+                    )
+                    method_compliance_reports[method_id] = compliance
+                    summary = _write_decision_artifacts(
+                        write_decision_dir,
+                        method_id,
+                        interop_rows,
+                        input_cases_sha256=input_cases_sha,
+                        prediction_schema_sha256=schema_sha,
+                        prediction_file=pred_path,
+                        formal=formal,
+                        coverage_ok=not coverage_report.get("errors"),
+                        runtime_evidence=evidence,
+                        method_compliance=compliance,
+                        execution_stage=execution_stage,
+                    )
+                    summary["execution_contract"] = {
+                        "execution_stage": execution_stage,
+                        "experiment_manifest_provided": bool(experiment_manifest),
+                        "heuristic_llm_used": bool(evidence.llm_is_smoke),
+                        "smoke_embedding_used": bool(evidence.smoke_fallback_used),
+                        "dev_aliases_enabled": bool(method_config.get("dev_aliases_enabled", False)),
+                        "strict_required_fields": formal,
+                        "canonical_output_only": True,
+                    }
+                    summary["parsing_failure_count"] = parsing_failures
+                    summary["schema_failure_count"] = schema_failures
+                    summary["wall_time_sec"] = round(time.perf_counter() - t0, 4)
+                    write_json(write_decision_dir / method_id / "run_summary.json", summary)
+                    suite_summary["method_summaries"][method_id] = summary
+                    suite_summary["coverage"][method_id] = coverage_report
+                    if not (summary.get("taxonomy_validation") or {}).get("valid", False):
+                        suite_summary["taxonomy_contract"]["all_methods_valid"] = False
+                    if formal and (parsing_failures or schema_failures):
+                        raise RuntimeError(
+                            f"Formal run failed for {method_id}: "
+                            f"parsing_failures={parsing_failures} schema_failures={schema_failures}"
+                        )
+        except RuntimeCleanupError as exc:
+            if formal:
+                suite_summary["formal_compliance"] = compute_suite_formal_compliance(
+                    formal=formal,
+                    experiment_manifest_provided=experiment_manifest is not None,
+                    limit_used=limit is not None,
+                    preflight_ok=bool(preflight.get("ok")),
+                    coverage_ok=False,
+                    method_evidences=method_evidences,
+                    method_compliance=method_compliance_reports,
+                    dev_aliases_enabled=bool(dev_aliases_enabled and not formal),
+                    shared_generation_identity_match=bool(
+                        (preflight.get("shared_generation_identity") or {}).get("ok")
+                    ),
+                    ekell_prompt_bundle_valid=bool(preflight.get("ekell_prompt_bundle_valid")),
+                    method_ids=method_ids,
+                    phase="pre_publish",
+                    **integrity_flags,
+                )
+                _raise_formal_failure(
+                    message=str(exc),
+                    stage="runtime_cleanup",
+                    run_id=run_id,
+                    control_root=control_root,
+                    suite_summary=suite_summary,
+                    temp_root=temp_root,
+                    keep_failed_temp_artifacts=keep_failed_temp_artifacts,
+                    method_id=None,
+                    error_type=type(exc).__name__,
+                )
+            raise
         except Exception as exc:
             if formal:
                 suite_summary["formal_compliance"] = compute_suite_formal_compliance(

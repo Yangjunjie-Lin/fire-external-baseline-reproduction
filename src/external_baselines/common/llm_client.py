@@ -10,8 +10,11 @@ from typing import Any, Protocol
 from external_baselines.common.strict_config_types import (
     read_exact_bool,
     read_exact_int,
+    read_exact_nonempty_string,
     read_exact_number,
+    read_identity_string,
     require_exact_bool,
+    require_exact_nonempty_string,
     require_exact_number,
 )
 
@@ -414,12 +417,41 @@ def _maybe_load_dotenv() -> None:
     load_local_environment()
 
 
+def _read_llm_model_version(llm_cfg: dict[str, Any], *, paper_final: bool, default: str | None = None) -> str | None:
+    if paper_final:
+        if "model_version" in llm_cfg:
+            return read_exact_nonempty_string(
+                llm_cfg,
+                "model_version",
+                field="llm.model_version",
+            )
+        if "version" in llm_cfg:
+            return read_exact_nonempty_string(
+                llm_cfg,
+                "version",
+                field="llm.model_version",
+            )
+        return read_exact_nonempty_string(
+            llm_cfg,
+            "model_version",
+            field="llm.model_version",
+        )
+    return str(llm_cfg.get("model_version") or llm_cfg.get("version") or default or "") or None
+
+
 def resolve_siliconflow_model(llm_cfg: dict[str, Any], *, paper_final: bool = False) -> tuple[str, str]:
     """Resolve SiliconFlow model. YAML is the formal authority.
 
     Returns (model, model_source).
     """
-    yaml_model = str(llm_cfg.get("model") or "").strip()
+    if paper_final:
+        yaml_model = read_exact_nonempty_string(
+            llm_cfg,
+            "model",
+            field="llm.model",
+        )
+    else:
+        yaml_model = str(llm_cfg.get("model") or "").strip()
     allow_override = read_exact_bool(
         llm_cfg,
         "allow_model_env_override",
@@ -442,8 +474,14 @@ def resolve_siliconflow_model(llm_cfg: dict[str, Any], *, paper_final: bool = Fa
 
 def resolve_api_key(llm_cfg: dict[str, Any]) -> tuple[str, str]:
     """Resolve API key from configured env names. Never logs the key value."""
+    configured_env = ""
+    if "api_key_env" in llm_cfg:
+        configured_env = require_exact_nonempty_string(
+            llm_cfg["api_key_env"],
+            field="llm.api_key_env",
+        )
     candidates = [
-        str(llm_cfg.get("api_key_env") or ""),
+        configured_env,
         "SILICONFLOW_API_KEY",
         "LLM_API_KEY",
         "OPENAI_API_KEY",
@@ -590,13 +628,25 @@ def build_llm_client(
 
     load_local_environment()
     llm_cfg = _llm_cfg(config)
-    provider = str(llm_cfg.get("provider", "heuristic")).lower()
-    model = str(llm_cfg.get("model", "local-deterministic-heuristic-smoke-test"))
     paper_final = read_exact_bool(
         config or {},
         "paper_final",
         field="paper_final",
         default=False,
+    )
+    provider = read_identity_string(
+        llm_cfg,
+        "provider",
+        field="llm.provider",
+        formal=paper_final,
+        default="" if paper_final else "heuristic",
+    ).lower()
+    model = read_identity_string(
+        llm_cfg,
+        "model",
+        field="llm.model",
+        formal=paper_final,
+        default="" if paper_final else "local-deterministic-heuristic-smoke-test",
     )
     model_source = "yaml_config"
 
@@ -657,15 +707,31 @@ def build_llm_client(
         )
         inner: Any = OpenAIChatClient(
             model=model,
-            api_key_env=str(llm_cfg.get("api_key_env", "SILICONFLOW_API_KEY")),
-            base_url_env=str(llm_cfg.get("base_url_env", "SILICONFLOW_BASE_URL")),
+            api_key_env=read_identity_string(
+                llm_cfg,
+                "api_key_env",
+                field="llm.api_key_env",
+                formal=paper_final,
+                default="SILICONFLOW_API_KEY",
+            ),
+            base_url_env=read_identity_string(
+                llm_cfg,
+                "base_url_env",
+                field="llm.base_url_env",
+                formal=paper_final,
+                default="SILICONFLOW_BASE_URL",
+            ),
             provider="siliconflow",
             timeout_sec=timeout_sec,
             connect_timeout_sec=connect_timeout,
             read_timeout_sec=read_timeout,
             write_timeout_sec=write_timeout,
             max_retries=max_retries,
-            model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or model),
+            model_version=_read_llm_model_version(
+                llm_cfg,
+                paper_final=paper_final,
+                default=model,
+            ),
             default_base_url=DEFAULT_SILICONFLOW_BASE_URL,
             enable_thinking=(
                 require_exact_bool(
@@ -680,8 +746,20 @@ def build_llm_client(
     elif provider in {"openai", "openai_chat", "openai-compatible", "deepseek", "qwen"}:
         inner = OpenAIChatClient(
             model=model,
-            api_key_env=str(llm_cfg.get("api_key_env", "OPENAI_API_KEY")),
-            base_url_env=str(llm_cfg.get("base_url_env", "OPENAI_BASE_URL")),
+            api_key_env=read_identity_string(
+                llm_cfg,
+                "api_key_env",
+                field="llm.api_key_env",
+                formal=paper_final,
+                default="OPENAI_API_KEY",
+            ),
+            base_url_env=read_identity_string(
+                llm_cfg,
+                "base_url_env",
+                field="llm.base_url_env",
+                formal=paper_final,
+                default="OPENAI_BASE_URL",
+            ),
             provider=provider,
             timeout_sec=read_exact_number(
                 llm_cfg,
@@ -698,7 +776,11 @@ def build_llm_client(
                 default=2,
                 minimum=0,
             ),
-            model_version=str(llm_cfg.get("model_version") or llm_cfg.get("version") or "") or None,
+            model_version=_read_llm_model_version(
+                llm_cfg,
+                paper_final=paper_final,
+                default=model,
+            ),
         )
         setattr(inner, "model_source", "yaml_config")
     else:
@@ -726,18 +808,30 @@ def llm_runtime_snapshot(llm: Any | None = None) -> dict[str, Any]:
 
 def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = None) -> dict[str, Any]:
     llm_cfg = _llm_cfg(config)
-    provider = str(llm_cfg.get("provider") or getattr(llm, "provider", "heuristic"))
     paper_final = read_exact_bool(
         config or {},
         "paper_final",
         field="paper_final",
         default=False,
     )
+    provider = read_identity_string(
+        llm_cfg,
+        "provider",
+        field="llm.provider",
+        formal=paper_final,
+        default="" if paper_final else str(getattr(llm, "provider", "heuristic")),
+    )
     model_source = "yaml_config"
     if provider.lower() in {"siliconflow", "silicon-flow"}:
         model, model_source = resolve_siliconflow_model(llm_cfg, paper_final=paper_final)
     else:
-        model = str(llm_cfg.get("model") or getattr(llm, "model", "unknown"))
+        model = read_identity_string(
+            llm_cfg,
+            "model",
+            field="llm.model",
+            formal=paper_final,
+            default="" if paper_final else str(getattr(llm, "model", "unknown")),
+        )
         model_source = str(getattr(llm, "model_source", None) or getattr(getattr(llm, "inner", None), "model_source", None) or "yaml_config")
     if llm is not None:
         model = str(getattr(llm, "model", None) or getattr(getattr(llm, "inner", None), "model", None) or model)
@@ -750,7 +844,15 @@ def llm_config_summary(config: dict[str, Any] | None = None, llm: Any | None = N
     return {
         "provider": provider,
         "model": model,
-        "model_version": llm_cfg.get("model_version") or llm_cfg.get("version") or getattr(inner, "model_version", None) or model,
+        "model_version": (
+            _read_llm_model_version(
+                llm_cfg,
+                paper_final=True,
+                default=str(getattr(inner, "model_version", None) or model),
+            )
+            if paper_final
+            else llm_cfg.get("model_version") or llm_cfg.get("version") or getattr(inner, "model_version", None) or model
+        ),
         "model_source": model_source,
         "temperature": float(llm_cfg.get("temperature", 0.0)),
         "top_p": llm_cfg.get("top_p"),

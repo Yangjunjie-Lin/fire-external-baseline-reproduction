@@ -143,7 +143,7 @@ python scripts/run_interop_baselines.py \
   --manifest outputs/interop/comparison_suite_v1/run_manifest.json
 ```
 
-Formal stage forbids `--limit`, `--allow-partial`, `--override-readiness-lock`, and `--enable-dev-aliases`. The decision comparison suite resolves manifest method entries before config merge, uses a two-phase formal compliance state machine (`pre_publish_compliance_passed` → transactional publish → `formal_result`), **exits nonzero on any formal failure**, validates fail-closed Runner Bundle integrity with **separate producer-declared checksum and consumer-computed hash**, enforces one shared generation-model identity across all five methods (including temperature/top_p/max_tokens/seed/enable_thinking at runtime), requires persisted directory indexes for Dense and E-KELL with explicit `actual_embedding_used=true` and `smoke_fallback_used=false`, unified preflight of all five methods before any LLM initialization, rollback-safe transactional publish of predictions, decisions, and **`suite_summary.json`**, and derives `formal_compliance.formal_result` from runtime evidence rather than stage labels. Dry-run method summaries always report `formal_result=false` but may exit zero.
+Formal stage forbids `--limit`, `--allow-partial`, `--override-readiness-lock`, and `--enable-dev-aliases`. The decision comparison suite resolves manifest method entries before config merge, uses a two-phase formal compliance state machine (`pre_publish_compliance_passed` → runtime cleanup → staged validation → transactional publish → `formal_result`), **exits nonzero on any formal failure**, validates fail-closed Runner Bundle integrity with **separate producer-declared checksum and consumer-computed hash**, enforces one shared generation-model identity across all five methods (including finite temperature/top_p/max_tokens/seed/enable_thinking at runtime), requires persisted directory indexes for Dense and E-KELL with explicit `actual_embedding_used=true` and `smoke_fallback_used=false`, unified preflight of all five methods before any LLM initialization, rollback-safe transactional publish of predictions, decisions, and **`suite_summary.json`**, and derives `formal_compliance.formal_result` from runtime evidence rather than stage labels. Dry-run method summaries always report `formal_result=false` but may exit zero.
 
 ## B. Main table only (3 methods)
 
@@ -213,14 +213,17 @@ outputs/formal/
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (drive-qualified, root-relative, UNC, device namespace, traversal, symlink escape) and must resolve inside the staged run root.
-- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`.
+- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; invalid schemas fail closed through `FormalSuiteExecutionError`. Meta-schema and record validation use the same no-network `$ref` policy: only internal fragments and registered local schema resources are accepted.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
-- Formal safety-critical numeric parameters require exact YAML/JSON numeric types; string-to-number and boolean-to-number coercion are rejected.
+- Formal safety-critical numeric parameters require exact finite YAML/JSON numeric types; string-to-number, boolean-to-number, NaN, and Infinity coercion are rejected.
+- Formal model, backend, version, environment-variable, prompt, index, and manifest identity fields require exact non-empty YAML strings without implicit string coercion.
+- The frozen Runner Bundle is the sole Formal schema authority. Local schema copies are development snapshots only; local snapshot mismatch is diagnostic.
+- Malformed nested prediction/runtime values produce structured schema errors without leaking raw `AttributeError` or `TypeError`.
 - Missing optional boolean fields may use documented defaults, but explicitly setting those fields to `null` is invalid.
 - Engineering release-readiness gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.
 - Formal 推荐使用 `--formal-run-root`；提供 formal run root 时无需额外 `--prediction-dir` / `--decision-dir`。
 - Legacy 双目录模式仅允许共享同一 run root；`jsonschema` 为核心运行依赖；Hybrid wrapper 不拥有共享 Dense runtime 的关闭权。
-- Dense/E-KELL 由 suite cache scope 关闭；Hybrid wrapper 在方法结束时关闭；cleanup 失败不会掩盖主流程异常。
+- Dense/E-KELL are closed by the suite cache scope before staged validation and transactional publish; Hybrid wrappers close at method end. Runtime cleanup failure does not mask a primary suite error, but with no primary error it prevents commit.
 - Release readiness 区分 engineering / empirical；engineering gate 失败退出非零；empirical pending 不阻断工程 CI。
 - Formal YAML 安全字段要求精确 boolean 与正整数 dimension，拒绝 string/float/bool 隐式转换。
 - Engineering readiness 与 empirical/paper readiness 分离；CI 不声称远程 workflow 已通过。

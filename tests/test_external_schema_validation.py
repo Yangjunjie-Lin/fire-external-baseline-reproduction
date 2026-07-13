@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import socket
+import urllib.request
+
 from external_baselines.common.checksums import sha256_file
 from external_baselines.interop.schema import (
     SCHEMA_PATH,
@@ -9,6 +12,7 @@ from external_baselines.interop.schema import (
     load_schema,
     validate_against_jsonschema,
     validate_interop_record,
+    validate_schema_draft202012,
 )
 
 
@@ -89,3 +93,151 @@ def test_schema_sha_matches_when_expected_correct():
     assert validate_against_jsonschema(
         record, schema_path=SCHEMA_PATH, expected_schema_sha256=digest
     ) == []
+
+
+def _schema_with_ref(ref: str, *, keyword: str = "$ref") -> dict:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        keyword: ref,
+    }
+
+
+def test_schema_allows_internal_fragment_ref():
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {"record": {"type": "object"}},
+        "$ref": "#/$defs/record",
+    }
+    assert validate_schema_draft202012(schema) == []
+    assert validate_against_jsonschema({}, schema=schema) == []
+
+
+def test_schema_rejects_https_ref():
+    errors = validate_schema_draft202012(_schema_with_ref("https://example.com/schema.json"))
+    assert any("external_schema_remote_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_http_ref():
+    errors = validate_schema_draft202012(_schema_with_ref("http://example.com/schema.json"))
+    assert any("external_schema_remote_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_file_uri_ref():
+    errors = validate_schema_draft202012(_schema_with_ref("file:///tmp/schema.json"))
+    assert any("external_schema_file_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_absolute_posix_file_ref():
+    errors = validate_schema_draft202012(_schema_with_ref("/tmp/schema.json"))
+    assert any("external_schema_file_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_windows_drive_ref():
+    errors = validate_schema_draft202012(_schema_with_ref(r"C:\tmp\schema.json"))
+    assert any("external_schema_file_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_unc_ref():
+    errors = validate_schema_draft202012(_schema_with_ref(r"\\server\share\schema.json"))
+    assert any("external_schema_file_reference_forbidden" in err for err in errors)
+
+
+def test_schema_rejects_unregistered_relative_ref():
+    errors = validate_schema_draft202012(_schema_with_ref("other_schema.json"))
+    assert any("external_schema_reference_not_registered" in err for err in errors)
+
+
+def test_schema_rejects_remote_dynamic_ref():
+    errors = validate_schema_draft202012(
+        _schema_with_ref("https://example.com/dynamic.json", keyword="$dynamicRef")
+    )
+    assert any("external_schema_remote_reference_forbidden" in err for err in errors)
+
+
+def test_schema_validation_does_not_call_network(monkeypatch):
+    def _blocked(*_args, **_kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked)
+    try:
+        import requests
+    except ImportError:
+        requests = None
+    if requests is not None:
+        monkeypatch.setattr(requests, "get", _blocked)
+
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {"record": {"type": "object"}},
+        "$ref": "#/$defs/record",
+    }
+    assert validate_against_jsonschema({}, schema=schema) == []
+
+
+def test_meta_and_record_validation_use_same_ref_policy():
+    schema = _schema_with_ref("https://example.com/schema.json")
+    meta_errors = validate_schema_draft202012(schema)
+    record_errors = validate_against_jsonschema({}, schema=schema)
+    assert any("external_schema_remote_reference_forbidden" in err for err in meta_errors)
+    assert any("external_schema_remote_reference_forbidden" in err for err in record_errors)
+
+
+def test_lightweight_validator_rejects_non_object_record():
+    errors = validate_interop_record([], require_external_schema=False)  # type: ignore[arg-type]
+    assert "invalid:record_must_be_object" in errors
+
+
+def test_lightweight_validator_rejects_prediction_list():
+    record = baseline_row_to_interop(_sample_row())
+    record["prediction"] = ["invalid"]
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:prediction_must_be_object" in errors
+
+
+def test_lightweight_validator_rejects_final_response_string():
+    record = baseline_row_to_interop(_sample_row())
+    record["prediction"]["final_response"] = "invalid"
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:prediction.final_response_must_be_object" in errors
+
+
+def test_lightweight_validator_rejects_runtime_list():
+    record = baseline_row_to_interop(_sample_row())
+    record["runtime"] = ["invalid"]
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:runtime_must_be_object" in errors
+
+
+def test_lightweight_validator_rejects_recommended_actions_object():
+    record = baseline_row_to_interop(_sample_row())
+    record["prediction"]["recommended_actions"] = {"bad": True}
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:prediction.recommended_actions_must_be_array" in errors
+
+
+def test_lightweight_validator_rejects_blocked_actions_string():
+    record = baseline_row_to_interop(_sample_row())
+    record["prediction"]["blocked_actions"] = "bad"
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:prediction.blocked_actions_must_be_array" in errors
+
+
+def test_lightweight_validator_rejects_non_boolean_human_review():
+    record = baseline_row_to_interop(_sample_row())
+    record["prediction"]["human_review_required"] = "false"
+    errors = validate_interop_record(record, require_external_schema=False)
+    assert "invalid:prediction.human_review_required_must_be_boolean" in errors
+
+
+def test_lightweight_validator_never_raises_attribute_error():
+    malformed = [
+        [],
+        {"prediction": []},
+        {"prediction": {"final_response": "bad"}},
+        {"runtime": []},
+    ]
+    for record in malformed:
+        errors = validate_interop_record(record, require_external_schema=False)  # type: ignore[arg-type]
+        assert isinstance(errors, list)
+        assert errors

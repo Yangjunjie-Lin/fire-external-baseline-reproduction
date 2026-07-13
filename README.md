@@ -267,15 +267,15 @@ python scripts/validate_formal_config.py \
 **Formal comparison suite compliance (offline-tested):**
 
 - Manifest method entries are resolved before config merge (`get_method_entry` → `build_method_config`).
-- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` already present at first rename (cleanup warnings do not invalidate commit).
+- Two-phase compliance: `pre_publish_compliance_passed` (no publish required) → method/cache runtime close → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` already present at first rename. Runtime cleanup failures stop before staged validation and commit.
 - Formal temp artifacts are created **only after** static validation and five-method preflight pass.
 - Formal diagnostics and failure records live in an external **control root** (`.<run-root-name>.control/`) and never mutate the published run root before commit.
 - Formal publication uses a **single same-filesystem run root** (`--formal-run-root`); commit is one directory rename. **No core formal artifact is rewritten after commit.**
 - `--formal-run-root` is the recommended Formal output interface and automatically derives `predictions/` and `decisions/` beneath one immutable run root. Legacy `--prediction-dir` / `--decision-dir` remain supported only when both paths share that same Formal root.
 - `jsonschema` is a core runtime dependency because frozen Draft 2020-12 schema validation is mandatory for Formal execution.
-- Dense and E-KELL runtimes are cache-owned. Hybrid wrappers are method-owned (`owns_dense_runtime=False`) and do not close their shared Dense dependency. Runtime cleanup failures cannot mask the original suite failure.
+- Dense and E-KELL runtimes are cache-owned and close before staged validation and transactional publish. Hybrid wrappers are method-owned (`owns_dense_runtime=False`) and do not close their shared Dense dependency. Runtime cleanup failures cannot mask the original suite failure and prevent commit when there is no primary suite failure.
 - Release-readiness distinguishes engineering readiness from empirical readiness. Engineering gate failures return a non-zero exit code; pending real experiments do not fail engineering CI.
-- Formal YAML safety fields require exact YAML booleans and positive integer dimensions without string, float, or boolean coercion.
+- Formal numeric parameters require finite exact YAML numbers; NaN and positive or negative infinity are forbidden. Formal model, backend, version, environment-variable, prompt, index, and manifest identity fields require exact non-empty YAML strings without implicit string coercion.
 - Publish phases: **PREPARE** (backup) → **STAGED PACKAGE** (final `suite_summary.json`, `run_manifest.json`, preflight copy) → **COMMIT** (rename temp run root) → **CLEANUP** (best-effort backup removal; failures write warnings/receipts to control root only).
 - Post-commit cleanup or receipt failures are non-destructive warnings; committed runs are never rolled back.
 - Immutable `suite_summary.json` records staged compliance and atomic publication success but does **not** pre-declare backup cleanup outcome (`transactional_cleanup_complete: null`). Actual cleanup status lives in external `publish_receipt.json`.
@@ -286,9 +286,11 @@ python scripts/validate_formal_config.py \
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL (`embedding_backend_factory`); Direct LLM and BM25 never request an embedding backend.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.
 - Manifest artifact paths are validated with both POSIX and Windows path semantics (including drive-qualified, root-relative, UNC, and device-namespace forms) and must resolve inside the staged run root.
-- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation.
+- The frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation. Meta-schema and record validation share one no-network `$ref` policy: only internal fragments and registered local schema resources are accepted.
 - Formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata.
-- Formal safety-critical numeric parameters require exact YAML/JSON numeric types; string-to-number and boolean-to-number coercion are rejected.
+- Formal safety-critical numeric parameters require exact finite YAML/JSON numeric types; string-to-number, boolean-to-number, NaN, and Infinity coercion are rejected.
+- The frozen Runner Bundle is the sole Formal schema authority. Local schema copies are development snapshots only; local snapshot mismatch is diagnostic and does not invalidate an otherwise valid frozen Bundle.
+- Malformed nested prediction/runtime values produce structured schema errors and do not leak raw `AttributeError` or `TypeError`.
 - Missing optional boolean fields may use documented defaults, but explicitly setting those fields to `null` is invalid.
 - Release-readiness engineering gates are structural repository checks; behavioral correctness is established by pytest, staged tamper tests, offline Formal E2E, and externally observed CI results.
 - Runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects.

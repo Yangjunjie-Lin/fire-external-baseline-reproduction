@@ -232,6 +232,54 @@ methods:
         load_experiment_manifest(path)
 
 
+def test_manifest_rejects_numeric_shared_model_config(tmp_path):
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        """
+experiment_id: t
+shared_model_config: 123
+methods:
+  - method_id: direct_llm
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="shared_model_config.*exact YAML string"):
+        load_experiment_manifest(path)
+
+
+def test_manifest_rejects_boolean_method_id(tmp_path):
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: true
+    config: configs/methods/direct_llm.yaml
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="methods\\[0\\]\\.method_id.*exact YAML string"):
+        load_experiment_manifest(path)
+
+
+def test_manifest_rejects_non_string_method_config(tmp_path):
+    path = tmp_path / "exp.yaml"
+    path.write_text(
+        """
+experiment_id: t
+shared_model_config: configs/deterministic_heuristic_smoke.yaml
+methods:
+  - method_id: direct_llm
+    config: false
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="methods\\[0\\]\\.config.*exact YAML string"):
+        load_experiment_manifest(path)
+
+
 def test_run_interop_rejects_multi_config():
     import runpy
     import sys

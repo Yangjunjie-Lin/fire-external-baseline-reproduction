@@ -9,8 +9,11 @@ outputs or from target-system Safety Checker logic.
 """
 
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urldefrag, urlsplit
 
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.guards import method_leaderboard_eligibility
@@ -386,12 +389,17 @@ def baseline_row_to_interop(row: dict[str, Any], *, bundle_checksum: str | None 
 def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
     """Smoke-level structural checks used when jsonschema is unavailable."""
     errors: list[str] = []
+    if not isinstance(record, dict):
+        return ["invalid:record_must_be_object"]
     if record.get("schema_version") != "firebench-interop-v1":
         errors.append("missing_or_invalid:schema_version")
     for key in ("case_id", "method_id", "prediction", "runtime", "provenance", "method_metadata"):
         if key not in record:
             errors.append(f"missing:{key}")
-    pred = record.get("prediction") or {}
+    pred = record.get("prediction")
+    if not isinstance(pred, dict):
+        errors.append("invalid:prediction_must_be_object")
+        pred = {}
     for key in (
         "risk_signals",
         "risk_level",
@@ -405,32 +413,83 @@ def _lightweight_validate_interop_record(record: dict[str, Any]) -> list[str]:
     ):
         if key not in pred:
             errors.append(f"missing:prediction.{key}")
-    fr = pred.get("final_response") or {}
+    fr = pred.get("final_response")
+    if not isinstance(fr, dict):
+        errors.append("invalid:prediction.final_response_must_be_object")
+        fr = {}
     for key in ("status", "text", "citations", "real_world_execution_allowed"):
         if key not in fr:
             errors.append(f"missing:prediction.final_response.{key}")
     if fr.get("real_world_execution_allowed") is not False:
         errors.append("invalid:real_world_execution_allowed_must_be_false")
+    if "human_review_required" in pred and type(pred.get("human_review_required")) is not bool:
+        errors.append("invalid:prediction.human_review_required_must_be_boolean")
     gate = pred.get("final_decision_gate")
     if gate not in {None, "allow_response", "await_human_confirmation", "block_response", "unknown"}:
         errors.append(f"invalid:final_decision_gate:{gate}")
     status = fr.get("status")
     if status not in {None, "provided", "awaiting_human_confirmation", "blocked", "not_applicable", "unknown"}:
         errors.append(f"invalid:final_response.status:{status}")
-    for item in pred.get("blocked_actions") or []:
+
+    for field in (
+        "risk_signals",
+        "recommended_actions",
+        "blocked_actions",
+        "missing_confirmations",
+        "evidence_refs",
+    ):
+        value = pred.get(field)
+        if not isinstance(value, list):
+            errors.append(f"invalid:prediction.{field}_must_be_array")
+    citations = fr.get("citations")
+    if not isinstance(citations, list):
+        errors.append("invalid:prediction.final_response.citations_must_be_array")
+
+    blocked_actions = pred.get("blocked_actions") if isinstance(pred.get("blocked_actions"), list) else []
+    for item in blocked_actions:
         if not isinstance(item, str):
             errors.append("invalid:blocked_actions_must_be_string_ids")
             break
-    runtime = record.get("runtime") or {}
+
+    for object_field in ("runtime", "provenance", "method_metadata"):
+        value = record.get(object_field)
+        if not isinstance(value, dict):
+            errors.append(f"invalid:{object_field}_must_be_object")
+
+    runtime = record.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
     for key in ("latency_ms", "llm_calls", "token_usage", "cost"):
         if key not in runtime:
             errors.append(f"missing:runtime.{key}")
-    for action in pred.get("recommended_actions") or []:
+    latency = runtime.get("latency_ms")
+    if latency is not None:
+        if type(latency) not in (int, float) or not math.isfinite(float(latency)):
+            errors.append("invalid:runtime.latency_ms_must_be_finite_number_or_null")
+    llm_calls = runtime.get("llm_calls")
+    if type(llm_calls) is not int or llm_calls < 0:
+        errors.append("invalid:runtime.llm_calls_must_be_non_negative_integer")
+    if "token_usage" in runtime and not isinstance(runtime.get("token_usage"), dict):
+        errors.append("invalid:runtime.token_usage_must_be_object")
+    cost = runtime.get("cost")
+    if cost is not None and not isinstance(cost, dict):
+        if type(cost) not in (int, float) or not math.isfinite(float(cost)):
+            errors.append("invalid:runtime.cost_must_be_number_object_or_null")
+
+    recommended_actions = (
+        pred.get("recommended_actions")
+        if isinstance(pred.get("recommended_actions"), list)
+        else []
+    )
+    for action in recommended_actions:
         if not isinstance(action, dict) or "action_id" not in action or "text" not in action:
             errors.append("invalid:recommended_actions_item")
             break
         if "priority" not in action or "evidence_refs" not in action:
             errors.append("invalid:recommended_actions_missing_priority_or_evidence_refs")
+            break
+        if not isinstance(action.get("evidence_refs"), list):
+            errors.append("invalid:recommended_actions.evidence_refs_must_be_array")
             break
     return errors
 
@@ -453,7 +512,140 @@ SCHEMA_DRAFT_2020_12_ALIASES = frozenset({
 })
 
 
-def validate_schema_draft202012(payload: dict[str, Any]) -> list[str]:
+class ExternalSchemaReferenceError(ValueError):
+    """Raised when a frozen schema references an unregistered external resource."""
+
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def collect_schema_refs(
+    value: Any,
+    *,
+    path: str = "$",
+) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f"{path}.{key}"
+            if key in {"$ref", "$dynamicRef"} and isinstance(item, str):
+                refs.append((item_path, item))
+            refs.extend(collect_schema_refs(item, path=item_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            refs.extend(collect_schema_refs(item, path=f"{path}[{index}]"))
+    return refs
+
+
+def _registered_schema_bases(
+    *,
+    primary_schema: dict[str, Any],
+    primary_schema_name: str | None = None,
+) -> set[str]:
+    bases: set[str] = set()
+    for value in (
+        primary_schema.get("$id"),
+        primary_schema_name,
+        SCHEMA_PATH.name,
+        SCHEMA_DRAFT_PATH.name,
+    ):
+        if isinstance(value, str) and value.strip():
+            bases.add(urldefrag(value.strip()).url)
+    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
+        if candidate.exists():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            schema_id = payload.get("$id")
+            if isinstance(schema_id, str) and schema_id.strip():
+                bases.add(urldefrag(schema_id.strip()).url)
+    return bases
+
+
+def _schema_ref_error(ref: str, *, registered_bases: set[str]) -> str | None:
+    ref = ref.strip()
+    if not ref:
+        return "external_schema_reference_not_registered"
+    if ref.startswith("#"):
+        return None
+
+    base = urldefrag(ref).url
+    if base in registered_bases:
+        return None
+
+    if ref.startswith(("\\\\", "//")) or _WINDOWS_DRIVE_RE.match(ref) or re.match(r"^[A-Za-z]:", ref):
+        return "external_schema_file_reference_forbidden"
+    if ref.startswith("/"):
+        return "external_schema_file_reference_forbidden"
+
+    split = urlsplit(ref)
+    if split.scheme:
+        if split.scheme.lower() == "file":
+            return "external_schema_file_reference_forbidden"
+        return "external_schema_remote_reference_forbidden"
+
+    return "external_schema_reference_not_registered"
+
+
+def validate_schema_reference_policy(
+    payload: dict[str, Any],
+    *,
+    primary_schema_name: str | None = None,
+) -> list[str]:
+    registered_bases = _registered_schema_bases(
+        primary_schema=payload,
+        primary_schema_name=primary_schema_name,
+    )
+    errors: list[str] = []
+    for path, ref in collect_schema_refs(payload):
+        code = _schema_ref_error(ref, registered_bases=registered_bases)
+        if code is not None:
+            errors.append(f"{code}:{path}")
+    return errors
+
+
+def build_no_network_schema_registry(
+    *,
+    primary_schema: dict[str, Any],
+    primary_schema_name: str | None = None,
+) -> Any:
+    from referencing import Registry
+    from referencing.jsonschema import DRAFT202012
+
+    registry = Registry()
+
+    def _add(schema: dict[str, Any], *names: str | None) -> None:
+        nonlocal registry
+        resource = DRAFT202012.create_resource(schema)
+        for name in names:
+            if isinstance(name, str) and name.strip():
+                registry = registry.with_resource(name.strip(), resource)
+
+    _add(
+        primary_schema,
+        primary_schema.get("$id") if isinstance(primary_schema.get("$id"), str) else None,
+        primary_schema_name,
+    )
+    for candidate in (SCHEMA_PATH, SCHEMA_DRAFT_PATH):
+        if candidate.exists():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            _add(
+                payload,
+                payload.get("$id") if isinstance(payload.get("$id"), str) else None,
+                candidate.name,
+            )
+    return registry
+
+
+def validate_schema_draft202012(
+    payload: dict[str, Any],
+    *,
+    primary_schema_name: str | None = None,
+) -> list[str]:
     """Return structured errors when payload is not a valid Draft 2020-12 schema."""
     try:
         from jsonschema import Draft202012Validator
@@ -466,8 +658,18 @@ def validate_schema_draft202012(payload: dict[str, Any]) -> list[str]:
         return ["staged_prediction_schema_unsupported_draft"]
 
     try:
-        validator = Draft202012Validator(payload)
+        ref_errors = validate_schema_reference_policy(
+            payload,
+            primary_schema_name=primary_schema_name,
+        )
+        if ref_errors:
+            return ref_errors
         Draft202012Validator.check_schema(payload)
+        registry = build_no_network_schema_registry(
+            primary_schema=payload,
+            primary_schema_name=primary_schema_name,
+        )
+        validator = Draft202012Validator(payload, registry=registry)
         list(validator.iter_errors({}))
     except SchemaError:
         return ["external_schema_invalid_draft202012"]
@@ -540,7 +742,11 @@ def validate_against_jsonschema(
         if actual != expected_schema_sha256:
             return [f"schema_hash_mismatch:expected={expected_schema_sha256} actual={actual}"]
 
-    meta_errors = validate_schema_draft202012(loaded)
+    primary_schema_name = Path(schema_path).name if schema_path else None
+    meta_errors = validate_schema_draft202012(
+        loaded,
+        primary_schema_name=primary_schema_name,
+    )
     if meta_errors:
         return meta_errors
 
@@ -548,7 +754,10 @@ def validate_against_jsonschema(
         from jsonschema.exceptions import SchemaError
         from referencing.exceptions import NoSuchResource, Unresolvable
 
-        registry = _interop_schema_registry()
+        registry = build_no_network_schema_registry(
+            primary_schema=loaded,
+            primary_schema_name=primary_schema_name,
+        )
         validator = Draft202012Validator(loaded, registry=registry)
     except SchemaError:
         return ["external_schema_invalid_draft202012"]
@@ -584,7 +793,10 @@ def validate_interop_record(
     Prefer Draft 2020-12 jsonschema against the Runner Bundle schema (or local
     firebench-interop-v1 schema). Lightweight checks remain for smoke fixtures.
     """
-    light = _lightweight_validate_interop_record(record)
+    try:
+        light = _lightweight_validate_interop_record(record)
+    except Exception:  # noqa: BLE001
+        return ["lightweight_schema_validator_failed"]
     if require_external_schema or schema is not None or schema_path is not None:
         return light + validate_against_jsonschema(
             record,

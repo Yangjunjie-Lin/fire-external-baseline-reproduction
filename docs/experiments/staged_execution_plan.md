@@ -175,21 +175,25 @@ Requires:
 - **no** `--enable-dev-aliases`
 - frozen Runner Bundle identity validated against freeze manifest (fail-closed; complete `runner_bundle` block with bundle/input/schema/corpus SHA256)
 - manifest method entries resolved before per-method config merge
-- two-phase formal compliance: pre-publish checks (no publish required) → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` at first rename (cleanup warnings do not invalidate commit)
+- two-phase formal compliance: pre-publish checks (no publish required) → method/cache runtime close → staged final summary/manifest in temp root → transactional publish commit → `formal_result=true` at first rename; runtime cleanup failure stops before staged validation and commit
 - formal temp root created only after static validation and five-method preflight; preflight/failure records written to external `.control/` directory (never mutates published run root before commit)
 - single same-filesystem `--formal-run-root` publication (one directory rename); **no core formal artifact rewritten after commit**
 - new freeze manifests use explicit `runner_bundle` block (legacy top-level checksum fields opt-in only)
 - one shared generation-model identity across all five comparison methods
 - persisted Dense/E-KELL **directory** indexes (built via `build_comparison_indexes.py`; no legacy JSON or runtime rebuild; manifest must explicitly record real embedding)
 - five-method **preflight** passes before any LLM call (external control root + copy under `diagnostics/` in staged run root; includes E-KELL prompt files)
-- **transactional** publish: staged package validation (reparsed predictions against frozen Runner Bundle schema + supplemental artifact hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
+- **transactional** publish: runtime cleanup → staged package validation (reparsed predictions against frozen Runner Bundle schema + supplemental artifact hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
 - Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata
 - runtime caches are scoped to one comparison-suite invocation and cannot leak across runs
 - embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
 - run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts
 - manifest artifact paths are validated with both POSIX and Windows path semantics and must resolve inside the staged run root
-- the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation
+- the frozen prediction schema is parsed, checksum-validated, and verified as a Draft 2020-12 JSON Schema once before staged record validation; meta-schema and record validation share one no-network `$ref` policy
 - formal embedding identity validation requires exact JSON boolean flags and positive JSON integer dimensions in persisted index metadata
+- formal numeric parameters require exact finite YAML/JSON numeric types; NaN and Infinity are rejected
+- formal model/backend/version/environment-variable/prompt/index/manifest identity fields require exact non-empty YAML strings without implicit coercion
+- the frozen Runner Bundle is the sole Formal schema authority; local schema snapshots are diagnostics only
+- malformed nested prediction/runtime values produce structured schema errors without raw type exceptions
 - runtime caches are scoped through a context-local suite cache with explicit close ownership; concurrent comparison suites in the same process do not share or clear each other's runtime objects
 - GitHub Actions covers Python 3.10–3.12 with offline compile, lint, tests, hygiene, formal-config validation, E-KELL fidelity audit, package build, reproducibility dry-run, and release-readiness checks
 - offline Formal E2E injects only LLM transport and embedding-compute boundaries

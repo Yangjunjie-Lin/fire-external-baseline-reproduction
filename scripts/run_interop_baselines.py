@@ -261,12 +261,12 @@ def main(argv: list[str] | None = None) -> None:
 
     local_schema_sha = sha256_file(SCHEMA_PATH) if SCHEMA_PATH.exists() else None
     bundle_schema_sha = bundle.get("prediction_schema_sha256")
-    if experiment.get("paper_final") and bundle_schema_sha and local_schema_sha:
-        if bundle_schema_sha != local_schema_sha:
-            raise SystemExit(
-                "Formal mode schema hash mismatch between Runner Bundle prediction_schema "
-                f"and local development schema: bundle={bundle_schema_sha} local={local_schema_sha}"
-            )
+    local_schema_snapshot_match = (
+        bundle_schema_sha == local_schema_sha
+        if bundle_schema_sha and local_schema_sha
+        else None
+    )
+    schema_authority = "runner_bundle"
 
     method_entries = enabled_methods(
         experiment,
@@ -403,6 +403,9 @@ def main(argv: list[str] | None = None) -> None:
         if isinstance(bundle.get("corpus_manifest"), dict)
         else None,
         "prediction_schema_checksum": bundle.get("prediction_schema_sha256") or sha256_file(SCHEMA_PATH),
+        "schema_authority": schema_authority,
+        "local_schema_snapshot_match": local_schema_snapshot_match,
+        "local_schema_snapshot_authoritative": False,
         "freeze_status": experiment.get("freeze_status"),
         "freeze_manifest": experiment.get("freeze_manifest"),
         "llm": {
@@ -457,6 +460,10 @@ def main(argv: list[str] | None = None) -> None:
                 "corpus_dir": bundle.get("corpus_dir"),
                 "formal_manifest_files_used": bundle.get("formal_manifest_files_used"),
                 "prediction_schema_sha256": bundle.get("prediction_schema_sha256"),
+                "schema_authority": schema_authority,
+                "local_schema_snapshot_sha256": local_schema_sha,
+                "local_schema_snapshot_match": local_schema_snapshot_match,
+                "local_schema_snapshot_authoritative": False,
             },
             "checksum_validation": checksum_report,
             "hash_verification": hash_report,

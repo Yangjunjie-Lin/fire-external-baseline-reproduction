@@ -11,10 +11,12 @@ from external_baselines.common.formal_config_validator import (
     _validate_exact_bool,
     _validate_positive_dimension,
     validate_dense_config_for_real_run,
+    validate_ekell_vector_for_formal,
     validate_hybrid_config_for_real_run,
     validate_llm_for_formal,
     validate_method_config,
 )
+from external_baselines.common.strict_config_types import exact_number
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -325,3 +327,113 @@ def test_missing_allow_model_env_override_defaults_false():
     config = _formal_llm_config()
     del config["llm"]["allow_model_env_override"]
     validate_llm_for_formal(config, validation_stage="formal")
+
+
+def test_exact_number_rejects_nan():
+    with pytest.raises(ValueError, match="field.*finite number"):
+        exact_number(float("nan"), field="field")
+
+
+def test_exact_number_rejects_positive_infinity():
+    with pytest.raises(ValueError, match="field.*finite number"):
+        exact_number(float("inf"), field="field")
+
+
+def test_exact_number_rejects_negative_infinity():
+    with pytest.raises(ValueError, match="field.*finite number"):
+        exact_number(float("-inf"), field="field")
+
+
+def test_exact_number_accepts_finite_int():
+    assert exact_number(1, field="field") == 1.0
+
+
+def test_exact_number_accepts_finite_float():
+    assert exact_number(0.25, field="field") == 0.25
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", float("nan")),
+        ("top_p", float("nan")),
+        ("timeout_sec", float("inf")),
+        ("timeout_sec", float("-inf")),
+    ],
+)
+def test_formal_llm_rejects_nonfinite_numbers(field, value):
+    config = _formal_llm_config(**{field: value})
+    with pytest.raises(FormalConfigError, match=fr"llm\.{field}.*finite number"):
+        validate_llm_for_formal(config, validation_stage="formal")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rrf_k", float("nan")),
+        ("lexical_weight", float("inf")),
+        ("dense_weight", float("-inf")),
+    ],
+)
+def test_formal_hybrid_rejects_nonfinite_numbers(field, value):
+    with pytest.raises(FormalConfigError, match=fr"hybrid_rag\.{field}.*finite number"):
+        validate_hybrid_config_for_real_run(
+            _hybrid_config(**{field: value}),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "pattern"),
+    [
+        ("provider", 123, "llm.provider.*exact YAML string"),
+        ("model", True, "llm.model.*exact YAML string"),
+        ("model_version", 2026, "llm.model_version.*exact YAML string"),
+        ("api_key_env", False, "llm.api_key_env.*exact YAML string"),
+        ("model", "   ", "llm.model.*non-empty string"),
+    ],
+)
+def test_formal_llm_rejects_non_string_identity_fields(field, value, pattern):
+    config = _formal_llm_config(**{field: value})
+    with pytest.raises(FormalConfigError, match=pattern):
+        validate_llm_for_formal(config, validation_stage="formal")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "pattern"),
+    [
+        ("backend", 123, "dense_rag.backend.*exact YAML string"),
+        ("model_name", False, "dense_rag.model_name.*exact YAML string"),
+        ("model_version", 2026, "dense_rag.model_version.*exact YAML string"),
+        ("index_path", {"path": "idx"}, "dense_rag.index_path.*exact YAML string"),
+    ],
+)
+def test_formal_dense_rejects_non_string_identity_fields(field, value, pattern):
+    with pytest.raises(FormalConfigError, match=pattern):
+        validate_dense_config_for_real_run(
+            _dense_config(**{field: value}),
+            allow_placeholders=True,
+            validation_stage="template",
+        )
+
+
+def test_formal_rejects_non_string_ekell_prompt_dir():
+    config = _controlled_ekell_config()
+    config["ekell_style"]["prompt_dir"] = 123
+    with pytest.raises(FormalConfigError, match="ekell_style.prompt_dir.*exact YAML string"):
+        validate_ekell_vector_for_formal(config, allow_placeholders=True)
+
+
+def test_formal_accepts_exact_nonempty_identity_strings():
+    validate_llm_for_formal(_formal_llm_config(), validation_stage="formal")
+    validate_dense_config_for_real_run(
+        _dense_config(),
+        allow_placeholders=True,
+        validation_stage="template",
+    )
+    validate_hybrid_config_for_real_run(
+        _hybrid_config(),
+        allow_placeholders=True,
+        validation_stage="template",
+    )

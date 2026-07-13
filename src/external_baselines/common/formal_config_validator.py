@@ -15,7 +15,13 @@ from typing import Any
 
 from external_baselines.common.experiment_manifest import build_method_config, load_experiment_manifest
 from external_baselines.common.io import read_yaml
-from external_baselines.common.strict_config_types import MISSING, exact_bool, exact_int, exact_number
+from external_baselines.common.strict_config_types import (
+    MISSING,
+    exact_bool,
+    exact_int,
+    exact_nonempty_string,
+    exact_number,
+)
 from external_baselines.method_registry import (
     canonicalize_method_id,
     comparison_suite_methods,
@@ -201,6 +207,18 @@ def _validate_exact_number(
         raise FormalConfigError(str(exc)) from exc
 
 
+def _validate_exact_nonempty_string(
+    value: Any,
+    *,
+    field: str,
+    allow_placeholders: bool = False,  # noqa: ARG001 - placeholder checks run after exact type validation.
+) -> str:
+    try:
+        return exact_nonempty_string(value, field=field)
+    except ValueError as exc:
+        raise FormalConfigError(str(exc)) from exc
+
+
 def _validate_llm_numeric_params_for_formal(llm: dict[str, Any]) -> None:
     _validate_exact_number(
         llm["temperature"],
@@ -286,11 +304,35 @@ def validate_llm_for_formal(
         raise FormalConfigError(
             "paper_final=true requires llm.allow_model_env_override=false"
         )
-    provider = str(llm.get("provider", "heuristic")).lower().strip()
-    model = str(llm.get("model") or "").strip()
-    model_version = str(llm.get("model_version") or llm.get("version") or "").strip()
-    api_key_env = str(llm.get("api_key_env") or "").strip()
     stage = str(validation_stage or "formal").strip().lower()
+    provider = _validate_exact_nonempty_string(
+        llm["provider"] if "provider" in llm else "heuristic",
+        field="llm.provider",
+        allow_placeholders=allow_placeholders,
+    ).lower()
+    model = _validate_exact_nonempty_string(
+        llm.get("model"),
+        field="llm.model",
+        allow_placeholders=allow_placeholders,
+    )
+    model_version = _validate_exact_nonempty_string(
+        llm["model_version"] if "model_version" in llm else llm.get("version"),
+        field="llm.model_version",
+        allow_placeholders=allow_placeholders,
+    )
+    api_key_env = ""
+    if "api_key_env" in llm:
+        api_key_env = _validate_exact_nonempty_string(
+            llm["api_key_env"],
+            field="llm.api_key_env",
+            allow_placeholders=allow_placeholders,
+        )
+    if "base_url_env" in llm:
+        _validate_exact_nonempty_string(
+            llm["base_url_env"],
+            field="llm.base_url_env",
+            allow_placeholders=allow_placeholders,
+        )
 
     if provider in SMOKE_LLM_PROVIDERS:
         raise FormalConfigError(f"Formal config rejects smoke LLM provider: {provider!r}")
@@ -323,12 +365,20 @@ def validate_dense_config_for_real_run(
     dense = config.get("dense_rag") or {}
     if not isinstance(dense, dict) or not dense:
         raise FormalConfigError("Formal Dense RAG requires explicit dense_rag block.")
-    backend = str(dense.get("backend", "smoke")).casefold().replace("-", "_")
+    backend = _validate_exact_nonempty_string(
+        dense["backend"] if "backend" in dense else "smoke",
+        field="dense_rag.backend",
+        allow_placeholders=allow_placeholders,
+    ).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal Dense RAG rejects smoke/hash backend: {backend!r}")
     _validate_exact_bool(dense.get("reject_smoke", False), field="dense_rag.reject_smoke", required=True)
     for field in ("model_name", "model_version"):
-        value = dense.get(field)
+        value = _validate_exact_nonempty_string(
+            dense.get(field),
+            field=f"dense_rag.{field}",
+            allow_placeholders=allow_placeholders,
+        )
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal Dense RAG requires dense_rag.{field} (non-placeholder).")
     dim = dense.get("dimension", dense.get("dim"))
@@ -353,10 +403,16 @@ def validate_dense_config_for_real_run(
             required=False,
         )
     index_path = dense.get("index_path")
+    if index_path:
+        index_path = _validate_exact_nonempty_string(
+            index_path,
+            field="dense_rag.index_path",
+            allow_placeholders=allow_placeholders,
+        )
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Dense RAG requires non-placeholder dense_rag.index_path.")
     if validation_stage != "template" and not allow_placeholders:
-        path = _resolve_repo_path(str(index_path))
+        path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
         if validation_stage == "formal":
@@ -366,8 +422,14 @@ def validate_dense_config_for_real_run(
                 validate_dense_index_directory(
                     path,
                     load_embeddings=False,
-                    expected_model_name=str(dense.get("model_name") or ""),
-                    expected_model_version=str(dense.get("model_version") or ""),
+                    expected_model_name=_validate_exact_nonempty_string(
+                        dense.get("model_name"),
+                        field="dense_rag.model_name",
+                    ),
+                    expected_model_version=_validate_exact_nonempty_string(
+                        dense.get("model_version"),
+                        field="dense_rag.model_version",
+                    ),
                     expected_backend=backend,
                     expected_dimension=validated_dim,
                     expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
@@ -387,18 +449,55 @@ def validate_hybrid_config_for_real_run(
     dense = config.get("dense_rag") or {}
     if not isinstance(hybrid, dict) or not hybrid:
         raise FormalConfigError("Formal Hybrid RAG requires explicit hybrid_rag block.")
-    lexical = str(hybrid.get("lexical_method") or "bm25").lower()
+    lexical = _validate_exact_nonempty_string(
+        hybrid["lexical_method"] if "lexical_method" in hybrid else "bm25",
+        field="hybrid_rag.lexical_method",
+        allow_placeholders=allow_placeholders,
+    ).lower()
     if lexical != "bm25":
         raise FormalConfigError(f"Formal Hybrid RAG requires lexical_method=bm25 (got {lexical!r}).")
-    backend = str(
-        dense.get("backend") or hybrid.get("dense_method") or "smoke"
+    if dense.get("backend"):
+        backend_source = dense.get("backend")
+        backend_field = "dense_rag.backend"
+    elif hybrid.get("dense_method"):
+        backend_source = hybrid.get("dense_method")
+        backend_field = "hybrid_rag.dense_method"
+    else:
+        backend_source = "smoke"
+        backend_field = "hybrid_rag.dense_method"
+    backend = _validate_exact_nonempty_string(
+        backend_source,
+        field=backend_field,
+        allow_placeholders=allow_placeholders,
     ).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal Hybrid RAG rejects smoke/hash dense backend: {backend!r}")
     hybrid_reject = hybrid.get("reject_smoke", dense.get("reject_smoke", False))
     _validate_exact_bool(hybrid_reject, field="hybrid_rag.reject_smoke", required=True)
-    model_name = dense.get("model_name") or hybrid.get("dense_model_name")
-    model_version = dense.get("model_version") or hybrid.get("dense_model_version")
+    if dense.get("model_name"):
+        model_name = _validate_exact_nonempty_string(
+            dense.get("model_name"),
+            field="dense_rag.model_name",
+            allow_placeholders=allow_placeholders,
+        )
+    else:
+        model_name = _validate_exact_nonempty_string(
+            hybrid.get("dense_model_name"),
+            field="hybrid_rag.dense_model_name",
+            allow_placeholders=allow_placeholders,
+        )
+    if dense.get("model_version"):
+        model_version = _validate_exact_nonempty_string(
+            dense.get("model_version"),
+            field="dense_rag.model_version",
+            allow_placeholders=allow_placeholders,
+        )
+    else:
+        model_version = _validate_exact_nonempty_string(
+            hybrid.get("dense_model_version"),
+            field="hybrid_rag.dense_model_version",
+            allow_placeholders=allow_placeholders,
+        )
     for field, value in (("model_name", model_name), ("model_version", model_version)):
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal Hybrid RAG requires dense {field} (non-placeholder).")
@@ -434,16 +533,28 @@ def validate_hybrid_config_for_real_run(
     if candidate_pool < top_k:
         raise FormalConfigError("Formal Hybrid RAG requires candidate_pool >= top_k.")
     index_path = dense.get("index_path") or hybrid.get("index_path")
+    if index_path:
+        index_path = _validate_exact_nonempty_string(
+            index_path,
+            field="dense_rag.index_path" if dense.get("index_path") else "hybrid_rag.index_path",
+            allow_placeholders=allow_placeholders,
+        )
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Hybrid RAG requires non-placeholder dense index_path.")
     if validation_stage != "template" and not allow_placeholders:
-        path = _resolve_repo_path(str(index_path))
+        path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Hybrid RAG index_path does not exist: {index_path}")
     if dense_config is not None:
         other = dense_config.get("dense_rag") or {}
         other_path = other.get("index_path")
-        if other_path and index_path and str(Path(str(other_path))) != str(Path(str(index_path))):
+        if other_path:
+            other_path = _validate_exact_nonempty_string(
+                other_path,
+                field="dense_rag.index_path",
+                allow_placeholders=allow_placeholders,
+            )
+        if other_path and index_path and str(Path(other_path)) != str(Path(index_path)):
             raise FormalConfigError("Hybrid and Dense must share the same dense index_path.")
         for field in ("backend", "model_name", "model_version"):
             left = dense.get(field) or hybrid.get(f"dense_{field}" if field != "backend" else "dense_method")
@@ -462,12 +573,20 @@ def validate_ekell_vector_for_formal(
     vector = config.get("ekell_vector") or (config.get("ekell_style") or {}).get("vector") or {}
     if not isinstance(vector, dict) or not vector:
         raise FormalConfigError("Formal E-KELL config requires explicit ekell_vector block.")
-    backend = str(vector.get("backend", "smoke")).casefold().replace("-", "_")
+    backend = _validate_exact_nonempty_string(
+        vector["backend"] if "backend" in vector else "smoke",
+        field="ekell_vector.backend",
+        allow_placeholders=allow_placeholders,
+    ).casefold().replace("-", "_")
     if backend in SMOKE_EMBEDDING_BACKENDS:
         raise FormalConfigError(f"Formal E-KELL rejects smoke/hash backend: {backend!r}")
     _validate_exact_bool(vector.get("reject_smoke", False), field="ekell_vector.reject_smoke", required=True)
     for field in ("model_name", "model_version"):
-        value = vector.get(field)
+        value = _validate_exact_nonempty_string(
+            vector.get(field),
+            field=f"ekell_vector.{field}",
+            allow_placeholders=allow_placeholders,
+        )
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal E-KELL requires ekell_vector.{field} (non-placeholder).")
     _validate_positive_dimension(
@@ -479,10 +598,25 @@ def validate_ekell_vector_for_formal(
     if not index_path:
         if not allow_placeholders:
             raise FormalConfigError("Formal E-KELL requires a persisted directory index_path.")
-    elif _is_placeholder(index_path) and not allow_placeholders:
+    else:
+        index_path = _validate_exact_nonempty_string(
+            index_path,
+            field="ekell_vector.index_path",
+            allow_placeholders=allow_placeholders,
+        )
+        if _is_placeholder(index_path) and not allow_placeholders:
+            raise FormalConfigError("Formal E-KELL requires a persisted directory index_path.")
+    if index_path and _is_placeholder(index_path) and not allow_placeholders:
         raise FormalConfigError("Formal E-KELL requires a persisted directory index_path.")
+    ekell_style = config.get("ekell_style") or {}
+    if "prompt_dir" in ekell_style:
+        _validate_exact_nonempty_string(
+            ekell_style["prompt_dir"],
+            field="ekell_style.prompt_dir",
+            allow_placeholders=allow_placeholders,
+        )
     if not allow_placeholders and index_path and not _is_placeholder(index_path):
-        path = _resolve_repo_path(str(index_path))
+        path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal E-KELL index_path does not exist: {index_path}")
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
@@ -492,8 +626,14 @@ def validate_ekell_vector_for_formal(
                 path,
                 load_embeddings=False,
                 expected_backend=backend,
-                expected_model_name=str(vector.get("model_name") or ""),
-                expected_model_version=str(vector.get("model_version") or ""),
+                expected_model_name=_validate_exact_nonempty_string(
+                    vector.get("model_name"),
+                    field="ekell_vector.model_name",
+                ),
+                expected_model_version=_validate_exact_nonempty_string(
+                    vector.get("model_version"),
+                    field="ekell_vector.model_version",
+                ),
                 expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
                 require_real_embedding=True,
             )
@@ -674,7 +814,11 @@ def validate_experiment_manifest(
             "copy the template to a non-.example file first."
         )
 
-    run_mode = str(raw.get("run_mode", "formal")).lower()
+    run_mode = _validate_exact_nonempty_string(
+        raw["run_mode"] if "run_mode" in raw else "formal",
+        field="run_mode",
+        allow_placeholders=allow_placeholders,
+    ).lower()
     if run_mode != "formal":
         errors.append(f"run_mode must be 'formal' for paper-facing manifest (got {run_mode!r})")
 
@@ -696,7 +840,11 @@ def validate_experiment_manifest(
         if type(flag) is not bool or flag is not True:
             errors.append(f"{key} must be true for formal manifest.")
 
-    freeze_status = str(raw.get("freeze_status", "")).lower()
+    freeze_status = _validate_exact_nonempty_string(
+        raw.get("freeze_status"),
+        field="freeze_status",
+        allow_placeholders=allow_placeholders,
+    ).lower()
     if freeze_status in {"paper_ready", "empirically_validated"}:
         errors.append(
             f"freeze_status {freeze_status!r} is not a valid config freeze state; "
@@ -715,7 +863,12 @@ def validate_experiment_manifest(
         if not freeze_path or _is_placeholder(freeze_path):
             errors.append("formal validation requires freeze_manifest path.")
         else:
-            freeze_file = _resolve_repo_path(str(freeze_path))
+            freeze_path = _validate_exact_nonempty_string(
+                freeze_path,
+                field="freeze_manifest",
+                allow_placeholders=allow_placeholders,
+            )
+            freeze_file = _resolve_repo_path(freeze_path)
             if not freeze_file.is_file():
                 errors.append(f"freeze_manifest file not found: {freeze_path}")
             else:
@@ -731,7 +884,15 @@ def validate_experiment_manifest(
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"freeze_manifest validation failed: {exc}")
 
-    shared = str(raw.get("shared_model_config") or "")
+    shared = (
+        _validate_exact_nonempty_string(
+            raw.get("shared_model_config"),
+            field="shared_model_config",
+            allow_placeholders=allow_placeholders,
+        )
+        if raw.get("shared_model_config") is not None
+        else ""
+    )
     if not shared:
         errors.append("shared_model_config is required.")
     elif "smoke" in shared.lower() or "heuristic" in shared.lower():
@@ -751,11 +912,21 @@ def validate_experiment_manifest(
     expected_main = list(main_table_methods())
     pf_expected = list(paper_fidelity_methods())
 
-    declared_main = [canonicalize_method_id(str(m)) for m in (raw.get("main_table_methods") or [])]
-    declared_pf = [canonicalize_method_id(str(m)) for m in (raw.get("paper_fidelity_methods") or [])]
-    declared_supp = [canonicalize_method_id(str(m)) for m in (raw.get("supplemental_methods") or [])]
+    declared_main = [
+        canonicalize_method_id(_validate_exact_nonempty_string(m, field="main_table_methods[]"))
+        for m in (raw.get("main_table_methods") or [])
+    ]
+    declared_pf = [
+        canonicalize_method_id(_validate_exact_nonempty_string(m, field="paper_fidelity_methods[]"))
+        for m in (raw.get("paper_fidelity_methods") or [])
+    ]
+    declared_supp = [
+        canonicalize_method_id(_validate_exact_nonempty_string(m, field="supplemental_methods[]"))
+        for m in (raw.get("supplemental_methods") or [])
+    ]
     declared_comparison = [
-        canonicalize_method_id(str(m)) for m in (raw.get("comparison_suite_methods") or [])
+        canonicalize_method_id(_validate_exact_nonempty_string(m, field="comparison_suite_methods[]"))
+        for m in (raw.get("comparison_suite_methods") or [])
     ]
 
     if method_set_name == "comparison_suite":
@@ -798,7 +969,13 @@ def validate_experiment_manifest(
         if not isinstance(entry, dict):
             errors.append(f"Invalid method entry: {entry!r}")
             continue
-        mid = canonicalize_method_id(str(entry.get("method_id") or ""))
+        mid = canonicalize_method_id(
+            _validate_exact_nonempty_string(
+                entry.get("method_id"),
+                field="methods[].method_id",
+                allow_placeholders=allow_placeholders,
+            )
+        )
         if mid in seen_ids:
             errors.append(f"Duplicate method_id in manifest: {mid}")
         seen_ids.add(mid)
@@ -823,7 +1000,16 @@ def validate_experiment_manifest(
         if method_set_name == "comparison_suite" and mid in COMPARISON_FORMAL_METHOD_IDS:
             should_validate = True
         if should_validate:
-            cfg_path = str(entry.get("config") or entry.get("method_config") or "")
+            cfg_raw = entry["config"] if "config" in entry else entry.get("method_config")
+            cfg_path = (
+                _validate_exact_nonempty_string(
+                    cfg_raw,
+                    field=f"{mid}.config",
+                    allow_placeholders=allow_placeholders,
+                )
+                if cfg_raw is not None
+                else ""
+            )
             if not cfg_path:
                 errors.append(f"Formal method {mid} missing config path.")
             else:
@@ -867,10 +1053,10 @@ def validate_experiment_manifest(
             errors.append(f"hybrid_rag/dense_rag identity: {exc}")
 
     enabled_main = [
-        canonicalize_method_id(str(e.get("method_id")))
+        canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id"))
         for e in methods
         if isinstance(e, dict) and e.get("enabled", True)
-        and canonicalize_method_id(str(e.get("method_id") or "")) in expected_main
+        and canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id")) in expected_main
     ]
     if enabled_main and sorted(declared_main) != sorted(enabled_main):
         errors.append(
@@ -879,10 +1065,10 @@ def validate_experiment_manifest(
         )
 
     enabled_pf = [
-        canonicalize_method_id(str(e.get("method_id")))
+        canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id"))
         for e in methods
         if isinstance(e, dict) and e.get("enabled", True)
-        and canonicalize_method_id(str(e.get("method_id") or "")) in pf_expected
+        and canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id")) in pf_expected
     ]
     if enabled_pf and declared_pf != pf_expected:
         errors.append(f"paper_fidelity_methods must be exactly {pf_expected} (got {declared_pf})")

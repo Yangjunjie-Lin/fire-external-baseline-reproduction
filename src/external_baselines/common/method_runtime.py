@@ -15,6 +15,7 @@ from external_baselines.common.decision_suite_guard import sanitize_error_messag
 from external_baselines.common.strict_config_types import (
     read_exact_bool,
     read_exact_int,
+    read_identity_string,
     require_exact_bool,
 )
 from external_baselines.interop.schema import canonicalize_method_id
@@ -169,9 +170,27 @@ def assert_cached_runtime_compatible(
     config_section: str = "dense_rag",
 ) -> None:
     section = requested_config.get(config_section) or {}
-    configured_backend = str(section.get("backend") or "")
-    configured_model_name = str(section.get("model_name") or "")
-    configured_model_version = str(section.get("model_version") or "unspecified")
+    configured_backend = read_identity_string(
+        section,
+        "backend",
+        field=f"{config_section}.backend",
+        formal=formal,
+        default="",
+    )
+    configured_model_name = read_identity_string(
+        section,
+        "model_name",
+        field=f"{config_section}.model_name",
+        formal=formal,
+        default="",
+    )
+    configured_model_version = read_identity_string(
+        section,
+        "model_version",
+        field=f"{config_section}.model_version",
+        formal=formal,
+        default="unspecified",
+    )
     configured_dimension = resolve_dimension(section, 64)
     manifest = dict(getattr(cached_runtime, "index_manifest", None) or {})
     cached_backend = getattr(cached_runtime, "embedding_backend", None)
@@ -206,16 +225,6 @@ def prepare_dense_runtime(
     dense_cfg = config.get("dense_rag") or {}
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     evidence_path = corpus_dir / "evidence_chunks.jsonl"
-    backend = str(dense_cfg.get("backend", "smoke_hash_embedding"))
-    model_name = str(dense_cfg.get("model_name", "smoke-hash-embedding"))
-    model_version = str(dense_cfg.get("model_version", "v0-smoke"))
-    dim = read_exact_int(
-        dense_cfg,
-        "dimension",
-        field="dense_rag.dimension",
-        default=read_exact_int(dense_cfg, "dim", field="dense_rag.dim", default=64, minimum=1),
-        minimum=1,
-    )
     paper_final = read_exact_bool(config, "paper_final", field="paper_final", default=False)
     if "reject_smoke" in dense_cfg:
         reject_smoke_cfg = require_exact_bool(
@@ -225,6 +234,35 @@ def prepare_dense_runtime(
     else:
         reject_smoke_cfg = False
     reject_smoke = reject_smoke_cfg or paper_final
+    formal_identity = paper_final or reject_smoke
+    backend = read_identity_string(
+        dense_cfg,
+        "backend",
+        field="dense_rag.backend",
+        formal=formal_identity,
+        default="" if formal_identity else "smoke_hash_embedding",
+    )
+    model_name = read_identity_string(
+        dense_cfg,
+        "model_name",
+        field="dense_rag.model_name",
+        formal=formal_identity,
+        default="" if formal_identity else "smoke-hash-embedding",
+    )
+    model_version = read_identity_string(
+        dense_cfg,
+        "model_version",
+        field="dense_rag.model_version",
+        formal=formal_identity,
+        default="" if formal_identity else "v0-smoke",
+    )
+    dim = read_exact_int(
+        dense_cfg,
+        "dimension",
+        field="dense_rag.dimension",
+        default=read_exact_int(dense_cfg, "dim", field="dense_rag.dim", default=64, minimum=1),
+        minimum=1,
+    )
     allow_rebuild = read_exact_bool(
         dense_cfg,
         "allow_index_rebuild",
@@ -233,9 +271,20 @@ def prepare_dense_runtime(
     )
     if paper_final or reject_smoke:
         allow_rebuild = False
-    cache_path = dense_cfg.get("index_path") or str(
-        Path(config.get("paths", {}).get("output_dir", "outputs")) / "dense_index_smoke.json"
-    )
+    if "index_path" in dense_cfg:
+        cache_path = read_identity_string(
+            dense_cfg,
+            "index_path",
+            field="dense_rag.index_path",
+            formal=formal_identity,
+            default="",
+        )
+    elif formal_identity:
+        raise DenseIndexError("dense_rag.index_path is required")
+    else:
+        cache_path = str(
+            Path(config.get("paths", {}).get("output_dir", "outputs")) / "dense_index_smoke.json"
+        )
     corpus_checksum = config.get("corpus_checksum") or (config.get("paths") or {}).get("corpus_checksum")
 
     cache_key_path = str(cache_path)
@@ -430,13 +479,30 @@ def prepare_ekell_runtime(
         )
     else:
         reject_smoke = paper_final
-    index_path = vector_cfg.get("index_path")
-    backend_name = str(vector_cfg.get("backend", "smoke"))
-    model_name = str(
-        vector_cfg.get("model_name")
-        or ("deterministic-hash-smoke" if "smoke" in backend_name or "hash" in backend_name else "")
+    formal_identity = paper_final or reject_smoke
+    backend_name = read_identity_string(
+        vector_cfg,
+        "backend",
+        field="ekell_vector.backend",
+        formal=formal_identity,
+        default="" if formal_identity else "smoke",
     )
-    model_version = str(vector_cfg.get("model_version") or "unspecified")
+    model_name = read_identity_string(
+        vector_cfg,
+        "model_name",
+        field="ekell_vector.model_name",
+        formal=formal_identity,
+        default=""
+        if formal_identity
+        else ("deterministic-hash-smoke" if "smoke" in backend_name or "hash" in backend_name else ""),
+    )
+    model_version = read_identity_string(
+        vector_cfg,
+        "model_version",
+        field="ekell_vector.model_version",
+        formal=formal_identity,
+        default="" if formal_identity else "unspecified",
+    )
     dimension = read_exact_int(
         vector_cfg,
         "dimension",
@@ -444,6 +510,19 @@ def prepare_ekell_runtime(
         default=read_exact_int(vector_cfg, "dim", field="ekell_vector.dim", default=64, minimum=1),
         minimum=1,
     )
+
+    if "index_path" in vector_cfg:
+        index_path = read_identity_string(
+            vector_cfg,
+            "index_path",
+            field="ekell_vector.index_path",
+            formal=formal_identity,
+            default="",
+        )
+    elif formal_identity:
+        raise VectorIndexError("ekell_vector.index_path is required")
+    else:
+        index_path = None
 
     if index_path:
         manifest_checksum = _index_manifest_checksum(str(index_path))
@@ -481,7 +560,7 @@ def prepare_ekell_runtime(
             model=vector_cfg.get("injected_model"),
         )
 
-    index_dir = Path(str(index_path)) if index_path else None
+    index_dir = Path(index_path) if index_path else None
     index_built_during_run = False
     if index_dir and index_dir.is_dir() and (index_dir / "index_manifest.json").is_file():
         retriever = VectorRetriever.from_index_directory(

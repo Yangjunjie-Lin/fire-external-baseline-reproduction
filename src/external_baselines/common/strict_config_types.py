@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 MISSING = object()
@@ -76,6 +77,8 @@ def exact_number(
     if type(value) is bool:
         raise StrictConfigTypeError(f"{field} must be an exact number (got {value!r})")
     number = float(value)
+    if not math.isfinite(number):
+        raise StrictConfigTypeError(f"{field} must be a finite number")
     if minimum is not None:
         if minimum_inclusive and number < minimum:
             raise StrictConfigTypeError(f"{field} must be >= {minimum} (got {number})")
@@ -87,6 +90,22 @@ def exact_number(
         if not maximum_inclusive and number >= maximum:
             raise StrictConfigTypeError(f"{field} must be < {maximum} (got {number})")
     return number
+
+
+def exact_nonempty_string(
+    value: Any,
+    *,
+    field: str,
+    strip: bool = True,
+) -> str:
+    if value is None:
+        raise StrictConfigTypeError(f"{field} must be an exact YAML string")
+    if type(value) is not str:
+        raise StrictConfigTypeError(f"{field} must be an exact YAML string")
+    resolved = value.strip() if strip else value
+    if not resolved:
+        raise StrictConfigTypeError(f"{field} must be a non-empty string")
+    return resolved
 
 
 def require_exact_bool(
@@ -141,6 +160,18 @@ def require_exact_number(
             minimum_inclusive=minimum_inclusive,
             maximum_inclusive=maximum_inclusive,
         )
+    except StrictConfigTypeError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def require_exact_nonempty_string(
+    value: Any,
+    *,
+    field: str,
+    strip: bool = True,
+) -> str:
+    try:
+        return exact_nonempty_string(value, field=field, strip=strip)
     except StrictConfigTypeError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -201,3 +232,40 @@ def read_exact_number(
         minimum_inclusive=minimum_inclusive,
         maximum_inclusive=maximum_inclusive,
     )
+
+
+def read_exact_nonempty_string(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    field: str,
+    default: Any = MISSING,
+    strip: bool = True,
+) -> str:
+    if key not in mapping:
+        if default is MISSING:
+            raise ValueError(f"{field} is required")
+        return require_exact_nonempty_string(default, field=field, strip=strip)
+    return require_exact_nonempty_string(mapping[key], field=field, strip=strip)
+
+
+def read_identity_string(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    field: str,
+    formal: bool,
+    default: str,
+    strip: bool = True,
+) -> str:
+    if formal:
+        return read_exact_nonempty_string(
+            mapping,
+            key,
+            field=field,
+            default=default,
+            strip=strip,
+        )
+    value = mapping.get(key, default)
+    resolved = str(value)
+    return resolved.strip() if strip else resolved

@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from external_baselines.common.strict_config_types import (
+    read_exact_bool,
+    read_exact_nonempty_string,
+    require_exact_bool,
+    require_exact_int,
+    require_exact_number,
+)
+
 GENERATION_IDENTITY_FIELDS = (
     "provider",
     "model",
@@ -36,17 +44,50 @@ class GenerationIdentity:
 
 def extract_generation_identity(config: dict[str, Any]) -> GenerationIdentity:
     llm = config.get("llm") or {}
+    formal = read_exact_bool(config, "paper_final", field="paper_final", default=False)
     seed_raw = llm.get("seed")
-    seed = int(seed_raw) if seed_raw is not None and str(seed_raw).strip() != "" else None
+    if formal:
+        seed = require_exact_int(seed_raw, field="llm.seed")
+        provider = read_exact_nonempty_string(llm, "provider", field="llm.provider")
+        model = read_exact_nonempty_string(llm, "model", field="llm.model")
+        if "model_version" in llm:
+            model_version = read_exact_nonempty_string(
+                llm,
+                "model_version",
+                field="llm.model_version",
+            )
+        else:
+            model_version = read_exact_nonempty_string(
+                llm,
+                "version",
+                field="llm.model_version",
+            )
+        temperature = require_exact_number(llm.get("temperature"), field="llm.temperature")
+        top_p = require_exact_number(llm.get("top_p"), field="llm.top_p")
+        max_tokens = require_exact_int(llm.get("max_tokens"), field="llm.max_tokens")
+        enable_thinking = (
+            require_exact_bool(llm["enable_thinking"], field="llm.enable_thinking")
+            if "enable_thinking" in llm
+            else False
+        )
+    else:
+        seed = int(seed_raw) if seed_raw is not None and str(seed_raw).strip() != "" else None
+        provider = str(llm.get("provider") or "")
+        model = str(llm.get("model") or "")
+        model_version = str(llm.get("model_version") or llm.get("version") or "")
+        temperature = float(llm.get("temperature") if llm.get("temperature") is not None else 0.0)
+        top_p = float(llm.get("top_p") if llm.get("top_p") is not None else 1.0)
+        max_tokens = int(llm.get("max_tokens") if llm.get("max_tokens") is not None else 0)
+        enable_thinking = bool(llm.get("enable_thinking", False))
     return GenerationIdentity(
-        provider=str(llm.get("provider") or ""),
-        model=str(llm.get("model") or ""),
-        model_version=str(llm.get("model_version") or llm.get("version") or ""),
-        temperature=float(llm.get("temperature") if llm.get("temperature") is not None else 0.0),
-        top_p=float(llm.get("top_p") if llm.get("top_p") is not None else 1.0),
-        max_tokens=int(llm.get("max_tokens") if llm.get("max_tokens") is not None else 0),
+        provider=provider,
+        model=model,
+        model_version=model_version,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         seed=seed,
-        enable_thinking=bool(llm.get("enable_thinking", False)),
+        enable_thinking=enable_thinking,
     )
 
 

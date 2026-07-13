@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.io import load_config, read_json, read_yaml
+from external_baselines.common.strict_config_types import require_exact_nonempty_string
 from external_baselines.method_registry import (
     canonicalize_method_id,
     comparison_suite_methods,
@@ -50,6 +51,20 @@ def _method_enabled(entry: dict[str, Any], *, index: int) -> bool:
     return raw_enabled
 
 
+def _manifest_string(raw: dict[str, Any], key: str, *, default: str | None = None) -> str:
+    if key not in raw:
+        if default is None:
+            raise ValueError(f"Experiment manifest requires {key}")
+        return default
+    return require_exact_nonempty_string(raw[key], field=key)
+
+
+def _optional_manifest_string(raw: dict[str, Any], key: str) -> str | None:
+    if key not in raw or raw[key] is None:
+        return None
+    return require_exact_nonempty_string(raw[key], field=key)
+
+
 def get_method_entry(
     manifest: dict[str, Any],
     method_id: str,
@@ -79,9 +94,7 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Experiment manifest must be a mapping: {path}")
 
-    shared_model = raw.get("shared_model_config")
-    if not shared_model:
-        raise ValueError("Experiment manifest requires shared_model_config")
+    shared_model = _manifest_string(raw, "shared_model_config")
 
     methods = raw.get("methods")
     if not isinstance(methods, list) or not methods:
@@ -94,18 +107,34 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     for index, entry in enumerate(methods):
         if isinstance(entry, str):
             entry = {"method_id": entry}
-        if not isinstance(entry, dict) or not entry.get("method_id"):
+        if not isinstance(entry, dict) or "method_id" not in entry:
             raise ValueError(f"Invalid method entry in experiment manifest: {entry}")
-        method_id = canonicalize_method_id(str(entry["method_id"]))
+        method_id = canonicalize_method_id(
+            require_exact_nonempty_string(
+                entry["method_id"],
+                field=f"methods[{index}].method_id",
+            )
+        )
         if entry.get("paper_table_role"):
-            role = str(entry["paper_table_role"])
+            role = require_exact_nonempty_string(
+                entry["paper_table_role"],
+                field=f"methods[{index}].paper_table_role",
+            )
         elif method_id in MAIN_TABLE_METHODS:
             role = "main_table"
         elif method_id in PAPER_FIDELITY_METHODS:
             role = "paper_fidelity"
         else:
             role = "supplemental_extended"
-        method_config_path = entry.get("config") or entry.get("method_config")
+        if "config" in entry:
+            method_config_path = entry["config"]
+        else:
+            method_config_path = entry.get("method_config")
+        if method_config_path is not None:
+            method_config_path = require_exact_nonempty_string(
+                method_config_path,
+                field=f"methods[{index}].config",
+            )
         resolved.append({
             "method_id": method_id,
             "config": method_config_path,
@@ -115,26 +144,26 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
 
     return {
         "manifest_path": str(path),
-        "experiment_id": raw.get("experiment_id") or path.stem,
-        "schema_version": raw.get("schema_version") or "firebench-interop-v1",
-        "track": raw.get("track") or "A_shared_outcome",
+        "experiment_id": _optional_manifest_string(raw, "experiment_id") or path.stem,
+        "schema_version": _optional_manifest_string(raw, "schema_version") or "firebench-interop-v1",
+        "track": _optional_manifest_string(raw, "track") or "A_shared_outcome",
         "shared_model_config": str(shared_model),
-        "base_config": raw.get("base_config") or "configs/default.yaml",
+        "base_config": _optional_manifest_string(raw, "base_config") or "configs/default.yaml",
         "methods": resolved,
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
         "comparison_suite_methods": list(raw.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS),
         "supplemental_methods": list(raw.get("supplemental_methods") or SUPPLEMENTAL_METHODS),
-        "bundle": raw.get("bundle"),
-        "freeze_manifest": raw.get("freeze_manifest"),
+        "bundle": _optional_manifest_string(raw, "bundle"),
+        "freeze_manifest": _optional_manifest_string(raw, "freeze_manifest"),
         "expected_bundle_checksum": raw.get("expected_bundle_checksum"),
-        "output": raw.get("output") or "outputs/firebench_interop_v1_predictions.jsonl",
-        "legacy_output": raw.get("legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
-        "run_manifest": raw.get("run_manifest") or "outputs/interop_run_manifest.json",
+        "output": _optional_manifest_string(raw, "output") or "outputs/firebench_interop_v1_predictions.jsonl",
+        "legacy_output": _optional_manifest_string(raw, "legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
+        "run_manifest": _optional_manifest_string(raw, "run_manifest") or "outputs/interop_run_manifest.json",
         "limit": raw.get("limit"),
         "paper_final": raw.get("paper_final", False),
         "require_bundle_checksum": raw.get("require_bundle_checksum", True),
         "notes": raw.get("notes") or [],
-        "freeze_status": raw.get("freeze_status") or "provisional",
+        "freeze_status": _optional_manifest_string(raw, "freeze_status") or "provisional",
         "raw": raw,
     }
 

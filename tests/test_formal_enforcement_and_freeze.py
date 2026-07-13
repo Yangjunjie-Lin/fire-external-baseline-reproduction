@@ -152,6 +152,96 @@ def test_formal_runner_stops_before_runtime_on_validation_failure(tmp_path: Path
         gen.assert_not_called()
 
 
+def test_legacy_formal_records_local_schema_snapshot_mismatch(tmp_path: Path) -> None:
+    import scripts.run_interop_baselines as rib
+
+    run_manifest = tmp_path / "run_manifest.json"
+    report_path = tmp_path / "interop_bundle_report.json"
+    output = tmp_path / "predictions.jsonl"
+    legacy_output = tmp_path / "legacy.jsonl"
+    bundle_schema_sha = "b" * 64
+
+    experiment = {
+        "experiment_id": "t",
+        "manifest_path": str(tmp_path / "exp.yaml"),
+        "bundle": str(tmp_path / "bundle"),
+        "paper_final": True,
+        "freeze_status": "frozen",
+        "output": str(output),
+        "legacy_output": str(legacy_output),
+        "run_manifest": str(run_manifest),
+        "expected_bundle_checksum": None,
+    }
+    method_entries = [{"method_id": "direct_llm", "config": None, "enabled": True}]
+    method_config = {
+        "paper_final": True,
+        "llm": {"provider": "openai_compatible", "model": "m", "model_version": "v"},
+    }
+    bundle = {
+        "bundle_root": str(tmp_path / "bundle"),
+        "scenarios_path": str(tmp_path / "cases.jsonl"),
+        "prediction_schema_path": str(rib.SCHEMA_PATH),
+        "prediction_schema_sha256": bundle_schema_sha,
+        "producer_declared_checksum": "p" * 64,
+        "consumer_computed_bundle_hash": "c" * 64,
+    }
+    row = {
+        "scenario_id": "case-1",
+        "method": "direct_llm",
+        "situation_summary": "Smoke reported.",
+        "key_risks": ["smoke_detected"],
+        "recommended_actions": [{"action_id": "prepare_respiratory_protection", "text": "Prepare SCBA", "priority": "high"}],
+        "blocked_or_unsafe_actions": ["BLOCK_ENTRY_WITHOUT_RESPIRATORY_PROTECTION"],
+        "missing_confirmations": ["smoke_level"],
+        "citations": [],
+        "final_decision_gate": "await_human_confirmation",
+        "latency_sec": 0.1,
+        "method_specific": {"runtime": {"llm_calls": 0, "token_usage": {}, "cost": None}},
+    }
+
+    with patch.object(rib, "validate_experiment_manifest", return_value={"valid": True}), patch(
+        "external_baselines.common.execution_lock.assert_execution_allowed",
+        return_value={"paper_valid": True, "execution_lock_overridden": False},
+    ), patch.object(rib, "load_experiment_manifest", return_value=experiment), patch.object(
+        rib, "assert_no_evaluator_bundle_access"
+    ), patch.object(rib, "load_runner_bundle", return_value=bundle), patch.object(
+        rib, "validate_bundle_checksum", return_value={"ok": True}
+    ), patch.object(rib, "enabled_methods", return_value=method_entries), patch.object(
+        rib, "build_method_config", return_value=method_config
+    ), patch.object(rib, "assert_paper_final_allowed"), patch.object(
+        rib, "validate_cross_method_fairness", return_value={"ok": True}
+    ), patch.object(rib, "load_scenarios", return_value=[{"case_id": "case-1"}]), patch.object(
+        rib, "generate_predictions", return_value=[row]
+    ), patch.object(rib, "_shared_embedding_snapshot", return_value={"backend": None}), patch.object(
+        rib, "_index_checksum_snapshot", return_value={}
+    ), patch.object(rib, "validate_interop_record", return_value=[]):
+        rib.main(
+            [
+                "--execution-stage",
+                "formal",
+                "--experiment-manifest",
+                str(tmp_path / "exp.yaml"),
+                "--bundle",
+                str(tmp_path / "bundle"),
+                "--output",
+                str(output),
+                "--legacy-output",
+                str(legacy_output),
+                "--manifest",
+                str(run_manifest),
+            ]
+        )
+
+    manifest = json.loads(run_manifest.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert manifest["schema_authority"] == "runner_bundle"
+    assert manifest["local_schema_snapshot_authoritative"] is False
+    assert manifest["local_schema_snapshot_match"] is False
+    assert report["bundle"]["schema_authority"] == "runner_bundle"
+    assert report["bundle"]["local_schema_snapshot_authoritative"] is False
+    assert report["bundle"]["local_schema_snapshot_match"] is False
+
+
 def test_formal_runner_rejects_provisional(tmp_path: Path) -> None:
     path = _write_minimal_manifest(tmp_path, freeze_status="provisional")
     with pytest.raises(FormalConfigError, match="freeze_status=frozen"):

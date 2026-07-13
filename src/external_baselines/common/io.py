@@ -30,7 +30,7 @@ def write_json(path: str | Path, value: Any) -> None:
     path = Path(path)
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(value, f, ensure_ascii=False, indent=2)
+        json.dump(value, f, ensure_ascii=False, indent=2, allow_nan=False)
         f.write("\n")
 
 
@@ -59,7 +59,7 @@ def write_jsonl(path: str | Path, rows: list[dict[str, Any]], append: bool = Fal
     mode = "a" if append else "w"
     with path.open(mode, encoding="utf-8") as f:
         for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+            f.write(json.dumps(row, ensure_ascii=False, default=str, allow_nan=False) + "\n")
 
 
 def read_yaml(path: str | Path, default: dict | None = None) -> dict:

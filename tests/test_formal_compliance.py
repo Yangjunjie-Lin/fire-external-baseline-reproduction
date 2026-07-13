@@ -3950,6 +3950,148 @@ def test_run_manifest_written_before_commit(tmp_path, monkeypatch):
     assert any("run_manifest.json" in item for item in events[:-1])
 
 
+def test_cached_runtime_closes_before_staged_validation_and_publish(tmp_path, monkeypatch):
+    from external_baselines.common.method_runtime import _ACTIVE_RUNTIME_CACHE
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    events: list[str] = []
+
+    class _Runtime:
+        def __init__(self, method_id: str) -> None:
+            self.method_id = method_id
+
+        def close(self) -> None:
+            events.append(f"runtime_close:{self.method_id}")
+
+    def _prepare(method_id, *_args, **_kwargs):
+        runtime = _Runtime(method_id)
+        cache = _ACTIVE_RUNTIME_CACHE.get()
+        assert cache is not None
+        cache[(method_id,)] = runtime
+        return runtime
+
+    real_validate = suite.validate_staged_formal_run_root
+    real_publish = suite.publish_formal_run_root_transactionally
+
+    def _validate(*args, **kwargs):
+        events.append("staged_validation")
+        return real_validate(*args, **kwargs)
+
+    def _publish(*args, **kwargs):
+        events.append("transactional_publish")
+        return real_publish(*args, **kwargs)
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id=config.get("method_id") or "direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", _prepare)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+    monkeypatch.setattr(suite, "validate_staged_formal_run_root", _validate)
+    monkeypatch.setattr(suite, "publish_formal_run_root_transactionally", _publish)
+
+    run_decision_suite(
+        runner_bundle=fixture["bundle_dir"],
+        prediction_dir=fixture["pred_dir"],
+        decision_dir=fixture["dec_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+
+    assert any(event.startswith("runtime_close:") for event in events)
+    assert max(i for i, event in enumerate(events) if event.startswith("runtime_close:")) < events.index("staged_validation")
+    assert events.index("staged_validation") < events.index("transactional_publish")
+
+
+def test_runtime_cleanup_failure_blocks_formal_commit(tmp_path, monkeypatch):
+    from external_baselines.common.method_runtime import _ACTIVE_RUNTIME_CACHE
+    from scripts import run_decision_comparison_suite as suite
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+
+    class _BrokenRuntime:
+        def close(self) -> None:
+            raise RuntimeError("runtime close failed")
+
+    def _prepare(method_id, *_args, **_kwargs):
+        runtime = _BrokenRuntime()
+        cache = _ACTIVE_RUNTIME_CACHE.get()
+        assert cache is not None
+        cache[(method_id,)] = runtime
+        return runtime
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(suite, "validate_formal_method_configs", lambda **kwargs: {})
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {"ok": True, "input_cases_integrity": True, "prediction_schema_integrity": True, "corpus_integrity": True},
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
+
+    def _fake_pipeline(prediction_input, *, config, llm, runtime=None):
+        from external_baselines.common.decision_output import decision_output_to_legacy_row, parse_decision_output
+
+        parsed = parse_decision_output(
+            _valid_payload(),
+            case_id=prediction_input["case_id"],
+            method_id=config.get("method_id") or "direct_llm",
+            strict=True,
+        )
+        return decision_output_to_legacy_row(parsed)
+
+    monkeypatch.setattr(suite, "build_llm_client", _stub_object_llm)
+    monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
+    monkeypatch.setattr(suite, "prepare_method_runtime", _prepare)
+    monkeypatch.setattr(suite, "collect_method_runtime_evidence", lambda **kwargs: _passing_formal_method_evidences()[kwargs["method_id"]])
+
+    with pytest.raises(FormalRunFailed, match="runtime close failed") as excinfo:
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+
+    assert excinfo.value.stage == "runtime_cleanup"
+    assert not fixture["run_root"].exists()
+    marker = json.loads((fixture["control_root"] / "FORMAL_RUN_FAILED.json").read_text(encoding="utf-8"))
+    assert marker["stage"] == "runtime_cleanup"
+    assert marker["formal_outputs_published"] is False
+
+
 def test_cleanup_failure_keeps_formal_result_true(tmp_path, monkeypatch):
     from scripts import run_decision_comparison_suite as suite
 
