@@ -1425,6 +1425,7 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
             },
             "hybrid_dense_dependency": {
                 "index_checksum": dense_manifest["index_checksum"],
+                "index_manifest_sha256": dense_manifest_sha,
                 "index_path": dense_idx.as_posix(),
             },
             "ekell": {
@@ -4894,6 +4895,7 @@ def _mock_embedding_backend(**overrides):
         "model_name": "fake/bge",
         "model_version": "v-test",
         "dimension": 8,
+        "normalize_embeddings": True,
         "actual_embedding_used": True,
         "smoke_fallback_used": False,
     }
@@ -4993,6 +4995,7 @@ def _formal_index_manifest(**overrides) -> dict[str, Any]:
         "model_name": "fake/bge",
         "model_version": "v-test",
         "dimension": 8,
+        "normalize_embeddings": True,
         "actual_embedding_used": True,
         "smoke_fallback_used": False,
     }
@@ -5007,6 +5010,7 @@ def _embedding_identity_kwargs(**overrides):
         "configured_model_name": "fake/bge",
         "configured_model_version": "v-test",
         "configured_dimension": 8,
+        "configured_normalize_embeddings": True,
         "index_manifest": _formal_index_manifest(),
         "formal": True,
     }
@@ -5024,6 +5028,7 @@ def test_runtime_embedding_identity_matches_config_and_manifest():
         configured_model_name="fake/bge",
         configured_model_version="v-test",
         configured_dimension=8,
+        configured_normalize_embeddings=True,
         index_manifest=_formal_index_manifest(),
         formal=True,
     )
@@ -5037,6 +5042,7 @@ def test_runtime_embedding_identity_matches_config_and_manifest():
         ("configured_model_name", "another/model", "model_name"),
         ("configured_model_version", "v1", "model_version"),
         ("configured_dimension", 16, "dimension"),
+        ("configured_normalize_embeddings", False, "normalize_embeddings"),
     ],
 )
 def test_runtime_embedding_rejects_identity_mismatch(field, value, error_token):
@@ -5110,6 +5116,7 @@ def test_runtime_embedding_rejects_smoke_backend_in_formal():
         configured_model_name="fake/bge",
         configured_model_version="v-test",
         configured_dimension=8,
+        configured_normalize_embeddings=True,
         index_manifest=_formal_index_manifest(),
         formal=True,
     )
@@ -5942,7 +5949,15 @@ def test_manifest_symlink_escape_rejected(tmp_path):
 
 @pytest.mark.parametrize(
     "missing_field",
-    ["backend", "model_name", "model_version", "dimension", "actual_embedding_used", "smoke_fallback_used"],
+    [
+        "backend",
+        "model_name",
+        "model_version",
+        "dimension",
+        "normalize_embeddings",
+        "actual_embedding_used",
+        "smoke_fallback_used",
+    ],
 )
 def test_formal_embedding_manifest_requires_fields(missing_field):
     _assert_manifest_field_rejected(missing_field)
@@ -5979,6 +5994,10 @@ def test_formal_embedding_manifest_requires_actual_embedding_used():
 
 def test_formal_embedding_manifest_requires_smoke_fallback_used():
     _assert_manifest_field_rejected("smoke_fallback_used")
+
+
+def test_formal_embedding_manifest_requires_normalize_embeddings():
+    _assert_manifest_field_rejected("normalize_embeddings")
 
 
 def _assert_manifest_field_rejected(missing_field: str) -> None:
@@ -6019,6 +6038,10 @@ def test_manifest_rejects_smoke_fallback_used_integer_zero():
     _assert_manifest_type_rejected("smoke_fallback_used", 0, "invalid_type: smoke_fallback_used")
 
 
+def test_manifest_rejects_normalize_embeddings_string_true():
+    _assert_manifest_type_rejected("normalize_embeddings", "true", "invalid_type: normalize_embeddings")
+
+
 def test_manifest_rejects_dimension_string():
     _assert_manifest_type_rejected("dimension", "8", "invalid_type: dimension")
 
@@ -6036,6 +6059,7 @@ def test_manifest_accepts_exact_boolean_flags():
 
     report = validate_runtime_embedding_identity(**_embedding_identity_kwargs())
     assert report["ok"] is True
+    assert report["index_manifest"]["normalize_embeddings"] is True
     assert report["index_manifest"]["actual_embedding_used"] is True
     assert report["index_manifest"]["smoke_fallback_used"] is False
 

@@ -49,12 +49,13 @@ def _load_index_block(index_dir: str | Path | None, *, kind: str) -> dict:
     manifest = read_json(manifest_path)
     if not isinstance(manifest, dict):
         return {}
-    block = {
+    block = dict(manifest)
+    block.update({
         "index_checksum": manifest.get("index_checksum"),
         "index_manifest_sha256": sha256_file(manifest_path),
         "corpus_checksum": manifest.get("corpus_checksum"),
         "model_version": manifest.get("model_version"),
-    }
+    })
     if kind == "ekell":
         block["kg_checksum"] = manifest.get("kg_checksum")
     return block
@@ -62,7 +63,7 @@ def _load_index_block(index_dir: str | Path | None, *, kind: str) -> dict:
 
 def _embedding_normalize_value(block: dict, *, field: str) -> bool:
     try:
-        return require_exact_bool(block.get("normalize_embeddings", True), field=field)
+        return require_exact_bool(block.get("normalize_embeddings"), field=field)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -193,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
             expected_model_version=embedding.get("model_version"),
             expected_dimension=embedding.get("dimension"),
             expected_corpus_checksum=corpus_checksum,
+            expected_normalize_embeddings=embedding.get("normalize_embeddings"),
         )
         ekell_block = VectorIndex.validate_directory_for_freeze(
             ekell_index_path,
@@ -201,10 +203,14 @@ def main(argv: list[str] | None = None) -> None:
             expected_model_version=embedding.get("model_version"),
             expected_dimension=embedding.get("dimension"),
             expected_corpus_checksum=corpus_checksum,
+            expected_normalize_embeddings=embedding.get("normalize_embeddings"),
         )
     indexes = {
         "dense": dense_block,
-        "hybrid_dense_dependency": {"index_checksum": dense_block.get("index_checksum")},
+        "hybrid_dense_dependency": {
+            "index_checksum": dense_block.get("index_checksum"),
+            "index_manifest_sha256": dense_block.get("index_manifest_sha256"),
+        },
         "ekell": ekell_block,
     }
 
@@ -246,7 +252,10 @@ def main(argv: list[str] | None = None) -> None:
                 expected_prediction_schema_checksum=schema_checksum,
                 loaded_index_manifests={
                     "dense": dense_block,
-                    "hybrid_dense_dependency": {"index_checksum": dense_block.get("index_checksum")},
+                    "hybrid_dense_dependency": {
+                        "index_checksum": dense_block.get("index_checksum"),
+                        "index_manifest_sha256": dense_block.get("index_manifest_sha256"),
+                    },
                     "ekell": ekell_block,
                 },
                 method_config_paths=method_paths,

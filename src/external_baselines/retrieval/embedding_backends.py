@@ -25,7 +25,18 @@ def _as_vectors(values: Any) -> list[list[float]]:
     vectors = [[float(value) for value in vector] for vector in values]
     if any(not vector for vector in vectors):
         raise EmbeddingBackendError("Embedding backend returned an empty vector.")
+    if any(not math.isfinite(value) for vector in vectors for value in vector):
+        raise EmbeddingBackendError("embedding_backend_returned_non_finite_value")
     return vectors
+
+
+def l2_normalize_vector(vector: Sequence[float]) -> list[float]:
+    """Return an L2-normalized copy, preserving zero vectors for validators to reject."""
+    values = [float(value) for value in vector]
+    if any(not math.isfinite(value) for value in values):
+        raise EmbeddingBackendError("embedding_backend_returned_non_finite_value")
+    norm = math.sqrt(sum(value * value for value in values))
+    return [value / norm for value in values] if norm else values
 
 
 class EmbeddingBackend(ABC):
@@ -257,12 +268,14 @@ def _manifest_embedding_fields(index_manifest: dict[str, Any]) -> dict[str, Any]
         "dimension_raw": index_manifest.get("dimension"),
         "actual_embedding_used_raw": index_manifest.get("actual_embedding_used"),
         "smoke_fallback_used_raw": index_manifest.get("smoke_fallback_used"),
+        "normalize_embeddings_raw": index_manifest.get("normalize_embeddings"),
         "backend": "",
         "model_name": "",
         "model_version": "",
         "dimension": 0,
         "actual_embedding_used": None,
         "smoke_fallback_used": None,
+        "normalize_embeddings": None,
     }
 
 
@@ -282,6 +295,7 @@ def _validate_manifest_field_types(index_manifest: dict[str, Any]) -> tuple[dict
         "manifest_actual_embedding_used_true": False,
         "manifest_smoke_fallback_used_type_valid": False,
         "manifest_smoke_fallback_used_false": False,
+        "manifest_normalize_embeddings_type_valid": False,
     }
 
     backend_raw = fields["backend_raw"]
@@ -356,6 +370,15 @@ def _validate_manifest_field_types(index_manifest: dict[str, Any]) -> tuple[dict
         checks["manifest_smoke_fallback_used_false"] = True
         fields["smoke_fallback_used"] = smoke_raw
 
+    normalize_raw = fields["normalize_embeddings_raw"]
+    if normalize_raw is None:
+        errors.append("runtime_embedding_manifest_missing: normalize_embeddings")
+    elif type(normalize_raw) is not bool:
+        errors.append("runtime_embedding_manifest_invalid_type: normalize_embeddings")
+    else:
+        checks["manifest_normalize_embeddings_type_valid"] = True
+        fields["normalize_embeddings"] = normalize_raw
+
     return fields, errors, checks
 
 
@@ -366,6 +389,7 @@ def validate_runtime_embedding_identity(
     configured_model_name: str,
     configured_model_version: str,
     configured_dimension: int,
+    configured_normalize_embeddings: bool | None = None,
     index_manifest: dict[str, Any],
     formal: bool,
 ) -> dict[str, Any]:
@@ -375,6 +399,7 @@ def validate_runtime_embedding_identity(
         "model_name": str(configured_model_name or ""),
         "model_version": str(configured_model_version or ""),
         "dimension": int(configured_dimension or 0),
+        "normalize_embeddings": configured_normalize_embeddings,
     }
     manifest, manifest_errors, manifest_checks = _validate_manifest_field_types(index_manifest)
     checks: dict[str, bool] = dict(manifest_checks)
@@ -388,6 +413,14 @@ def validate_runtime_embedding_identity(
         == configured["model_version"].strip()
         == manifest["model_version"].strip(),
         "dimension_match": actual["dimension"] == configured["dimension"] == manifest["dimension"],
+        "normalize_embeddings_match": (
+            configured_normalize_embeddings is None
+            or (
+                checks.get("manifest_normalize_embeddings_type_valid") is True
+                and type(configured_normalize_embeddings) is bool
+                and configured_normalize_embeddings is manifest["normalize_embeddings"]
+            )
+        ),
         "actual_embedding_used": actual["actual_embedding_used"] is True,
         "smoke_fallback_forbidden": actual["smoke_fallback_used"] is False,
     })
@@ -449,6 +482,18 @@ def validate_runtime_embedding_identity(
             errors.append("runtime_embedding_identity_mismatch: actual_embedding_used must be true")
         if actual["smoke_fallback_used"] is not False:
             errors.append("runtime_embedding_identity_mismatch: smoke_fallback_used must be false")
+        if configured_normalize_embeddings is not None and type(configured_normalize_embeddings) is not bool:
+            errors.append("runtime_embedding_identity_mismatch: normalize_embeddings must be an exact boolean")
+        elif (
+            configured_normalize_embeddings is not None
+            and checks.get("manifest_normalize_embeddings_type_valid")
+            and configured_normalize_embeddings is not manifest["normalize_embeddings"]
+        ):
+            errors.append(
+                "runtime_embedding_identity_mismatch: "
+                f"normalize_embeddings configured={configured_normalize_embeddings!r} "
+                f"index={manifest['normalize_embeddings']!r}"
+            )
     ok = (not errors and all(checks.values())) if formal else True
     return {
         "ok": ok,

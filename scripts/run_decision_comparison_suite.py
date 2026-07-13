@@ -1741,19 +1741,14 @@ def _run_decision_suite_impl(
             with runtime_cache_scope():
                 for method_id in method_ids:
                     method_config = method_configs[method_id]
-                    transport = (
-                        llm_transport_factory(method_id, method_config)
-                        if llm_transport_factory is not None
-                        else None
-                    )
                     injected_embedding = (
                         embedding_backend_factory(method_id, method_config)
                         if embedding_backend_factory is not None and method_id in EMBEDDING_METHODS
                         else None
                     )
-                    llm = build_llm_client(method_config, transport=transport)
                     pipeline = resolve_pipeline(method_id)
                     runtime = None
+                    llm = None
                     body_exception: BaseException | None = None
                     interop_rows: list[dict[str, Any]] = []
                     parsing_failures = 0
@@ -1765,6 +1760,12 @@ def _run_decision_suite_impl(
                             method_config,
                             embedding_backend=injected_embedding,
                         )
+                        transport = (
+                            llm_transport_factory(method_id, method_config)
+                            if llm_transport_factory is not None
+                            else None
+                        )
+                        llm = build_llm_client(method_config, transport=transport)
                         evidence = collect_method_runtime_evidence(
                             method_id=method_id,
                             config=method_config,

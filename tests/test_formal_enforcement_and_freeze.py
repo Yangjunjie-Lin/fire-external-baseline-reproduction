@@ -766,6 +766,55 @@ def test_bundle_checksum_failure_occurs_before_index_loading(tmp_path: Path, mon
     assert not (tmp_path / "freeze.json.tmp").exists()
 
 
+def test_bundle_aggregate_mismatch_fails_before_dense_hashing(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+            index_error=RuntimeError("dense index should not hash"),
+        )
+
+
+def test_bundle_aggregate_mismatch_fails_before_ekell_hashing(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+            index_error=RuntimeError("ekell index should not hash"),
+        )
+
+
+def test_bundle_aggregate_mismatch_creates_no_temp_freeze(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+        )
+
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def test_bundle_aggregate_mismatch_preserves_existing_freeze(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "freeze.json"
+    output.write_text('{"previous": true}\n', encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+        )
+
+    assert output.read_text(encoding="utf-8") == '{"previous": true}\n'
+
+
 def test_complete_freeze_rejects_string_boolean(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(SystemExit, match="normalize_embeddings"):
         _run_create_freeze_with_patches(tmp_path, monkeypatch, dense_normalize="false")
@@ -868,16 +917,44 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
         },
         indexes={
             "dense": {
+                "index_type": "dense_evidence_index",
+                "backend": "text2vec",
+                "model_name": "fake/bge",
+                "model_version": "v-test",
+                "dimension": 8,
+                "normalize_embeddings": True,
+                "document_count": 1,
                 "index_checksum": "1" * 64,
                 "index_manifest_sha256": "2" * 64,
                 "corpus_checksum": "a" * 64,
+                "documents_checksum": "b" * 64,
+                "documents_file_checksum": "d" * 64,
+                "embeddings_checksum": "f" * 64,
+                "evidence_source_checksum": "7" * 64,
+                "actual_embedding_used": True,
+                "smoke_fallback_used": False,
             },
-            "hybrid_dense_dependency": {"index_checksum": "1" * 64},
+            "hybrid_dense_dependency": {
+                "index_checksum": "1" * 64,
+                "index_manifest_sha256": "2" * 64,
+            },
             "ekell": {
+                "index_type": "ekell_kg_vector_index",
+                "backend": "text2vec",
+                "model_name": "fake/bge",
+                "model_version": "v-test",
+                "dimension": 8,
+                "normalize_embeddings": True,
+                "document_count": 1,
                 "index_checksum": "3" * 64,
                 "index_manifest_sha256": "4" * 64,
                 "kg_checksum": "5" * 64,
                 "corpus_checksum": "a" * 64,
+                "documents_checksum": "6" * 64,
+                "documents_file_checksum": "7" * 64,
+                "embeddings_checksum": "8" * 64,
+                "actual_embedding_used": True,
+                "smoke_fallback_used": False,
             },
         },
         producer_checksum_available=False,
@@ -890,9 +967,24 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
     [
         ("dense", "index_checksum", "indexes.dense.index_checksum"),
         ("dense", "index_manifest_sha256", "indexes.dense.index_manifest_sha256"),
+        ("dense", "documents_checksum", "indexes.dense.documents_checksum"),
+        ("dense", "documents_file_checksum", "indexes.dense.documents_file_checksum"),
+        ("dense", "embeddings_checksum", "indexes.dense.embeddings_checksum"),
+        ("dense", "normalize_embeddings", "indexes.dense.normalize_embeddings"),
+        ("dense", "model_name", "indexes.dense.model_name"),
         ("hybrid_dense_dependency", "index_checksum", "indexes.hybrid_dense_dependency.index_checksum"),
+        (
+            "hybrid_dense_dependency",
+            "index_manifest_sha256",
+            "indexes.hybrid_dense_dependency.index_manifest_sha256",
+        ),
         ("ekell", "index_checksum", "indexes.ekell.index_checksum"),
         ("ekell", "index_manifest_sha256", "indexes.ekell.index_manifest_sha256"),
+        ("ekell", "documents_checksum", "indexes.ekell.documents_checksum"),
+        ("ekell", "documents_file_checksum", "indexes.ekell.documents_file_checksum"),
+        ("ekell", "embeddings_checksum", "indexes.ekell.embeddings_checksum"),
+        ("ekell", "kg_checksum", "indexes.ekell.kg_checksum"),
+        ("ekell", "normalize_embeddings", "indexes.ekell.normalize_embeddings"),
     ],
 )
 def test_complete_freeze_requires_index_identity_fields(
@@ -933,6 +1025,36 @@ def test_complete_freeze_rejects_dense_hybrid_checksum_mismatch(tmp_path: Path) 
             expected_prediction_schema_checksum="e" * 64,
             loaded_index_manifests=payload["indexes"],
             method_config_paths=methods,
+        )
+
+
+def test_complete_freeze_rejects_dense_hybrid_manifest_sha_mismatch(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["indexes"]["hybrid_dense_dependency"]["index_manifest_sha256"] = "9" * 64
+
+    with pytest.raises(FormalConfigError, match="hybrid dense dependency manifest SHA"):
+        validate_freeze_manifest(
+            payload,
+            experiment_manifest_path=experiment,
+            experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+            require_complete=True,
+            expected_runner_bundle_checksum="c" * 64,
+            expected_corpus_checksum="a" * 64,
+            expected_prediction_schema_checksum="e" * 64,
+            loaded_index_manifests=payload["indexes"],
+            method_config_paths=methods,
+        )
+
+
+def test_frozen_runtime_inputs_reject_dense_documents_file_checksum_mismatch(tmp_path: Path) -> None:
+    _experiment, payload, _methods = _complete_freeze_payload(tmp_path)
+    live = json.loads(json.dumps(payload["indexes"]))
+    live["dense"]["documents_file_checksum"] = "9" * 64
+
+    with pytest.raises(FormalConfigError, match="indexes.dense.documents_file_checksum"):
+        validate_frozen_runtime_inputs(
+            payload,
+            loaded_index_manifests=live,
         )
 
 

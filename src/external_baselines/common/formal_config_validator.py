@@ -449,6 +449,10 @@ def validate_dense_config_for_real_run(
                     expected_backend=backend,
                     expected_dimension=validated_dim,
                     expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
+                    expected_normalize_embeddings=_validate_exact_bool(
+                        dense.get("normalize_embeddings"),
+                        field="dense_rag.normalize_embeddings",
+                    ),
                 )
             except DenseIndexError as exc:
                 raise FormalConfigError(str(exc)) from exc
@@ -577,6 +581,17 @@ def validate_hybrid_config_for_real_run(
             right = other.get(field)
             if left and right and str(left) != str(right):
                 raise FormalConfigError(f"Hybrid/Dense embedding {field} mismatch.")
+        left_normalize = dense.get("normalize_embeddings", hybrid.get("normalize_embeddings"))
+        right_normalize = other.get("normalize_embeddings")
+        if (
+            _requires_paper_facing_strictness(validation_stage)
+            and left_normalize is not None
+            and right_normalize is not None
+        ):
+            left_bool = _validate_exact_bool(left_normalize, field="hybrid_rag.normalize_embeddings")
+            right_bool = _validate_exact_bool(right_normalize, field="dense_rag.normalize_embeddings")
+            if left_bool is not right_bool:
+                raise FormalConfigError("Hybrid/Dense normalize_embeddings mismatch.")
         left_cs = dense.get("index_checksum") or config.get("dense_index_checksum")
         right_cs = other.get("index_checksum") or dense_config.get("dense_index_checksum")
         if _requires_paper_facing_strictness(validation_stage) and left_cs and right_cs and str(left_cs) != str(right_cs):
@@ -613,6 +628,13 @@ def validate_ekell_vector_for_formal(
         allow_placeholders=allow_placeholders,
         field="ekell_vector.dimension",
     )
+    if "normalize_embeddings" not in vector and not allow_placeholders:
+        raise FormalConfigError("Formal E-KELL requires ekell_vector.normalize_embeddings to be set.")
+    elif "normalize_embeddings" in vector and not allow_placeholders:
+        _validate_exact_bool(
+            vector.get("normalize_embeddings"),
+            field="ekell_vector.normalize_embeddings",
+        )
     index_path = vector.get("index_path")
     if not index_path:
         if not allow_placeholders:
@@ -656,6 +678,10 @@ def validate_ekell_vector_for_formal(
                     expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
                     expected_kg_checksum=str(config.get("kg_checksum") or "") or None,
                     expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
+                    expected_normalize_embeddings=_validate_exact_bool(
+                        vector.get("normalize_embeddings"),
+                        field="ekell_vector.normalize_embeddings",
+                    ),
                 )
             else:
                 VectorIndex.load_directory(
@@ -991,9 +1017,14 @@ def validate_experiment_manifest(
                 errors.append("Formal comparison suite requires non-placeholder Runner Bundle path.")
             else:
                 try:
-                    from external_baselines.interop.bundle import load_runner_bundle
+                    from external_baselines.interop.bundle import (
+                        load_runner_bundle,
+                        validate_formal_bundle_aggregate_checksum,
+                    )
 
-                    load_runner_bundle(bundle_path, formal=True)
+                    validate_formal_bundle_aggregate_checksum(
+                        load_runner_bundle(bundle_path, formal=True)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Formal Runner Bundle authority validation failed: {exc}")
 

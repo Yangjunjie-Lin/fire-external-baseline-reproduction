@@ -9,8 +9,13 @@ import pytest
 
 from external_baselines.ekell_style.embedding_backends import create_embedding_backend
 from external_baselines.ekell_style.kg_loader import FireKG
-from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
+from external_baselines.ekell_style.vector_index import (
+    VectorIndex,
+    VectorIndexError,
+    ekell_index_identity_checksum,
+)
 from external_baselines.ekell_style.vector_retriever import VectorRetriever
+from external_baselines.common.checksums import sha256_file
 
 
 class FakeEmbeddingModel:
@@ -67,6 +72,28 @@ def _write_manifest(index_dir: Path, manifest: dict) -> None:
     (index_dir / "index_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def _rewrite_ekell_embeddings(index_dir: Path, arr) -> None:  # noqa: ANN001
+    import numpy as np
+
+    emb_path = index_dir / "embeddings.npy"
+    np.save(emb_path, arr.astype("float32"))
+    manifest = _read_manifest(index_dir)
+    manifest["embeddings_checksum"] = sha256_file(emb_path)
+    manifest["index_checksum"] = ekell_index_identity_checksum(
+        backend=manifest["backend"],
+        model_name=manifest["model_name"],
+        model_version=manifest["model_version"],
+        dimension=manifest["dimension"],
+        normalize_embeddings=manifest["normalize_embeddings"],
+        document_count=manifest["document_count"],
+        documents_checksum=manifest["documents_checksum"],
+        embeddings_checksum=manifest["embeddings_checksum"],
+        kg_checksum=manifest["kg_checksum"],
+        corpus_checksum=manifest["corpus_checksum"],
+    )
+    _write_manifest(index_dir, manifest)
+
+
 def test_ekell_index_save_directory(tmp_path: Path) -> None:
     backend, _ = _backend()
     index = VectorIndex.from_kg(_tiny_kg(), backend, reject_smoke=True)
@@ -75,8 +102,59 @@ def test_ekell_index_save_directory(tmp_path: Path) -> None:
     assert (tmp_path / "ekell_idx" / "embeddings.npy").is_file()
     assert (tmp_path / "ekell_idx" / "index_manifest.json").is_file()
     assert manifest["index_type"] == "ekell_kg_vector_index"
+    assert manifest["normalize_embeddings"] is True
     assert manifest["actual_embedding_used"] is True
     assert manifest["smoke_fallback_used"] is False
+
+
+def test_ekell_build_records_explicit_normalize_embeddings(tmp_path: Path) -> None:
+    backend, _ = _backend()
+    index = VectorIndex.from_kg(
+        _tiny_kg(),
+        backend,
+        reject_smoke=True,
+        normalize_embeddings=False,
+    )
+    manifest = index.save_directory(tmp_path / "ekell_idx")
+
+    assert manifest["normalize_embeddings"] is False
+
+
+def test_ekell_build_actually_normalizes_vectors() -> None:
+    import numpy as np
+
+    backend, _ = _backend()
+    index = VectorIndex.from_kg(_tiny_kg(), backend, reject_smoke=True, normalize_embeddings=True)
+    norms = np.linalg.norm(np.asarray(index.vectors, dtype="float32"), axis=1)
+
+    assert np.allclose(norms, 1.0, rtol=1e-4, atol=1e-5)
+
+
+def test_ekell_index_checksum_changes_with_normalize_embeddings() -> None:
+    payload = {
+        "backend": "text2vec",
+        "model_name": "fake/bge",
+        "model_version": "v-test",
+        "dimension": 8,
+        "document_count": 2,
+        "documents_checksum": "1" * 64,
+        "embeddings_checksum": "2" * 64,
+        "kg_checksum": "3" * 64,
+        "corpus_checksum": "4" * 64,
+    }
+    assert ekell_index_identity_checksum(normalize_embeddings=True, **payload) != ekell_index_identity_checksum(
+        normalize_embeddings=False,
+        **payload,
+    )
+
+
+def test_ekell_save_directory_rejects_missing_normalization_metadata(tmp_path: Path) -> None:
+    backend, _ = _backend()
+    index = VectorIndex.from_kg(_tiny_kg(), backend, reject_smoke=True)
+    index.metadata.pop("normalize_embeddings")
+
+    with pytest.raises(VectorIndexError, match="normalize_embeddings"):
+        index.save_directory(tmp_path / "ekell_idx")
 
 
 def test_ekell_index_load_directory(tmp_path: Path) -> None:
@@ -267,6 +345,34 @@ def test_ekell_freeze_integrity_accepts_valid_index(tmp_path: Path) -> None:
     assert result["smoke_fallback_used"] is False
 
 
+def test_ekell_freeze_validator_rejects_normalization_mismatch(tmp_path: Path) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+
+    with pytest.raises(VectorIndexError, match="ekell_index_normalize_embeddings_mismatch"):
+        VectorIndex.validate_directory_for_freeze(
+            index_dir,
+            expected_normalize_embeddings=False,
+        )
+
+
+def test_ekell_query_uses_matching_normalization_policy() -> None:
+    backend, _ = _backend()
+    index = VectorIndex.from_kg(_tiny_kg(), backend, reject_smoke=True, normalize_embeddings=True)
+    seen: dict[str, float] = {}
+
+    def _record_query(query_vector, **_kwargs):  # noqa: ANN001
+        import math
+
+        seen["norm"] = math.sqrt(sum(float(value) * float(value) for value in query_vector))
+        return []
+
+    index.search = _record_query  # type: ignore[method-assign]
+    retriever = VectorRetriever(index, backend, reject_smoke=True)
+    retriever.retrieve("fire hose", top_k=1)
+
+    assert seen["norm"] == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -324,4 +430,45 @@ def test_ekell_freeze_integrity_rejects_string_boolean_metadata(tmp_path: Path) 
     _write_manifest(index_dir, manifest)
 
     with pytest.raises(VectorIndexError, match="smoke_fallback_used"):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_strict_validator_rejects_non_unit_vectors_when_normalized(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_ekell_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0] *= 2.0
+    _rewrite_ekell_embeddings(index_dir, arr)
+
+    with pytest.raises(VectorIndexError, match="unit_norm"):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+@pytest.mark.parametrize(("value", "match"), [(float("nan"), "non_finite"), (float("inf"), "non_finite")])
+def test_ekell_strict_validator_rejects_non_finite_embedding(
+    tmp_path: Path,
+    value: float,
+    match: str,
+) -> None:
+    import numpy as np
+
+    index_dir = _build_ekell_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0, 0] = value
+    _rewrite_ekell_embeddings(index_dir, arr)
+
+    with pytest.raises(VectorIndexError, match=match):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_strict_validator_rejects_zero_vector(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_ekell_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0] = 0.0
+    _rewrite_ekell_embeddings(index_dir, arr)
+
+    with pytest.raises(VectorIndexError, match="zero_vector"):
         VectorIndex.validate_directory_for_freeze(index_dir)

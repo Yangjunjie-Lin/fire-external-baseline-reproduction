@@ -11,6 +11,7 @@ from external_baselines.common.text_utils import compact_text
 from external_baselines.ekell_style.embedding_backends import (
     EmbeddingBackend,
     EmbeddingBackendError,
+    l2_normalize_vector,
     validate_embedding_backend,
 )
 from external_baselines.ekell_style.kg_loader import FireKG
@@ -116,6 +117,11 @@ class VectorRetriever:
         if not query.strip() or top_k <= 0:
             return []
         query_vector = self.backend.embed_query(query)
+        normalize = self.index.metadata.get("normalize_embeddings")
+        if type(normalize) is not bool:
+            raise EmbeddingBackendError("ekell_index_normalize_embeddings_must_be_bool")
+        if normalize:
+            query_vector = l2_normalize_vector(query_vector)
         results = self.index.search(query_vector, top_k=top_k, min_score=min_score)
         contexts: list[dict[str, Any]] = []
         for rank, (document, score) in enumerate(results, start=1):

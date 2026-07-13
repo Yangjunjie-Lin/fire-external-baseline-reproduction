@@ -22,7 +22,11 @@ from external_baselines.common.generation_identity import (
     validate_shared_generation_identity,
 )
 from external_baselines.common.io import read_json, read_jsonl, read_yaml
-from external_baselines.common.strict_config_types import require_exact_int, require_exact_nonempty_string
+from external_baselines.common.strict_config_types import (
+    require_exact_bool,
+    require_exact_int,
+    require_exact_nonempty_string,
+)
 from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
 from external_baselines.method_registry import canonicalize_method_id
 
@@ -292,6 +296,12 @@ def _preflight_int(value: Any, *, field: str, formal: bool) -> int | None:
     return int(value or 0) or None
 
 
+def _preflight_bool(value: Any, *, field: str, formal: bool) -> bool | None:
+    if formal:
+        return require_exact_bool(value, field=field)
+    return value if type(value) is bool else None
+
+
 def _preflight_method_resources(
     method_id: str,
     config: dict[str, Any],
@@ -326,22 +336,48 @@ def _preflight_method_resources(
     elif method_id == "dense_rag":
         dense = config.get("dense_rag") or {}
         index_path = _resolve_path(config, _preflight_string(dense.get("index_path"), field="dense_rag.index_path", formal=formal))
-        from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
+        from external_baselines.retrieval.dense_index import (
+            DenseIndexError,
+            validate_dense_index_directory,
+            validate_dense_index_integrity_for_freeze,
+        )
 
         try:
-            payload = validate_dense_index_directory(
-                index_path,
-                load_embeddings=formal,
-                expected_model_name=_preflight_string(dense.get("model_name"), field="dense_rag.model_name", formal=formal),
-                expected_model_version=_preflight_string(dense.get("model_version"), field="dense_rag.model_version", formal=formal),
-                expected_backend=_preflight_string(dense.get("backend"), field="dense_rag.backend", formal=formal),
-                expected_dimension=_preflight_int(
-                    dense["dimension"] if "dimension" in dense else dense.get("dim"),
-                    field="dense_rag.dimension",
-                    formal=formal,
-                ),
-                require_explicit_embedding_evidence=formal,
+            expected_model_name = _preflight_string(dense.get("model_name"), field="dense_rag.model_name", formal=formal)
+            expected_model_version = _preflight_string(
+                dense.get("model_version"),
+                field="dense_rag.model_version",
+                formal=formal,
             )
+            expected_backend = _preflight_string(dense.get("backend"), field="dense_rag.backend", formal=formal)
+            expected_dimension = _preflight_int(
+                dense["dimension"] if "dimension" in dense else dense.get("dim"),
+                field="dense_rag.dimension",
+                formal=formal,
+            )
+            if formal:
+                payload = validate_dense_index_integrity_for_freeze(
+                    index_path,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_backend=expected_backend,
+                    expected_dimension=expected_dimension,
+                    expected_normalize_embeddings=_preflight_bool(
+                        dense.get("normalize_embeddings"),
+                        field="dense_rag.normalize_embeddings",
+                        formal=formal,
+                    ),
+                )
+            else:
+                payload = validate_dense_index_directory(
+                    index_path,
+                    load_embeddings=formal,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_backend=expected_backend,
+                    expected_dimension=expected_dimension,
+                    require_explicit_embedding_evidence=formal,
+                )
             result.index_identity = dict(payload.get("manifest") or payload)
             result.embedding_identity = {
                 "backend": payload.get("backend"),
@@ -368,32 +404,63 @@ def _preflight_method_resources(
                 formal=formal,
             ),
         )
-        from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
+        from external_baselines.retrieval.dense_index import (
+            DenseIndexError,
+            validate_dense_index_directory,
+            validate_dense_index_integrity_for_freeze,
+        )
 
         try:
             dimension_value = dense_cfg["dimension"] if "dimension" in dense_cfg else hybrid.get("dimension")
-            payload = validate_dense_index_directory(
-                index_path,
-                load_embeddings=formal,
-                expected_model_name=_preflight_string(
-                    dense_cfg.get("model_name") or hybrid.get("dense_model_name"),
-                    field="dense_rag.model_name",
-                    formal=formal,
-                ),
-                expected_model_version=_preflight_string(
-                    dense_cfg.get("model_version") or hybrid.get("dense_model_version"),
-                    field="dense_rag.model_version",
-                    formal=formal,
-                ),
-                expected_backend=_preflight_string(
-                    dense_cfg.get("backend") or hybrid.get("dense_method"),
-                    field="dense_rag.backend",
-                    formal=formal,
-                ),
-                expected_dimension=_preflight_int(dimension_value, field="dense_rag.dimension", formal=formal),
-                require_explicit_embedding_evidence=formal,
+            expected_model_name = _preflight_string(
+                dense_cfg.get("model_name") or hybrid.get("dense_model_name"),
+                field="dense_rag.model_name",
+                formal=formal,
             )
-            result.index_identity = dict(payload.get("manifest") or payload)
+            expected_model_version = _preflight_string(
+                dense_cfg.get("model_version") or hybrid.get("dense_model_version"),
+                field="dense_rag.model_version",
+                formal=formal,
+            )
+            expected_backend = _preflight_string(
+                dense_cfg.get("backend") or hybrid.get("dense_method"),
+                field="dense_rag.backend",
+                formal=formal,
+            )
+            expected_dimension = _preflight_int(dimension_value, field="dense_rag.dimension", formal=formal)
+            if formal:
+                normalize_value = (
+                    dense_cfg["normalize_embeddings"]
+                    if "normalize_embeddings" in dense_cfg
+                    else hybrid.get("normalize_embeddings")
+                )
+                payload = validate_dense_index_integrity_for_freeze(
+                    index_path,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_backend=expected_backend,
+                    expected_dimension=expected_dimension,
+                    expected_normalize_embeddings=_preflight_bool(
+                        normalize_value,
+                        field="dense_rag.normalize_embeddings",
+                        formal=formal,
+                    ),
+                )
+            else:
+                payload = validate_dense_index_directory(
+                    index_path,
+                    load_embeddings=formal,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_backend=expected_backend,
+                    expected_dimension=expected_dimension,
+                    require_explicit_embedding_evidence=formal,
+                )
+            result.index_identity = {
+                "index_checksum": payload.get("index_checksum") or payload.get("checksum"),
+                "index_manifest_sha256": payload.get("index_manifest_sha256"),
+                "derived_from": "dense",
+            }
             result.embedding_identity = {
                 "backend": payload.get("backend"),
                 "model_name": payload.get("model_name"),
@@ -413,19 +480,45 @@ def _preflight_method_resources(
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
 
         try:
-            manifest = VectorIndex.validate_directory(
-                index_path,
-                load_embeddings=formal,
-                expected_backend=_preflight_string(vector.get("backend"), field="ekell_vector.backend", formal=formal),
-                expected_model_name=_preflight_string(vector.get("model_name"), field="ekell_vector.model_name", formal=formal),
-                expected_model_version=_preflight_string(vector.get("model_version"), field="ekell_vector.model_version", formal=formal),
-                expected_dimension=_preflight_int(
-                    vector["dimension"] if "dimension" in vector else vector.get("dim"),
-                    field="ekell_vector.dimension",
-                    formal=formal,
-                ),
-                require_real_embedding=formal,
+            expected_backend = _preflight_string(vector.get("backend"), field="ekell_vector.backend", formal=formal)
+            expected_model_name = _preflight_string(
+                vector.get("model_name"),
+                field="ekell_vector.model_name",
+                formal=formal,
             )
+            expected_model_version = _preflight_string(
+                vector.get("model_version"),
+                field="ekell_vector.model_version",
+                formal=formal,
+            )
+            expected_dimension = _preflight_int(
+                vector["dimension"] if "dimension" in vector else vector.get("dim"),
+                field="ekell_vector.dimension",
+                formal=formal,
+            )
+            if formal:
+                manifest = VectorIndex.validate_directory_for_freeze(
+                    index_path,
+                    expected_backend=expected_backend,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_dimension=expected_dimension,
+                    expected_normalize_embeddings=_preflight_bool(
+                        vector.get("normalize_embeddings"),
+                        field="ekell_vector.normalize_embeddings",
+                        formal=formal,
+                    ),
+                )
+            else:
+                manifest = VectorIndex.validate_directory(
+                    index_path,
+                    load_embeddings=formal,
+                    expected_backend=expected_backend,
+                    expected_model_name=expected_model_name,
+                    expected_model_version=expected_model_version,
+                    expected_dimension=expected_dimension,
+                    require_real_embedding=formal,
+                )
             result.index_identity = dict(manifest)
             result.embedding_identity = {
                 "backend": manifest.get("backend"),
@@ -473,6 +566,21 @@ def preflight_decision_suite(
     bundle_integrity = _validate_runner_bundle_integrity(bundle, formal=formal, freeze=freeze)
     if formal and not bundle_integrity.get("ok"):
         shared_errors.extend(bundle_integrity.get("errors") or ["runner_bundle_integrity_failed"])
+        return {
+            "ok": False,
+            "execution_stage": execution_stage,
+            "runner_bundle": str(runner_bundle),
+            "shared_errors": shared_errors,
+            "runner_bundle_integrity": bundle_integrity,
+            "shared_generation_identity": {"ok": False, "mismatches": []},
+            "ekell_prompt_bundle_valid": False,
+            "formal_runtime_validation": {
+                "ok": False,
+                "errors": list(shared_errors),
+                "skipped_index_hashing": True,
+            },
+            "methods": {},
+        }
 
     if not scenarios_path or not Path(scenarios_path).is_file():
         shared_errors.append("runner_bundle_input_cases_missing")
@@ -530,6 +638,52 @@ def preflight_decision_suite(
         if not report.ok:
             all_ok = False
 
+    formal_runtime_validation: dict[str, Any] | None = None
+    if formal:
+        if freeze is None:
+            shared_errors.append("freeze_manifest_missing")
+            all_ok = False
+            formal_runtime_validation = {"ok": False, "errors": ["freeze_manifest_missing"]}
+        else:
+            from external_baselines.common.freeze_manifest import validate_frozen_runtime_inputs
+
+            dense_identity = (method_reports.get("dense_rag") or {}).get("index_identity") or {}
+            hybrid_identity = (method_reports.get("hybrid_rag") or {}).get("index_identity") or {}
+            if not hybrid_identity and dense_identity:
+                hybrid_identity = {
+                    "index_checksum": dense_identity.get("index_checksum"),
+                    "index_manifest_sha256": dense_identity.get("index_manifest_sha256"),
+                    "derived_from": "dense",
+                }
+            ekell_identity = (
+                (method_reports.get("ekell_style_controlled_shared_llm") or {}).get("index_identity")
+                or {}
+            )
+            live_index_identities = {
+                "dense": dense_identity,
+                "hybrid_dense_dependency": hybrid_identity,
+                "ekell": ekell_identity,
+            }
+            try:
+                formal_runtime_validation = validate_frozen_runtime_inputs(
+                    freeze,
+                    bundle=bundle,
+                    method_configs=method_configs,
+                    loaded_index_manifests=live_index_identities,
+                )
+            except FormalConfigError as exc:
+                shared_errors.append(str(exc))
+                for report in method_reports.values():
+                    report.setdefault("errors", []).append(str(exc))
+                    report["resources_valid"] = False
+                    report["ok"] = False
+                all_ok = False
+                formal_runtime_validation = {
+                    "ok": False,
+                    "errors": [str(exc)],
+                    "indexes": live_index_identities,
+                }
+
     if formal:
         ekell_prompt_bundle_valid = ekell_prompt_bundle_valid and not any(
             e.startswith("ekell_prompt") for e in shared_errors
@@ -543,5 +697,6 @@ def preflight_decision_suite(
         "runner_bundle_integrity": bundle_integrity,
         "shared_generation_identity": generation_identity,
         "ekell_prompt_bundle_valid": ekell_prompt_bundle_valid if formal else False,
+        "formal_runtime_validation": formal_runtime_validation,
         "methods": method_reports,
     }

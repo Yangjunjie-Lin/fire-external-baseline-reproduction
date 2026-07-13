@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import tempfile
@@ -17,6 +16,7 @@ from external_baselines.common.text_utils import compact_text
 from external_baselines.retrieval.embedding_backends import (
     EmbeddingBackend,
     embedding_package_versions,
+    l2_normalize_vector,
     validate_embedding_backend,
 )
 
@@ -30,11 +30,6 @@ SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return float(sum(float(x) * float(y) for x, y in zip(a, b)))
-
-
-def _l2_normalize(vector: list[float]) -> list[float]:
-    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-    return [v / norm for v in vector]
 
 
 def _model_slug(model_name: str) -> str:
@@ -114,6 +109,7 @@ def dense_index_identity_checksum(
     model_name: str,
     model_version: str,
     dimension: int,
+    normalize_embeddings: bool,
     document_count: int,
     documents_checksum: str,
     embeddings_checksum: str,
@@ -121,12 +117,15 @@ def dense_index_identity_checksum(
     evidence_source_checksum: str,
 ) -> str:
     """Canonical Dense persisted-index checksum payload."""
+    if type(normalize_embeddings) is not bool:
+        raise TypeError("dense_index_normalize_embeddings_must_be_bool")
     return sha256_json(
         {
             "backend": backend,
             "model_name": model_name,
             "model_version": model_version,
             "dimension": dimension,
+            "normalize_embeddings": normalize_embeddings,
             "document_count": document_count,
             "documents_checksum": documents_checksum,
             "embeddings_checksum": embeddings_checksum,
@@ -194,6 +193,34 @@ def _read_dense_documents_strict(path: Path) -> list[dict[str, Any]]:
     return documents
 
 
+def _validate_dense_embedding_values(
+    arr: Any,
+    *,
+    normalize_embeddings: bool,
+    chunk_rows: int = 4096,
+) -> None:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise DenseIndexError("numpy is required to validate dense embeddings (.npy).") from exc
+
+    row_count = int(arr.shape[0])
+    for start in range(0, row_count, chunk_rows):
+        block = np.asarray(arr[start : start + chunk_rows])
+        if not np.isfinite(block).all():
+            raise DenseIndexError("dense_index_embeddings_non_finite")
+        norms = np.linalg.norm(block, axis=1)
+        if (norms <= 1e-12).any():
+            raise DenseIndexError("dense_index_embeddings_zero_vector")
+        if normalize_embeddings and not np.allclose(
+            norms,
+            1.0,
+            rtol=1e-4,
+            atol=1e-5,
+        ):
+            raise DenseIndexError("dense_index_normalized_embeddings_unit_norm_mismatch")
+
+
 def require_dense_formal_embedding_manifest(manifest: dict[str, Any]) -> None:
     """Strict formal embedding evidence checks (no defaults or loose bool coercion)."""
     if "actual_embedding_used" not in manifest:
@@ -231,6 +258,8 @@ def build_dense_index(
     reject_smoke: bool = False,
 ) -> dict[str, Any]:
     """Build a dense evidence index directory. Returns the index manifest."""
+    if type(normalize_embeddings) is not bool:
+        raise DenseIndexError("dense_index_normalize_embeddings_must_be_bool")
     validate_embedding_backend(
         embedding_backend, paper_final=paper_final, reject_smoke=reject_smoke
     )
@@ -249,7 +278,7 @@ def build_dense_index(
         if len(vectors) != len(batch):
             raise DenseIndexError("Embedding batch size mismatch.")
         if normalize_embeddings:
-            vectors = [_l2_normalize(v) for v in vectors]
+            vectors = [l2_normalize_vector(v) for v in vectors]
         embeddings.extend(vectors)
 
     if len(embeddings) != len(documents):
@@ -283,6 +312,7 @@ def build_dense_index(
         model_name=embedding_backend.model_name,
         model_version=embedding_backend.model_version,
         dimension=dim,
+        normalize_embeddings=normalize_embeddings,
         document_count=len(documents),
         documents_checksum=docs_checksum,
         embeddings_checksum=emb_checksum,
@@ -295,7 +325,7 @@ def build_dense_index(
         "model_name": embedding_backend.model_name,
         "model_version": embedding_backend.model_version,
         "dimension": dim,
-        "normalize_embeddings": bool(normalize_embeddings),
+        "normalize_embeddings": normalize_embeddings,
         "document_count": len(documents),
         "corpus_checksum": corpus_checksum,
         "documents_checksum": docs_checksum,
@@ -356,11 +386,21 @@ def load_dense_index(
         raise DenseIndexError("documents_file_checksum mismatch.")
     if _file_sha256(emb_path) != manifest.get("embeddings_checksum"):
         raise DenseIndexError("embeddings_checksum mismatch.")
+    normalize_embeddings = _require_exact_bool(dict(manifest), "normalize_embeddings")
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise DenseIndexError("numpy is required to validate dense embeddings (.npy).") from exc
+    _validate_dense_embedding_values(
+        np.load(emb_path, mmap_mode="r"),
+        normalize_embeddings=normalize_embeddings,
+    )
     expected_index = dense_index_identity_checksum(
         backend=str(manifest.get("backend")),
         model_name=str(manifest.get("model_name")),
         model_version=str(manifest.get("model_version")),
         dimension=dim,
+        normalize_embeddings=normalize_embeddings,
         document_count=len(documents),
         documents_checksum=docs_checksum,
         embeddings_checksum=str(manifest.get("embeddings_checksum")),
@@ -419,6 +459,7 @@ def validate_dense_index_integrity_for_freeze(
     expected_model_version: str | None = None,
     expected_dimension: int | None = None,
     expected_corpus_checksum: str | None = None,
+    expected_normalize_embeddings: bool | None = None,
 ) -> dict[str, Any]:
     """Strict persisted Dense index validation for freeze-candidate/complete freeze."""
     index_dir = Path(index_dir)
@@ -469,6 +510,11 @@ def validate_dense_index_integrity_for_freeze(
         raise DenseIndexError("dimension mismatch.")
     if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
         raise DenseIndexError("corpus_checksum mismatch.")
+    if expected_normalize_embeddings is not None:
+        if type(expected_normalize_embeddings) is not bool:
+            raise DenseIndexError("dense_index_expected_normalize_embeddings_must_be_bool")
+        if normalize_embeddings is not expected_normalize_embeddings:
+            raise DenseIndexError("dense_index_normalize_embeddings_mismatch")
 
     documents = _read_dense_documents_strict(docs_path)
     if len(documents) != document_count:
@@ -497,12 +543,14 @@ def validate_dense_index_integrity_for_freeze(
         raise DenseIndexError("embeddings.npy row count does not match documents.")
     if dim != dimension:
         raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
+    _validate_dense_embedding_values(arr, normalize_embeddings=normalize_embeddings)
 
     recomputed_index_checksum = dense_index_identity_checksum(
         backend=backend,
         model_name=model_name,
         model_version=model_version,
         dimension=dimension,
+        normalize_embeddings=normalize_embeddings,
         document_count=document_count,
         documents_checksum=recomputed_documents_checksum,
         embeddings_checksum=actual_embeddings_checksum,
@@ -640,8 +688,15 @@ def query_dense_index(
                 raise DenseIndexError("Query embedding model_version does not match index.")
 
     q = embedding_backend.embed_query(query)
-    if normalize_embeddings or bool((index.get("manifest") or {}).get("normalize_embeddings", True)):
-        q = _l2_normalize(q)
+    manifest_normalize = (index.get("manifest") or {}).get("normalize_embeddings")
+    if type(manifest_normalize) is bool:
+        normalize_query = manifest_normalize
+    elif type(normalize_embeddings) is bool:
+        normalize_query = normalize_embeddings
+    else:
+        raise DenseIndexError("dense_index_normalize_embeddings_must_be_bool")
+    if normalize_query:
+        q = l2_normalize_vector(q)
     if len(q) != int(index["dimension"]):
         raise DenseIndexError("Query embedding dimension does not match index.")
 

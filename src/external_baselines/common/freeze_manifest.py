@@ -33,6 +33,67 @@ RUNNER_BUNDLE_IDENTITY_FIELDS = (
     "corpus_aggregate_sha256",
 )
 
+DENSE_COMPLETE_INDEX_FIELDS = (
+    "index_type",
+    "backend",
+    "model_name",
+    "model_version",
+    "dimension",
+    "normalize_embeddings",
+    "document_count",
+    "corpus_checksum",
+    "documents_checksum",
+    "documents_file_checksum",
+    "embeddings_checksum",
+    "evidence_source_checksum",
+    "index_checksum",
+    "index_manifest_sha256",
+    "actual_embedding_used",
+    "smoke_fallback_used",
+)
+
+HYBRID_COMPLETE_INDEX_FIELDS = (
+    "index_checksum",
+    "index_manifest_sha256",
+)
+
+EKELL_COMPLETE_INDEX_FIELDS = (
+    "index_type",
+    "backend",
+    "model_name",
+    "model_version",
+    "dimension",
+    "normalize_embeddings",
+    "document_count",
+    "kg_checksum",
+    "corpus_checksum",
+    "documents_checksum",
+    "documents_file_checksum",
+    "embeddings_checksum",
+    "index_checksum",
+    "index_manifest_sha256",
+    "actual_embedding_used",
+    "smoke_fallback_used",
+)
+
+INDEX_SHA256_FIELDS = frozenset(
+    {
+        "corpus_checksum",
+        "documents_checksum",
+        "documents_file_checksum",
+        "embeddings_checksum",
+        "evidence_source_checksum",
+        "kg_checksum",
+        "index_checksum",
+        "index_manifest_sha256",
+    }
+)
+INDEX_STRING_FIELDS = frozenset({"index_type", "backend", "model_name", "model_version"})
+INDEX_POSITIVE_INT_FIELDS = frozenset({"dimension", "document_count"})
+INDEX_BOOL_FIELDS = frozenset(
+    {"normalize_embeddings", "actual_embedding_used", "smoke_fallback_used"}
+)
+
 
 def runner_bundle_block_from_freeze(freeze: dict[str, Any]) -> dict[str, Any]:
     block = freeze.get("runner_bundle")
@@ -277,6 +338,59 @@ def _require_index_block(
     return value
 
 
+def _require_complete_index_block(
+    value: Any,
+    *,
+    label: str,
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise FormalConfigError(f"freeze_manifest missing indexes.{label}.")
+    for field in fields:
+        field_label = f"indexes.{label}.{field}"
+        raw = value.get(field)
+        if field in INDEX_SHA256_FIELDS:
+            _require_sha256_value(raw, label=field_label)
+        elif field in INDEX_STRING_FIELDS:
+            if type(raw) is not str or not raw:
+                raise FormalConfigError(f"freeze_manifest {field_label} must be a non-empty string.")
+        elif field in INDEX_POSITIVE_INT_FIELDS:
+            if type(raw) is not int or raw <= 0:
+                raise FormalConfigError(f"freeze_manifest {field_label} must be a positive integer.")
+        elif field in INDEX_BOOL_FIELDS:
+            if type(raw) is not bool:
+                raise FormalConfigError(f"freeze_manifest {field_label} must be an exact boolean.")
+        elif raw in (None, ""):
+            raise FormalConfigError(f"freeze_manifest missing {field_label}.")
+    return value
+
+
+def _compare_index_identity_fields(
+    frozen: dict[str, Any],
+    live: dict[str, Any],
+    *,
+    label: str,
+    fields: tuple[str, ...],
+    require_live: bool,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for field in fields:
+        if field not in frozen:
+            continue
+        field_label = f"indexes.{label}.{field}"
+        if field not in live:
+            if require_live:
+                raise FormalConfigError(f"freeze_manifest loaded index missing {field_label}.")
+            continue
+        frozen_value = frozen.get(field)
+        live_value = live.get(field)
+        ok = frozen_value == live_value
+        checks.append({"field": field_label, "ok": ok})
+        if not ok:
+            raise FormalConfigError(f"freeze_manifest {field_label} mismatch.")
+    return checks
+
+
 def validate_freeze_manifest(
     freeze_path: str | Path,
     *,
@@ -489,20 +603,20 @@ def validate_freeze_manifest(
     ekell_freeze = freeze_indexes.get("ekell") or {}
 
     if require_complete:
-        dense_freeze = _require_index_block(
+        dense_freeze = _require_complete_index_block(
             freeze_indexes.get("dense"),
             label="dense",
-            fields=("index_checksum", "index_manifest_sha256"),
+            fields=DENSE_COMPLETE_INDEX_FIELDS,
         )
-        hybrid_freeze = _require_index_block(
+        hybrid_freeze = _require_complete_index_block(
             freeze_indexes.get("hybrid_dense_dependency"),
             label="hybrid_dense_dependency",
-            fields=("index_checksum",),
+            fields=HYBRID_COMPLETE_INDEX_FIELDS,
         )
-        ekell_freeze = _require_index_block(
+        ekell_freeze = _require_complete_index_block(
             freeze_indexes.get("ekell"),
             label="ekell",
-            fields=("index_checksum", "index_manifest_sha256"),
+            fields=EKELL_COMPLETE_INDEX_FIELDS,
         )
 
     if dense_loaded or expected_idx.get("dense") or (require_complete and dense_freeze):
@@ -542,6 +656,14 @@ def validate_freeze_manifest(
                 expected_dense.get("model_version") or dense_loaded.get("model_version"),
                 label="indexes.dense.model_version",
             )
+        dense_live = {**dense_loaded, **expected_dense}
+        _compare_index_identity_fields(
+            dense_freeze,
+            dense_live,
+            label="dense",
+            fields=DENSE_COMPLETE_INDEX_FIELDS,
+            require_live=False,
+        )
 
     if hybrid_loaded or expected_idx.get("hybrid_dense_dependency") or (require_complete and hybrid_freeze):
         expected_hybrid = (
@@ -569,6 +691,22 @@ def validate_freeze_manifest(
         hybrid_cs = hybrid_freeze.get("index_checksum") or actual_hybrid
         if dense_cs and hybrid_cs and str(dense_cs) != str(hybrid_cs):
             raise FormalConfigError("freeze_manifest hybrid dense dependency checksum must match dense.")
+        dense_sha = dense_freeze.get("index_manifest_sha256") or dense_loaded.get("index_manifest_sha256")
+        hybrid_sha = hybrid_freeze.get("index_manifest_sha256") or expected_hybrid.get("index_manifest_sha256")
+        if dense_sha and hybrid_sha and str(dense_sha) != str(hybrid_sha):
+            raise FormalConfigError("freeze_manifest hybrid dense dependency manifest SHA must match dense.")
+        hybrid_live = {
+            **({"index_checksum": dense_loaded.get("index_checksum") or dense_loaded.get("checksum")} if dense_loaded else {}),
+            **hybrid_loaded,
+            **expected_hybrid,
+        }
+        _compare_index_identity_fields(
+            hybrid_freeze,
+            hybrid_live,
+            label="hybrid_dense_dependency",
+            fields=HYBRID_COMPLETE_INDEX_FIELDS,
+            require_live=False,
+        )
 
     if ekell_loaded or expected_idx.get("ekell") or (require_complete and ekell_freeze):
         expected_ekell = (expected_idx.get("ekell") or {}) if isinstance(expected_idx.get("ekell"), dict) else {}
@@ -589,6 +727,14 @@ def validate_freeze_manifest(
             actual = expected_ekell.get(field) or ekell_loaded.get(field)
             if frozen or (require_complete and field == "index_manifest_sha256"):
                 _check_optional_pair(frozen, actual, label=f"indexes.ekell.{field}", require=False)
+        ekell_live = {**ekell_loaded, **expected_ekell}
+        _compare_index_identity_fields(
+            ekell_freeze,
+            ekell_live,
+            label="ekell",
+            fields=EKELL_COMPLETE_INDEX_FIELDS,
+            require_live=False,
+        )
 
     result = {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
     if migration_warning:
@@ -677,28 +823,68 @@ def validate_frozen_runtime_inputs(
     freeze_indexes = freeze.get("indexes") or {}
     loaded = loaded_index_manifests or {}
 
-    def _cs(block: Any) -> str | None:
+    def _loaded_identity(key: str) -> dict[str, Any]:
+        block = loaded.get(key) or {}
         if not isinstance(block, dict):
-            return None
-        return block.get("index_checksum") or block.get("checksum")
+            return {}
+        if "index_checksum" in block or "checksum" in block:
+            return block
+        return dict(block.get("manifest") or {})
 
-    dense_cs = _cs(loaded.get("dense"))
-    hybrid_cs = _cs(loaded.get("hybrid_dense_dependency")) or dense_cs
-    ekell_cs = _cs(loaded.get("ekell"))
+    dense_loaded = _loaded_identity("dense")
+    hybrid_loaded = _loaded_identity("hybrid_dense_dependency")
+    ekell_loaded = _loaded_identity("ekell")
+    dense_cs = dense_loaded.get("index_checksum") or dense_loaded.get("checksum")
+    hybrid_cs = (
+        hybrid_loaded.get("index_checksum")
+        or hybrid_loaded.get("checksum")
+        or dense_cs
+    )
+    ekell_cs = ekell_loaded.get("index_checksum") or ekell_loaded.get("checksum")
 
-    dense_freeze = (freeze_indexes.get("dense") or {}).get("index_checksum")
-    if dense_freeze and dense_cs and str(dense_freeze) != str(dense_cs):
-        raise FormalConfigError("freeze indexes.dense.index_checksum mismatches loaded index.")
-    hybrid_freeze = (freeze_indexes.get("hybrid_dense_dependency") or {}).get("index_checksum")
-    if hybrid_freeze and hybrid_cs and str(hybrid_freeze) != str(hybrid_cs):
+    dense_freeze = freeze_indexes.get("dense") or {}
+    hybrid_freeze = freeze_indexes.get("hybrid_dense_dependency") or {}
+    ekell_freeze = freeze_indexes.get("ekell") or {}
+    if isinstance(dense_freeze, dict):
+        _compare_index_identity_fields(
+            dense_freeze,
+            dense_loaded,
+            label="dense",
+            fields=DENSE_COMPLETE_INDEX_FIELDS,
+            require_live=bool(dense_freeze),
+        )
+    if isinstance(hybrid_freeze, dict):
+        hybrid_live = {
+            "index_checksum": dense_cs,
+            "index_manifest_sha256": dense_loaded.get("index_manifest_sha256"),
+            **hybrid_loaded,
+        }
+        _compare_index_identity_fields(
+            hybrid_freeze,
+            hybrid_live,
+            label="hybrid_dense_dependency",
+            fields=HYBRID_COMPLETE_INDEX_FIELDS,
+            require_live=bool(hybrid_freeze),
+        )
+    hybrid_freeze_checksum = hybrid_freeze.get("index_checksum") if isinstance(hybrid_freeze, dict) else None
+    if hybrid_freeze_checksum and hybrid_cs and str(hybrid_freeze_checksum) != str(hybrid_cs):
         raise FormalConfigError(
             "freeze indexes.hybrid_dense_dependency.index_checksum mismatches loaded index."
         )
     if dense_cs and hybrid_cs and str(dense_cs) != str(hybrid_cs):
         raise FormalConfigError("runtime hybrid dense dependency checksum must match dense.")
-    ekell_freeze = (freeze_indexes.get("ekell") or {}).get("index_checksum")
-    if ekell_freeze and ekell_cs and str(ekell_freeze) != str(ekell_cs):
-        raise FormalConfigError("freeze indexes.ekell.index_checksum mismatches loaded index.")
+    dense_sha = dense_loaded.get("index_manifest_sha256")
+    hybrid_sha = hybrid_loaded.get("index_manifest_sha256") or dense_sha
+    if dense_sha and hybrid_sha and str(dense_sha) != str(hybrid_sha):
+        raise FormalConfigError("runtime hybrid dense dependency manifest SHA must match dense.")
+    if isinstance(ekell_freeze, dict):
+        _compare_index_identity_fields(
+            ekell_freeze,
+            ekell_loaded,
+            label="ekell",
+            fields=EKELL_COMPLETE_INDEX_FIELDS,
+            require_live=bool(ekell_freeze),
+        )
 
     return {
         "ok": True,
@@ -706,8 +892,8 @@ def validate_frozen_runtime_inputs(
         "corpus_checksum": expected_corpus,
         "prediction_schema_checksum": expected_schema,
         "indexes": {
-            "dense": {"checksum": dense_cs},
-            "hybrid_dense_dependency": {"checksum": hybrid_cs},
-            "ekell": {"checksum": ekell_cs},
+            "dense": dict(dense_loaded, checksum=dense_cs),
+            "hybrid_dense_dependency": dict(hybrid_loaded, checksum=hybrid_cs),
+            "ekell": dict(ekell_loaded, checksum=ekell_cs),
         },
     }

@@ -93,7 +93,8 @@ python scripts/run_interop_baselines.py \
 # 5) After DEV selection — complete freeze generation:
 #    create_freeze_manifest.py runs freeze-candidate validation first, then loads
 #    the Runner Bundle with Formal authority, verifies aggregate Bundle identity
-#    plus persisted Dense/E-KELL index integrity, and writes atomically.
+#    before persisted-index hashing, then verifies persisted Dense/E-KELL
+#    index integrity and writes atomically.
 python scripts/create_freeze_manifest.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
@@ -192,8 +193,11 @@ python scripts/validate_formal_config.py \
 - Formal model identity is frozen in YAML; env vars supply credentials only.
 - Complete freeze generation verifies the Runner Bundle aggregate identity in addition to per-file input/schema checksums. A producer-declared checksum is optional, but when present it must be a lowercase SHA-256 and exactly match the consumer-computed Bundle hash.
 - Freeze-candidate validation accepts only `freeze_status=provisional`; set `freeze_status=frozen` only after the complete freeze file is generated and manually reviewed.
-- Freeze-candidate validation performs full persisted-index integrity checks for Dense, Hybrid, and E-KELL resources: documents, embedding files, semantic document checksums, manifest SHA-256, final index checksums, model identity, dimensions, corpus/KG identity, and real-embedding evidence.
-- Complete freezes must contain valid Dense and E-KELL `index_checksum` and `index_manifest_sha256`; Hybrid must reference exactly the same Dense index checksum.
+- Freeze-candidate validation performs full persisted-index integrity checks for Dense, Hybrid, and E-KELL resources: documents, embedding files, semantic document checksums, file checksums, manifest SHA-256, final index checksums, model identity, dimensions, normalization policy, corpus/KG identity, and real-embedding evidence.
+- Complete freezes contain full Dense and E-KELL file-level identity (`documents_checksum`, `documents_file_checksum`, `embeddings_checksum`, `corpus_checksum`, plus `kg_checksum` for E-KELL), not only top-level index checksums. Hybrid must inherit Dense `index_checksum` and `index_manifest_sha256`.
+- Formal preflight revalidates the live Dense, Hybrid, and E-KELL persisted indexes before any LLM client build or prediction generation and requires their frozen identities to match exactly. Replacing a frozen index with a different internally valid index is rejected.
+- `normalize_embeddings` is a real build parameter: it is executed during index construction, recorded in manifests, included in canonical index checksums, checked against method configuration, frozen, and rechecked at runtime. Indexes built before this checksum contract must be rebuilt.
+- Persisted embeddings must be finite and nonzero. When `normalize_embeddings=true`, all vectors must satisfy the documented unit-norm tolerance.
 - Complete-freeze writes are transactional: any failure removes the temporary output and preserves an existing final freeze file.
 - Formal control/diagnostics directory is outside the immutable run root:
 
@@ -219,7 +223,7 @@ outputs/formal/
 - Immutable suite summary records commit success but does not pre-declare backup cleanup success; actual cleanup status is in `publish_receipt.json`.
 - Staged validation reparses predictions against the frozen Runner Bundle prediction schema and schema SHA; verifies exact case IDs, method IDs, summaries, supplemental decision artifacts, and all run-manifest hashes.
 - The immutable run manifest records both input-cases and prediction-schema provenance, and staged validation checks those values against preflight.
-- Formal verifies the actual runtime embedding backend against both method configuration and persisted index metadata.
+- Formal verifies the actual runtime embedding backend and `normalize_embeddings` policy against both method configuration and persisted index metadata.
 - Runtime caches are scoped to one comparison-suite invocation and cannot leak across runs.
 - Embedding backend injection is invoked only for Dense, Hybrid, and E-KELL.
 - Run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts.

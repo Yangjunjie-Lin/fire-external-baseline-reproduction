@@ -146,6 +146,8 @@ def build_dense_index(
     corpus_checksum: str | None = None,
 ) -> DenseIndex:
     """Build dense index. Smoke uses legacy JSON; real backends use directory format."""
+    if type(normalize_embeddings) is not bool:
+        raise DenseIndexError("dense_index_normalize_embeddings_must_be_bool")
     evidence_path = Path(evidence_path)
     emb = create_embedding_backend(
         backend,
@@ -284,12 +286,15 @@ class DenseRetriever:
         if self.index.directory_payload is not None:
             if self.embedding_backend is None:
                 raise DenseIndexError("Directory dense index query requires embedding_backend.")
+            normalize = self.index.build_manifest.get("normalize_embeddings")
+            if type(normalize) is not bool:
+                raise DenseIndexError("dense_index_normalize_embeddings_must_be_bool")
             return query_dense_index(
                 self.index.directory_payload,
                 query,
                 self.embedding_backend,
                 top_k=top_k,
-                normalize_embeddings=bool(self.index.build_manifest.get("normalize_embeddings", True)),
+                normalize_embeddings=normalize,
             )
         # Smoke / legacy JSON path
         if not self.index.documents:

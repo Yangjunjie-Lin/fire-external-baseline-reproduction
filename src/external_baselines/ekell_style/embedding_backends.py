@@ -8,5 +8,6 @@ from external_baselines.retrieval.embedding_backends import (  # noqa: F401
     Text2VecEmbeddingBackend,
     create_embedding_backend,
     embedding_package_versions,
+    l2_normalize_vector,
     validate_embedding_backend,
 )

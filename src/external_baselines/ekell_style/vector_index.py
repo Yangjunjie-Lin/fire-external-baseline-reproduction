@@ -16,6 +16,7 @@ from external_baselines.common.io import read_json, read_jsonl
 from external_baselines.ekell_style.embedding_backends import (
     EmbeddingBackend,
     embedding_package_versions,
+    l2_normalize_vector,
     validate_embedding_backend,
 )
 from external_baselines.ekell_style.kg_loader import (
@@ -70,18 +71,22 @@ def ekell_index_identity_checksum(
     model_name: str,
     model_version: str,
     dimension: int,
+    normalize_embeddings: bool,
     document_count: int,
     documents_checksum: str,
     embeddings_checksum: str,
     kg_checksum: str,
     corpus_checksum: str,
 ) -> str:
+    if type(normalize_embeddings) is not bool:
+        raise TypeError("ekell_index_normalize_embeddings_must_be_bool")
     return sha256_json(
         {
             "backend": backend,
             "model_name": model_name,
             "model_version": model_version,
             "dimension": dimension,
+            "normalize_embeddings": normalize_embeddings,
             "document_count": document_count,
             "documents_checksum": documents_checksum,
             "embeddings_checksum": embeddings_checksum,
@@ -159,6 +164,34 @@ def _read_vector_documents_strict(path: Path) -> list[VectorDocument]:
     if not documents:
         raise VectorIndexError("ekell_index_documents_empty")
     return documents
+
+
+def _validate_ekell_embedding_values(
+    arr: Any,
+    *,
+    normalize_embeddings: bool,
+    chunk_rows: int = 4096,
+) -> None:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise VectorIndexError("numpy is required to validate E-KELL embeddings (.npy).") from exc
+
+    row_count = int(arr.shape[0])
+    for start in range(0, row_count, chunk_rows):
+        block = np.asarray(arr[start : start + chunk_rows])
+        if not np.isfinite(block).all():
+            raise VectorIndexError("ekell_index_embeddings_non_finite")
+        norms = np.linalg.norm(block, axis=1)
+        if (norms <= 1e-12).any():
+            raise VectorIndexError("ekell_index_embeddings_zero_vector")
+        if normalize_embeddings and not np.allclose(
+            norms,
+            1.0,
+            rtol=1e-4,
+            atol=1e-5,
+        ):
+            raise VectorIndexError("ekell_index_normalized_embeddings_unit_norm_mismatch")
 
 
 def kg_segments(kg: FireKG) -> list[VectorDocument]:
@@ -293,8 +326,11 @@ class VectorIndex:
         kg_checksum: str | None = None,
         paper_final: bool = False,
         reject_smoke: bool = False,
+        normalize_embeddings: bool = True,
         build_timestamp: str | None = None,
     ) -> "VectorIndex":
+        if type(normalize_embeddings) is not bool:
+            raise VectorIndexError("ekell_index_normalize_embeddings_must_be_bool")
         validate_embedding_backend(backend, paper_final=paper_final, reject_smoke=reject_smoke)
         if isinstance(documents_or_kg, FireKG):
             kg = documents_or_kg
@@ -320,6 +356,8 @@ class VectorIndex:
         vectors = backend.embed_documents([document.text for document in documents])
         if documents and not vectors:
             raise VectorIndexError("Embedding backend returned no vectors.")
+        if normalize_embeddings:
+            vectors = [l2_normalize_vector(vector) for vector in vectors]
         dimension = len(vectors[0]) if vectors else int(backend.dimension)
         if any(len(vector) != dimension for vector in vectors):
             raise VectorIndexError("Embedding backend returned inconsistent dimensions.")
@@ -336,6 +374,7 @@ class VectorIndex:
             "kg_checksum": kg_checksum or computed_kg_checksum,
             "build_timestamp": build_timestamp or datetime.now(timezone.utc).isoformat(),
             "backend": backend.backend,
+            "normalize_embeddings": normalize_embeddings,
             "package_versions": package_versions,
             "actual_embedding_used": bool(backend.actual_embedding_used),
             "smoke_fallback_used": bool(backend.smoke_fallback_used),
@@ -435,6 +474,7 @@ class VectorIndex:
             model_name=str(meta.get("embedding_model") or meta.get("model_name")),
             model_version=str(meta.get("model_version")),
             dimension=dimension,
+            normalize_embeddings=_read_exact_bool(meta, "normalize_embeddings"),
             document_count=len(self.documents),
             documents_checksum=documents_checksum,
             embeddings_checksum=embeddings_checksum,
@@ -447,11 +487,7 @@ class VectorIndex:
             "model_name": meta.get("embedding_model") or meta.get("model_name"),
             "model_version": meta.get("model_version"),
             "dimension": dimension,
-            "normalize_embeddings": _read_exact_bool(
-                meta,
-                "normalize_embeddings",
-                default=True,
-            ),
+            "normalize_embeddings": _read_exact_bool(meta, "normalize_embeddings"),
             "document_count": len(self.documents),
             "kg_checksum": meta.get("kg_checksum"),
             "corpus_checksum": meta.get("corpus_checksum"),
@@ -487,6 +523,7 @@ class VectorIndex:
         expected_dimension: int | None = None,
         expected_kg_checksum: str | None = None,
         expected_corpus_checksum: str | None = None,
+        expected_normalize_embeddings: bool | None = None,
     ) -> dict[str, Any]:
         index_dir = Path(index_dir)
         if index_dir.is_file():
@@ -538,6 +575,11 @@ class VectorIndex:
             raise VectorIndexError("kg_checksum mismatch.")
         if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
             raise VectorIndexError("corpus_checksum mismatch.")
+        if expected_normalize_embeddings is not None:
+            if type(expected_normalize_embeddings) is not bool:
+                raise VectorIndexError("ekell_index_expected_normalize_embeddings_must_be_bool")
+            if normalize_embeddings is not expected_normalize_embeddings:
+                raise VectorIndexError("ekell_index_normalize_embeddings_mismatch")
 
         documents = _read_vector_documents_strict(docs_path)
         if len(documents) != document_count:
@@ -566,12 +608,14 @@ class VectorIndex:
             raise VectorIndexError("embeddings.npy row count does not match documents.")
         if dim != dimension:
             raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
+        _validate_ekell_embedding_values(arr, normalize_embeddings=normalize_embeddings)
 
         recomputed_index_checksum = ekell_index_identity_checksum(
             backend=backend,
             model_name=model_name,
             model_version=model_version,
             dimension=dimension,
+            normalize_embeddings=normalize_embeddings,
             document_count=document_count,
             documents_checksum=recomputed_documents_checksum,
             embeddings_checksum=actual_embeddings_checksum,
@@ -698,7 +742,8 @@ class VectorIndex:
             import numpy as np
         except ImportError as exc:  # pragma: no cover
             raise VectorIndexError("numpy is required to load E-KELL embeddings (.npy).") from exc
-        vectors = [[float(x) for x in row] for row in np.load(emb_path)]
+        arr = np.load(emb_path)
+        vectors = [[float(x) for x in row] for row in arr]
         documents = [VectorDocument(**doc) if isinstance(doc, dict) else doc for doc in documents_raw]
 
         if int(manifest.get("document_count") or 0) != len(documents):
@@ -722,12 +767,15 @@ class VectorIndex:
             raise VectorIndexError("documents_file_checksum mismatch.")
         if sha256_file(emb_path) != manifest.get("embeddings_checksum"):
             raise VectorIndexError("embeddings_checksum mismatch.")
+        normalize_embeddings = _require_exact_bool(dict(manifest), "normalize_embeddings")
+        _validate_ekell_embedding_values(arr, normalize_embeddings=normalize_embeddings)
 
         recomputed = ekell_index_identity_checksum(
             backend=str(manifest.get("backend")),
             model_name=str(manifest.get("model_name")),
             model_version=str(manifest.get("model_version")),
             dimension=dim,
+            normalize_embeddings=normalize_embeddings,
             document_count=len(documents),
             documents_checksum=documents_checksum,
             embeddings_checksum=str(manifest.get("embeddings_checksum")),

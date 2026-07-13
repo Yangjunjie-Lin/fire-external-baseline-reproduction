@@ -37,6 +37,7 @@ from external_baselines.common.formal_config_validator import (  # noqa: E402
 from external_baselines.common.guards import assert_paper_final_allowed  # noqa: E402
 from external_baselines.common.io import load_scenarios, read_json, write_json, write_jsonl  # noqa: E402
 from external_baselines.common.llm_client import llm_config_summary  # noqa: E402
+from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
     assert_no_evaluator_bundle_access,
     load_runner_bundle,
@@ -96,12 +97,17 @@ def _shared_embedding_snapshot(method_configs: dict[str, dict]) -> dict[str, Any
         else:
             block = cfg.get("ekell_vector") or {}
         if block:
+            normalize = (
+                require_exact_bool(block.get("normalize_embeddings"), field=f"{mid}.normalize_embeddings")
+                if block.get("normalize_embeddings") is not None
+                else None
+            )
             return {
                 "backend": block.get("backend"),
                 "model_name": block.get("model_name"),
                 "model_version": block.get("model_version"),
                 "dimension": resolve_dimension(block),
-                "normalize_embeddings": bool(block.get("normalize_embeddings", True)),
+                "normalize_embeddings": normalize,
             }
     return {
         "backend": None,

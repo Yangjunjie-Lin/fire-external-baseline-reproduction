@@ -23,6 +23,7 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
 )
 from external_baselines.common.formal_config_validator import _is_placeholder  # noqa: E402
 from external_baselines.common.io import write_json  # noqa: E402
+from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
 from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum  # noqa: E402
 
 
@@ -114,7 +115,10 @@ def main(argv: list[str] | None = None) -> None:
                 dim=resolve_dimension(dense, 1024),
                 cache_path=index_path,
                 batch_size=int(dense.get("batch_size", 16)),
-                normalize_embeddings=bool(dense.get("normalize_embeddings", True)),
+                normalize_embeddings=require_exact_bool(
+                    dense.get("normalize_embeddings"),
+                    field="dense_rag.normalize_embeddings",
+                ),
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(dense.get("reject_smoke", True)),
                 corpus_checksum=sha256_file(evidence),
@@ -180,6 +184,10 @@ def main(argv: list[str] | None = None) -> None:
                 dimension=resolve_dimension(vector, 1024),
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(vector.get("reject_smoke", True)),
+                normalize_embeddings=require_exact_bool(
+                    vector.get("normalize_embeddings"),
+                    field="ekell_vector.normalize_embeddings",
+                ),
             )
             index = VectorIndex.from_kg(
                 kg,

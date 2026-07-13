@@ -11,6 +11,7 @@ from external_baselines.common.checksums import sha256_file
 from external_baselines.dense_rag.pipeline import DenseRetriever, build_dense_index
 from external_baselines.retrieval.dense_index import (
     DenseIndexError,
+    dense_index_identity_checksum,
     load_dense_index,
     validate_dense_index_integrity_for_freeze,
 )
@@ -65,6 +66,28 @@ def _read_manifest(index_dir: Path) -> dict:
 
 def _write_manifest(index_dir: Path, manifest: dict) -> None:
     (index_dir / "index_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _rewrite_dense_embeddings(index_dir: Path, arr) -> None:  # noqa: ANN001
+    import numpy as np
+
+    emb_path = index_dir / "embeddings.npy"
+    np.save(emb_path, arr.astype("float32"))
+    manifest = _read_manifest(index_dir)
+    manifest["embeddings_checksum"] = sha256_file(emb_path)
+    manifest["index_checksum"] = dense_index_identity_checksum(
+        backend=manifest["backend"],
+        model_name=manifest["model_name"],
+        model_version=manifest["model_version"],
+        dimension=manifest["dimension"],
+        normalize_embeddings=manifest["normalize_embeddings"],
+        document_count=manifest["document_count"],
+        documents_checksum=manifest["documents_checksum"],
+        embeddings_checksum=manifest["embeddings_checksum"],
+        corpus_checksum=manifest["corpus_checksum"],
+        evidence_source_checksum=manifest["evidence_source_checksum"],
+    )
+    _write_manifest(index_dir, manifest)
 
 
 def test_dense_real_backend_builds_index_with_injected_model(tmp_path: Path) -> None:
@@ -217,6 +240,111 @@ def test_dense_freeze_integrity_accepts_valid_index(tmp_path: Path) -> None:
     assert result["index_manifest_sha256"]
     assert result["actual_embedding_used"] is True
     assert result["smoke_fallback_used"] is False
+
+
+def test_dense_index_checksum_changes_with_normalize_embeddings() -> None:
+    payload = {
+        "backend": "text2vec",
+        "model_name": "fake/bge",
+        "model_version": "v-test",
+        "dimension": 8,
+        "document_count": 2,
+        "documents_checksum": "1" * 64,
+        "embeddings_checksum": "2" * 64,
+        "corpus_checksum": "3" * 64,
+        "evidence_source_checksum": "4" * 64,
+    }
+    assert dense_index_identity_checksum(normalize_embeddings=True, **payload) != dense_index_identity_checksum(
+        normalize_embeddings=False,
+        **payload,
+    )
+
+
+def test_dense_freeze_validator_accepts_matching_normalization(tmp_path: Path) -> None:
+    index_dir = _build_real_dense_index(tmp_path)
+
+    result = validate_dense_index_integrity_for_freeze(
+        index_dir,
+        expected_normalize_embeddings=True,
+    )
+
+    assert result["normalize_embeddings"] is True
+
+
+def test_dense_freeze_validator_rejects_normalization_mismatch(tmp_path: Path) -> None:
+    index_dir = _build_real_dense_index(tmp_path)
+
+    with pytest.raises(DenseIndexError, match="dense_index_normalize_embeddings_mismatch"):
+        validate_dense_index_integrity_for_freeze(
+            index_dir,
+            expected_normalize_embeddings=False,
+        )
+
+
+def test_dense_build_rejects_string_normalize_embeddings(tmp_path: Path) -> None:
+    with pytest.raises(DenseIndexError, match="normalize_embeddings"):
+        build_dense_index(
+            _evidence(tmp_path),
+            model_name="fake/bge",
+            model_version="v-test",
+            backend="text2vec",
+            dim=8,
+            cache_path=tmp_path / "idx",
+            embedding_model=FakeEmbeddingModel(8),
+            reject_smoke=True,
+            normalize_embeddings="true",  # type: ignore[arg-type]
+        )
+
+
+def test_dense_normalized_vectors_have_unit_norm(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_real_dense_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    norms = np.linalg.norm(arr, axis=1)
+
+    assert np.allclose(norms, 1.0, rtol=1e-4, atol=1e-5)
+
+
+def test_dense_strict_validator_rejects_non_unit_vectors_when_normalized(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_real_dense_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0] *= 2.0
+    _rewrite_dense_embeddings(index_dir, arr)
+
+    with pytest.raises(DenseIndexError, match="unit_norm"):
+        validate_dense_index_integrity_for_freeze(index_dir)
+
+
+@pytest.mark.parametrize(("value", "match"), [(float("nan"), "non_finite"), (float("inf"), "non_finite")])
+def test_dense_strict_validator_rejects_non_finite_embedding(
+    tmp_path: Path,
+    value: float,
+    match: str,
+) -> None:
+    import numpy as np
+
+    index_dir = _build_real_dense_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0, 0] = value
+    _rewrite_dense_embeddings(index_dir, arr)
+
+    with pytest.raises(DenseIndexError, match=match):
+        validate_dense_index_integrity_for_freeze(index_dir)
+
+
+def test_dense_strict_validator_rejects_zero_vector(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_real_dense_index(tmp_path)
+    arr = np.load(index_dir / "embeddings.npy")
+    arr[0] = 0.0
+    _rewrite_dense_embeddings(index_dir, arr)
+
+    with pytest.raises(DenseIndexError, match="zero_vector"):
+        validate_dense_index_integrity_for_freeze(index_dir)
 
 
 @pytest.mark.parametrize(

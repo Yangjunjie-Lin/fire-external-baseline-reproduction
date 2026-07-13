@@ -192,6 +192,12 @@ def assert_cached_runtime_compatible(
         default="unspecified",
     )
     configured_dimension = resolve_dimension(section, 64)
+    configured_normalize = read_exact_bool(
+        section,
+        "normalize_embeddings",
+        field=f"{config_section}.normalize_embeddings",
+        default=True,
+    )
     manifest = dict(getattr(cached_runtime, "index_manifest", None) or {})
     cached_backend = getattr(cached_runtime, "embedding_backend", None)
     if requested_backend is not None and cached_backend is not None:
@@ -207,6 +213,7 @@ def assert_cached_runtime_compatible(
         configured_model_name=configured_model_name,
         configured_model_version=configured_model_version,
         configured_dimension=configured_dimension,
+        configured_normalize_embeddings=configured_normalize,
         index_manifest=manifest,
         formal=formal,
     )
@@ -262,6 +269,12 @@ def prepare_dense_runtime(
         field="dense_rag.dimension",
         default=read_exact_int(dense_cfg, "dim", field="dense_rag.dim", default=64, minimum=1),
         minimum=1,
+    )
+    normalize_embeddings = read_exact_bool(
+        dense_cfg,
+        "normalize_embeddings",
+        field="dense_rag.normalize_embeddings",
+        default=True,
     )
     allow_rebuild = read_exact_bool(
         dense_cfg,
@@ -374,12 +387,7 @@ def prepare_dense_runtime(
                 default=16,
                 minimum=1,
             ),
-            normalize_embeddings=read_exact_bool(
-                dense_cfg,
-                "normalize_embeddings",
-                field="dense_rag.normalize_embeddings",
-                default=True,
-            ),
+            normalize_embeddings=normalize_embeddings,
             paper_final=paper_final,
             reject_smoke=reject_smoke,
             corpus_checksum=corpus_checksum,
@@ -396,6 +404,7 @@ def prepare_dense_runtime(
         configured_model_name=model_name,
         configured_model_version=model_version,
         configured_dimension=dim,
+        configured_normalize_embeddings=normalize_embeddings,
         index_manifest=manifest,
         formal=paper_final or reject_smoke,
     )
@@ -435,6 +444,8 @@ def prepare_hybrid_runtime(
         dense_cfg["backend"] = hybrid_cfg["dense_method"]
     if hybrid_cfg.get("dimension") and not dense_cfg.get("dimension"):
         dense_cfg["dimension"] = hybrid_cfg["dimension"]
+    if "normalize_embeddings" in hybrid_cfg and "normalize_embeddings" not in dense_cfg:
+        dense_cfg["normalize_embeddings"] = hybrid_cfg["normalize_embeddings"]
     if hybrid_cfg.get("reject_smoke") is not None and "reject_smoke" not in dense_cfg:
         dense_cfg["reject_smoke"] = hybrid_cfg["reject_smoke"]
     if hybrid_cfg.get("dense_index_path") and not dense_cfg.get("index_path"):
@@ -509,6 +520,12 @@ def prepare_ekell_runtime(
         field="ekell_vector.dimension",
         default=read_exact_int(vector_cfg, "dim", field="ekell_vector.dim", default=64, minimum=1),
         minimum=1,
+    )
+    normalize_embeddings = read_exact_bool(
+        vector_cfg,
+        "normalize_embeddings",
+        field="ekell_vector.normalize_embeddings",
+        default=True,
     )
 
     if "index_path" in vector_cfg:
@@ -589,6 +606,7 @@ def prepare_ekell_runtime(
             paper_final=paper_final,
             reject_smoke=reject_smoke,
             max_context_chars=int((config.get("retrieval") or {}).get("max_chunk_chars", 1200)),
+            normalize_embeddings=normalize_embeddings,
         )
         index = retriever.index
         index_load_count = 1
@@ -605,6 +623,7 @@ def prepare_ekell_runtime(
         configured_model_name=model_name,
         configured_model_version=model_version,
         configured_dimension=dimension,
+        configured_normalize_embeddings=normalize_embeddings,
         index_manifest=manifest,
         formal=paper_final or reject_smoke,
     )

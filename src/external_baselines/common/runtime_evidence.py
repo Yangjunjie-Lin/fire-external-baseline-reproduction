@@ -169,6 +169,7 @@ def collect_dense_runtime_evidence(
         "model_name": str(dense_cfg.get("model_name") or ""),
         "model_version": str(dense_cfg.get("model_version") or ""),
         "dimension": int(dense_cfg.get("dimension", dense_cfg.get("dim", 0)) or 0),
+        "normalize_embeddings": dense_cfg.get("normalize_embeddings"),
     }
     manifest_identity = dict(identity_report.get("index_manifest") or {})
     if not manifest_identity:
@@ -177,6 +178,7 @@ def collect_dense_runtime_evidence(
             "model_name": str(manifest.get("model_name") or ""),
             "model_version": str(manifest.get("model_version") or ""),
             "dimension": int(manifest.get("dimension") or 0),
+            "normalize_embeddings": manifest.get("normalize_embeddings"),
             "actual_embedding_used": manifest.get("actual_embedding_used"),
             "smoke_fallback_used": manifest.get("smoke_fallback_used"),
         }
@@ -280,12 +282,14 @@ def collect_ekell_runtime_evidence(
         "model_name": str(vector_cfg.get("model_name") or ""),
         "model_version": str(vector_cfg.get("model_version") or ""),
         "dimension": int(vector_cfg.get("dimension", vector_cfg.get("dim", 0)) or 0),
+        "normalize_embeddings": vector_cfg.get("normalize_embeddings"),
     }
     manifest_identity = {
         "backend": str(manifest.get("backend") or ""),
         "model_name": str(manifest.get("model_name") or manifest.get("embedding_model") or ""),
         "model_version": str(manifest.get("model_version") or ""),
         "dimension": int(manifest.get("dimension") or 0),
+        "normalize_embeddings": manifest.get("normalize_embeddings"),
     }
     evidence.embedding_backend = str(actual_identity.get("backend") or "")
     evidence.embedding_model = str(actual_identity.get("model_name") or "")

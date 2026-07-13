@@ -89,6 +89,15 @@ jobs:
             tests/test_method_set_and_freeze.py \
             tests/test_formal_compliance.py \
             -k "aggregate_checksum or producer_consumer or consumer_hash or freeze_integrity or tampered_embeddings or index_manifest_sha256 or freeze_candidate_status or temp_cleanup or original_line or case_id_whitespace or control_character"
+      - name: Targeted normalization and frozen-live identity tests
+        run: |
+          python -m pytest -q \
+            tests/test_dense_real_index.py \
+            tests/test_ekell_index_persistence.py \
+            tests/test_formal_enforcement_and_freeze.py \
+            tests/test_formal_compliance.py \
+            tests/test_method_set_and_freeze.py \
+            -k "normalize_embeddings or frozen_live or replaced_dense or replaced_ekell or non_finite or unit_norm or zero_vector or complete_freeze_requires or aggregate_mismatch_fails_before"
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \
