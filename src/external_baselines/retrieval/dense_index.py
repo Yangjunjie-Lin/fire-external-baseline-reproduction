@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,6 +23,9 @@ from external_baselines.retrieval.embedding_backends import (
 
 class DenseIndexError(RuntimeError):
     """Raised when a dense index cannot be built, loaded, or queried safely."""
+
+
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -87,6 +91,107 @@ def _read_npy(path: Path) -> list[list[float]]:
 
 def _file_sha256(path: Path) -> str:
     return sha256_file(path)
+
+
+def dense_documents_semantic_checksum(documents: list[dict[str, Any]]) -> str:
+    """Canonical semantic checksum shared by Dense index build and validation."""
+    return sha256_json(
+        [
+            {
+                "chunk_id": d.get("chunk_id"),
+                "text": d.get("text"),
+                "source_id": d.get("source_id"),
+                "citation": d.get("citation"),
+            }
+            for d in documents
+        ]
+    )
+
+
+def dense_index_identity_checksum(
+    *,
+    backend: str,
+    model_name: str,
+    model_version: str,
+    dimension: int,
+    document_count: int,
+    documents_checksum: str,
+    embeddings_checksum: str,
+    corpus_checksum: str,
+    evidence_source_checksum: str,
+) -> str:
+    """Canonical Dense persisted-index checksum payload."""
+    return sha256_json(
+        {
+            "backend": backend,
+            "model_name": model_name,
+            "model_version": model_version,
+            "dimension": dimension,
+            "document_count": document_count,
+            "documents_checksum": documents_checksum,
+            "embeddings_checksum": embeddings_checksum,
+            "corpus_checksum": corpus_checksum,
+            "evidence_source_checksum": evidence_source_checksum,
+        }
+    )
+
+
+def _require_plain_file(path: Path, *, code: str) -> None:
+    if not path.is_file():
+        raise DenseIndexError(code)
+
+
+def _require_manifest_object(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise DenseIndexError("dense_index_manifest_must_be_object")
+    return value
+
+
+def _require_exact_nonempty_string(manifest: dict[str, Any], field: str) -> str:
+    value = manifest.get(field)
+    if type(value) is not str or not value:
+        raise DenseIndexError(f"dense_index_{field}_must_be_nonempty_string")
+    return value
+
+
+def _require_positive_int(manifest: dict[str, Any], field: str) -> int:
+    value = manifest.get(field)
+    if type(value) is not int or value <= 0:
+        raise DenseIndexError(f"dense_index_{field}_must_be_positive_int")
+    return value
+
+
+def _require_exact_bool(manifest: dict[str, Any], field: str) -> bool:
+    value = manifest.get(field)
+    if type(value) is not bool:
+        raise DenseIndexError(f"dense_index_{field}_must_be_bool")
+    return value
+
+
+def _require_sha256(manifest: dict[str, Any], field: str) -> str:
+    value = manifest.get(field)
+    if type(value) is not str or not SHA256_HEX_RE.fullmatch(value):
+        raise DenseIndexError(f"dense_index_{field}_invalid")
+    return value
+
+
+def _read_dense_documents_strict(path: Path) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise DenseIndexError(f"dense_index_documents_invalid_json:line_{line_no}") from exc
+            if not isinstance(value, dict):
+                raise DenseIndexError(f"dense_index_documents_record_must_be_object:line_{line_no}")
+            documents.append(value)
+    if not documents:
+        raise DenseIndexError("dense_index_documents_empty")
+    return documents
 
 
 def require_dense_formal_embedding_manifest(manifest: dict[str, Any]) -> None:
@@ -160,17 +265,7 @@ def build_dense_index(
 
     evidence_checksum = sha256_file(evidence_path)
     corpus_checksum = corpus_checksum or evidence_checksum
-    docs_checksum = sha256_json(
-        [
-            {
-                "chunk_id": d.get("chunk_id"),
-                "text": d.get("text"),
-                "source_id": d.get("source_id"),
-                "citation": d.get("citation"),
-            }
-            for d in documents
-        ]
-    )
+    docs_checksum = dense_documents_semantic_checksum(documents)
 
     ensure_dir(index_dir)
     docs_path = index_dir / "documents.jsonl"
@@ -183,18 +278,16 @@ def build_dense_index(
     emb_checksum = _file_sha256(emb_path)
     docs_file_checksum = _file_sha256(docs_path)
 
-    index_checksum = sha256_json(
-        {
-            "backend": embedding_backend.backend,
-            "model_name": embedding_backend.model_name,
-            "model_version": embedding_backend.model_version,
-            "dimension": dim,
-            "document_count": len(documents),
-            "documents_checksum": docs_checksum,
-            "embeddings_checksum": emb_checksum,
-            "corpus_checksum": corpus_checksum,
-            "evidence_source_checksum": evidence_checksum,
-        }
+    index_checksum = dense_index_identity_checksum(
+        backend=embedding_backend.backend,
+        model_name=embedding_backend.model_name,
+        model_version=embedding_backend.model_version,
+        dimension=dim,
+        document_count=len(documents),
+        documents_checksum=docs_checksum,
+        embeddings_checksum=emb_checksum,
+        corpus_checksum=corpus_checksum,
+        evidence_source_checksum=evidence_checksum,
     )
     manifest = {
         "index_type": "dense_evidence_index",
@@ -254,17 +347,7 @@ def load_dense_index(
     if int(manifest.get("dimension") or 0) != dim:
         raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
 
-    docs_checksum = sha256_json(
-        [
-            {
-                "chunk_id": d.get("chunk_id"),
-                "text": d.get("text"),
-                "source_id": d.get("source_id"),
-                "citation": d.get("citation"),
-            }
-            for d in documents
-        ]
-    )
+    docs_checksum = dense_documents_semantic_checksum(documents)
     if docs_checksum != manifest.get("documents_checksum"):
         raise DenseIndexError("documents_checksum mismatch (semantic document content).")
     if manifest.get("documents_file_checksum") and _file_sha256(docs_path) != manifest.get(
@@ -273,18 +356,16 @@ def load_dense_index(
         raise DenseIndexError("documents_file_checksum mismatch.")
     if _file_sha256(emb_path) != manifest.get("embeddings_checksum"):
         raise DenseIndexError("embeddings_checksum mismatch.")
-    expected_index = sha256_json(
-        {
-            "backend": manifest.get("backend"),
-            "model_name": manifest.get("model_name"),
-            "model_version": manifest.get("model_version"),
-            "dimension": dim,
-            "document_count": len(documents),
-            "documents_checksum": docs_checksum,
-            "embeddings_checksum": manifest.get("embeddings_checksum"),
-            "corpus_checksum": manifest.get("corpus_checksum"),
-            "evidence_source_checksum": manifest.get("evidence_source_checksum"),
-        }
+    expected_index = dense_index_identity_checksum(
+        backend=str(manifest.get("backend")),
+        model_name=str(manifest.get("model_name")),
+        model_version=str(manifest.get("model_version")),
+        dimension=dim,
+        document_count=len(documents),
+        documents_checksum=docs_checksum,
+        embeddings_checksum=str(manifest.get("embeddings_checksum")),
+        corpus_checksum=str(manifest.get("corpus_checksum")),
+        evidence_source_checksum=str(manifest.get("evidence_source_checksum")),
     )
     if manifest.get("index_checksum") and expected_index != manifest.get("index_checksum"):
         raise DenseIndexError("index_checksum mismatch.")
@@ -327,6 +408,129 @@ def load_dense_index(
         "backend": manifest.get("backend"),
         "model_name": manifest.get("model_name"),
         "model_version": manifest.get("model_version"),
+    }
+
+
+def validate_dense_index_integrity_for_freeze(
+    index_dir: str | Path,
+    *,
+    expected_backend: str | None = None,
+    expected_model_name: str | None = None,
+    expected_model_version: str | None = None,
+    expected_dimension: int | None = None,
+    expected_corpus_checksum: str | None = None,
+) -> dict[str, Any]:
+    """Strict persisted Dense index validation for freeze-candidate/complete freeze."""
+    index_dir = Path(index_dir)
+    if index_dir.is_file():
+        if index_dir.suffix.lower() == ".json":
+            raise DenseIndexError("legacy_dense_json_forbidden_in_formal")
+        raise DenseIndexError("dense_index_path_not_directory")
+    if not index_dir.is_dir():
+        raise DenseIndexError("dense_index_path_not_directory")
+
+    docs_path = index_dir / "documents.jsonl"
+    emb_path = index_dir / "embeddings.npy"
+    manifest_path = index_dir / "index_manifest.json"
+    _require_plain_file(docs_path, code="dense_index_documents_missing")
+    _require_plain_file(emb_path, code="dense_index_embeddings_missing")
+    _require_plain_file(manifest_path, code="dense_index_manifest_missing")
+
+    manifest = _require_manifest_object(read_json(manifest_path))
+    index_type = _require_exact_nonempty_string(manifest, "index_type")
+    if index_type != "dense_evidence_index":
+        raise DenseIndexError("dense_index_type_mismatch")
+    backend = _require_exact_nonempty_string(manifest, "backend")
+    model_name = _require_exact_nonempty_string(manifest, "model_name")
+    model_version = _require_exact_nonempty_string(manifest, "model_version")
+    dimension = _require_positive_int(manifest, "dimension")
+    document_count = _require_positive_int(manifest, "document_count")
+    normalize_embeddings = _require_exact_bool(manifest, "normalize_embeddings")
+    corpus_checksum = _require_sha256(manifest, "corpus_checksum")
+    documents_checksum = _require_sha256(manifest, "documents_checksum")
+    documents_file_checksum = _require_sha256(manifest, "documents_file_checksum")
+    embeddings_checksum = _require_sha256(manifest, "embeddings_checksum")
+    evidence_source_checksum = _require_sha256(manifest, "evidence_source_checksum")
+    index_checksum = _require_sha256(manifest, "index_checksum")
+    actual_embedding_used = _require_exact_bool(manifest, "actual_embedding_used")
+    smoke_fallback_used = _require_exact_bool(manifest, "smoke_fallback_used")
+    if actual_embedding_used is not True:
+        raise DenseIndexError("actual_embedding_used_must_be_true")
+    if smoke_fallback_used is not False:
+        raise DenseIndexError("smoke_fallback_used_must_be_false")
+
+    if expected_backend and backend != str(expected_backend):
+        raise DenseIndexError("backend mismatch.")
+    if expected_model_name and model_name != str(expected_model_name):
+        raise DenseIndexError("model_name mismatch.")
+    if expected_model_version and model_version != str(expected_model_version):
+        raise DenseIndexError("model_version mismatch.")
+    if expected_dimension is not None and dimension != int(expected_dimension):
+        raise DenseIndexError("dimension mismatch.")
+    if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
+        raise DenseIndexError("corpus_checksum mismatch.")
+
+    documents = _read_dense_documents_strict(docs_path)
+    if len(documents) != document_count:
+        raise DenseIndexError("document_count does not match documents.jsonl length.")
+    actual_documents_file_checksum = _file_sha256(docs_path)
+    if actual_documents_file_checksum != documents_file_checksum:
+        raise DenseIndexError("documents_file_checksum mismatch.")
+    actual_embeddings_checksum = _file_sha256(emb_path)
+    if actual_embeddings_checksum != embeddings_checksum:
+        raise DenseIndexError("embeddings_checksum mismatch.")
+    recomputed_documents_checksum = dense_documents_semantic_checksum(documents)
+    if recomputed_documents_checksum != documents_checksum:
+        raise DenseIndexError("documents_checksum mismatch (semantic document content).")
+
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise DenseIndexError("numpy is required to validate dense embeddings (.npy).") from exc
+    arr = np.load(emb_path, mmap_mode="r")
+    if len(arr.shape) != 2:
+        raise DenseIndexError("embeddings.npy must be a two-dimensional array.")
+    row_count, dim = int(arr.shape[0]), int(arr.shape[1])
+    if row_count <= 0 or dim <= 0:
+        raise DenseIndexError("embeddings.npy must have positive row count and dimension.")
+    if row_count != document_count:
+        raise DenseIndexError("embeddings.npy row count does not match documents.")
+    if dim != dimension:
+        raise DenseIndexError("Manifest dimension does not match embeddings.npy.")
+
+    recomputed_index_checksum = dense_index_identity_checksum(
+        backend=backend,
+        model_name=model_name,
+        model_version=model_version,
+        dimension=dimension,
+        document_count=document_count,
+        documents_checksum=recomputed_documents_checksum,
+        embeddings_checksum=actual_embeddings_checksum,
+        corpus_checksum=corpus_checksum,
+        evidence_source_checksum=evidence_source_checksum,
+    )
+    if recomputed_index_checksum != index_checksum:
+        raise DenseIndexError("index_checksum mismatch.")
+
+    manifest_sha = _file_sha256(manifest_path)
+    return {
+        "index_type": index_type,
+        "index_dir": str(index_dir).replace("\\", "/"),
+        "backend": backend,
+        "model_name": model_name,
+        "model_version": model_version,
+        "dimension": dimension,
+        "normalize_embeddings": normalize_embeddings,
+        "document_count": document_count,
+        "corpus_checksum": corpus_checksum,
+        "documents_checksum": recomputed_documents_checksum,
+        "documents_file_checksum": actual_documents_file_checksum,
+        "embeddings_checksum": actual_embeddings_checksum,
+        "evidence_source_checksum": evidence_source_checksum,
+        "index_checksum": recomputed_index_checksum,
+        "index_manifest_sha256": manifest_sha,
+        "actual_embedding_used": actual_embedding_used,
+        "smoke_fallback_used": smoke_fallback_used,
     }
 
 

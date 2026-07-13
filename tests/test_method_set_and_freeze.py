@@ -287,6 +287,21 @@ def test_freeze_candidate_accepts_provisional_without_existing_freeze(tmp_path: 
     assert result["valid"] is True
 
 
+def test_freeze_candidate_rejects_frozen_without_existing_freeze(tmp_path: Path, monkeypatch) -> None:
+    _patch_formal_resource_checks(monkeypatch)
+    manifest = _write_comparison_manifest(tmp_path, freeze_status="frozen")
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    raw.pop("freeze_manifest")
+    manifest.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(FormalConfigError, match="freeze_status=provisional"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="freeze_candidate",
+            method_set="comparison_suite",
+        )
+
+
 def test_freeze_candidate_requires_formal_bundle_authority(tmp_path: Path, monkeypatch) -> None:
     import external_baselines.common.formal_config_validator as validator
     import external_baselines.interop.bundle as bundle

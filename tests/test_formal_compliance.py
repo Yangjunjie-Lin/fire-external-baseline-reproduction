@@ -1391,8 +1391,12 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
     from external_baselines.common.checksums import sha256_file
     from external_baselines.common.freeze_manifest import build_freeze_manifest_payload
 
-    dense_checksum = sha256_file(dense_idx / "index_manifest.json")
-    ekell_checksum = sha256_file(ekell_idx / "index_manifest.json")
+    dense_manifest_path = dense_idx / "index_manifest.json"
+    ekell_manifest_path = ekell_idx / "index_manifest.json"
+    dense_manifest = json.loads(dense_manifest_path.read_text(encoding="utf-8"))
+    ekell_manifest = json.loads(ekell_manifest_path.read_text(encoding="utf-8"))
+    dense_manifest_sha = sha256_file(dense_manifest_path)
+    ekell_manifest_sha = sha256_file(ekell_manifest_path)
     corpus_manifest = bundle.get("corpus_manifest") if isinstance(bundle.get("corpus_manifest"), dict) else {}
     freeze_payload = build_freeze_manifest_payload(
         experiment_manifest_path=exp,
@@ -1410,7 +1414,9 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
         method_config_paths={mid: str(cfg) for mid, cfg in method_cfgs.items()},
         indexes={
             "dense": {
-                "index_checksum": dense_checksum,
+                **dense_manifest,
+                "index_checksum": dense_manifest["index_checksum"],
+                "index_manifest_sha256": dense_manifest_sha,
                 "index_path": dense_idx.as_posix(),
                 "backend": "text2vec",
                 "model_name": "fake/bge",
@@ -1418,11 +1424,13 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
                 "dimension": 8,
             },
             "hybrid_dense_dependency": {
-                "index_checksum": dense_checksum,
+                "index_checksum": dense_manifest["index_checksum"],
                 "index_path": dense_idx.as_posix(),
             },
             "ekell": {
-                "index_checksum": ekell_checksum,
+                **ekell_manifest,
+                "index_checksum": ekell_manifest["index_checksum"],
+                "index_manifest_sha256": ekell_manifest_sha,
                 "index_path": ekell_idx.as_posix(),
                 "backend": "text2vec",
                 "model_name": "fake/bge",

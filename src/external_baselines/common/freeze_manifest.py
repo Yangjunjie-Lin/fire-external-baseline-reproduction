@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from external_baselines.common.io import read_json
 from external_baselines.method_registry import comparison_suite_methods
 
 COMPARISON_METHOD_IDS = comparison_suite_methods()
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 REQUIRED_COMPLETE_FIELDS = (
     "selected_dev_run_evidence",
@@ -81,6 +83,7 @@ def _index_block(
     kg_checksum: str | None = None,
     model_version: str | None = None,
     include_kg: bool = False,
+    **extra: Any,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
         "index_checksum": index_checksum,
@@ -90,6 +93,7 @@ def _index_block(
     }
     if include_kg:
         block["kg_checksum"] = kg_checksum
+    block.update(extra)
     return block
 
 
@@ -254,6 +258,25 @@ def _check_optional_pair(
         raise FormalConfigError(f"freeze_manifest {label} mismatch.")
 
 
+def _require_sha256_value(value: Any, *, label: str) -> str:
+    if type(value) is not str or not SHA256_HEX_RE.fullmatch(value):
+        raise FormalConfigError(f"freeze_manifest {label} must be a valid SHA-256.")
+    return value
+
+
+def _require_index_block(
+    value: Any,
+    *,
+    label: str,
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise FormalConfigError(f"freeze_manifest missing indexes.{label}.")
+    for field in fields:
+        _require_sha256_value(value.get(field), label=f"indexes.{label}.{field}")
+    return value
+
+
 def validate_freeze_manifest(
     freeze_path: str | Path,
     *,
@@ -363,11 +386,30 @@ def validate_freeze_manifest(
         for field in RUNNER_BUNDLE_IDENTITY_FIELDS:
             if not runner_block.get(field):
                 raise FormalConfigError(f"freeze_manifest missing runner_bundle.{field}.")
+            _require_sha256_value(
+                runner_block.get(field),
+                label=f"runner_bundle.{field}",
+            )
         producer_available = runner_block.get("producer_checksum_available")
-        if producer_available is None and runner_block.get("producer_declared_checksum"):
-            producer_available = True
+        if type(producer_available) is not bool:
+            raise FormalConfigError(
+                "freeze_manifest runner_bundle.producer_checksum_available must be an exact boolean."
+            )
         if producer_available and not runner_block.get("producer_declared_checksum"):
             raise FormalConfigError("freeze_manifest missing runner_bundle.producer_declared_checksum.")
+        if producer_available:
+            producer = _require_sha256_value(
+                runner_block.get("producer_declared_checksum"),
+                label="runner_bundle.producer_declared_checksum",
+            )
+            if producer != runner_block.get("consumer_computed_hash"):
+                raise FormalConfigError(
+                    "freeze_manifest runner_bundle producer checksum must match consumer hash."
+                )
+        elif runner_block.get("producer_declared_checksum") not in (None, ""):
+            raise FormalConfigError(
+                "freeze_manifest runner_bundle producer checksum availability is inconsistent."
+            )
 
     for block_field, expected, label in (
         ("producer_declared_checksum", None, "runner_bundle.producer_declared_checksum"),
@@ -446,6 +488,23 @@ def validate_freeze_manifest(
     hybrid_freeze = freeze_indexes.get("hybrid_dense_dependency") or {}
     ekell_freeze = freeze_indexes.get("ekell") or {}
 
+    if require_complete:
+        dense_freeze = _require_index_block(
+            freeze_indexes.get("dense"),
+            label="dense",
+            fields=("index_checksum", "index_manifest_sha256"),
+        )
+        hybrid_freeze = _require_index_block(
+            freeze_indexes.get("hybrid_dense_dependency"),
+            label="hybrid_dense_dependency",
+            fields=("index_checksum",),
+        )
+        ekell_freeze = _require_index_block(
+            freeze_indexes.get("ekell"),
+            label="ekell",
+            fields=("index_checksum", "index_manifest_sha256"),
+        )
+
     if dense_loaded or expected_idx.get("dense") or (require_complete and dense_freeze):
         expected_dense = (expected_idx.get("dense") or {}) if isinstance(expected_idx.get("dense"), dict) else {}
         actual_checksum = (
@@ -458,15 +517,14 @@ def validate_freeze_manifest(
                 dense_freeze.get("index_checksum"),
                 actual_checksum,
                 label="indexes.dense.index_checksum",
-                require=require_complete and bool(actual_checksum or dense_freeze.get("index_checksum")),
+                require=require_complete,
             )
-        if dense_freeze.get("index_manifest_sha256") and (
-            expected_dense.get("index_manifest_sha256") or dense_loaded.get("index_manifest_sha256")
-        ):
+        if dense_freeze.get("index_manifest_sha256") or require_complete:
             _check_optional_pair(
                 dense_freeze.get("index_manifest_sha256"),
                 expected_dense.get("index_manifest_sha256") or dense_loaded.get("index_manifest_sha256"),
                 label="indexes.dense.index_manifest_sha256",
+                require=False,
             )
         if dense_freeze.get("corpus_checksum") and (
             expected_dense.get("corpus_checksum") or dense_loaded.get("corpus_checksum")
@@ -503,7 +561,7 @@ def validate_freeze_manifest(
                 hybrid_freeze.get("index_checksum"),
                 actual_hybrid,
                 label="indexes.hybrid_dense_dependency.index_checksum",
-                require=False,
+                require=require_complete,
             )
         dense_cs = dense_freeze.get("index_checksum") or dense_loaded.get("index_checksum") or dense_loaded.get(
             "checksum"
@@ -524,13 +582,13 @@ def validate_freeze_manifest(
                 ekell_freeze.get("index_checksum"),
                 actual_ekell,
                 label="indexes.ekell.index_checksum",
-                require=require_complete and bool(actual_ekell or ekell_freeze.get("index_checksum")),
+                require=require_complete,
             )
         for field in ("index_manifest_sha256", "kg_checksum", "corpus_checksum", "model_version"):
             frozen = ekell_freeze.get(field)
             actual = expected_ekell.get(field) or ekell_loaded.get(field)
-            if frozen and actual:
-                _check_optional_pair(frozen, actual, label=f"indexes.ekell.{field}")
+            if frozen or (require_complete and field == "index_manifest_sha256"):
+                _check_optional_pair(frozen, actual, label=f"indexes.ekell.{field}", require=False)
 
     result = {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
     if migration_warning:

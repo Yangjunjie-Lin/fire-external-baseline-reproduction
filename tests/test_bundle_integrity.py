@@ -153,6 +153,68 @@ def test_formal_input_jsonl_rejects_duplicate_case_id(tmp_path):
         load_runner_bundle(root, formal=True)
 
 
+def test_formal_jsonl_reports_original_line_after_blank_lines(tmp_path):
+    root = _write_formal_bundle(
+        tmp_path,
+        '\n\n{"input":{"scenario":"smoke"}}\n',
+    )
+
+    with pytest.raises(BundleIntegrityError, match="formal_input_cases_case_id_missing:line_3"):
+        load_runner_bundle(root, formal=True)
+
+
+def test_formal_jsonl_reports_original_line_after_multiple_blank_lines(tmp_path):
+    root = _write_formal_bundle(
+        tmp_path,
+        '\n{"case_id":"FBPUB_000001","input":{"scenario":"smoke"}}\n\n\n{"case_id":123,"input":{"scenario":"fire"}}\n',
+    )
+
+    with pytest.raises(BundleIntegrityError, match="formal_input_cases_case_id_must_be_string:line_5"):
+        load_runner_bundle(root, formal=True)
+
+
+def test_formal_case_id_rejects_leading_whitespace(tmp_path):
+    root = _write_formal_bundle(
+        tmp_path,
+        '{"case_id":" FBPUB_000001","input":{"scenario":"smoke"}}\n',
+    )
+
+    with pytest.raises(BundleIntegrityError, match="formal_input_cases_case_id_has_surrounding_whitespace:line_1"):
+        load_runner_bundle(root, formal=True)
+
+
+def test_formal_case_id_rejects_trailing_whitespace(tmp_path):
+    root = _write_formal_bundle(
+        tmp_path,
+        '{"case_id":"FBPUB_000001 ","input":{"scenario":"smoke"}}\n',
+    )
+
+    with pytest.raises(BundleIntegrityError, match="formal_input_cases_case_id_has_surrounding_whitespace:line_1"):
+        load_runner_bundle(root, formal=True)
+
+
+@pytest.mark.parametrize("case_id", ["FBPUB_000001\tX", "FBPUB_000001\nX", "FBPUB_000001\u0000X", "FBPUB_000001\u0085X"])
+def test_formal_case_id_rejects_control_character(tmp_path, case_id):
+    root = _write_formal_bundle(
+        tmp_path,
+        json.dumps({"case_id": case_id, "input": {"scenario": "smoke"}}) + "\n",
+    )
+
+    with pytest.raises(BundleIntegrityError, match="formal_input_cases_case_id_contains_control_character:line_1"):
+        load_runner_bundle(root, formal=True)
+
+
+def test_formal_case_id_accepts_valid_unicode_identifier_when_protocol_allows(tmp_path):
+    root = _write_formal_bundle(
+        tmp_path,
+        '{"case_id":"案例_000001","input":{"scenario":"smoke"}}\n',
+    )
+
+    bundle = load_runner_bundle(root, formal=True)
+
+    assert bundle["input_cases_formal_eligible"] is True
+
+
 def test_formal_input_jsonl_rejects_empty_file(tmp_path):
     root = _write_formal_bundle(tmp_path, "\n")
 

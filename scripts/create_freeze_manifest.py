@@ -30,8 +30,13 @@ from external_baselines.common.freeze_manifest import (  # noqa: E402
 )
 from external_baselines.common.io import read_json, write_json  # noqa: E402
 from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
-from external_baselines.interop.bundle import load_runner_bundle  # noqa: E402
+from external_baselines.ekell_style.vector_index import VectorIndex  # noqa: E402
+from external_baselines.interop.bundle import (  # noqa: E402
+    load_runner_bundle,
+    validate_formal_bundle_aggregate_checksum,
+)
 from external_baselines.method_registry import comparison_suite_methods  # noqa: E402
+from external_baselines.retrieval.dense_index import validate_dense_index_integrity_for_freeze  # noqa: E402
 
 
 def _load_index_block(index_dir: str | Path | None, *, kind: str) -> dict:
@@ -116,6 +121,8 @@ def main(argv: list[str] | None = None) -> None:
     if bundle_path and not _is_placeholder(bundle_path):
         try:
             bundle = load_runner_bundle(bundle_path, formal=not args.draft)
+            if not args.draft:
+                validate_formal_bundle_aggregate_checksum(bundle)
             producer_declared_checksum = bundle.get("producer_declared_checksum")
             consumer_computed_hash = bundle.get("consumer_computed_bundle_hash")
             bundle_checksum = consumer_computed_hash
@@ -171,8 +178,30 @@ def main(argv: list[str] | None = None) -> None:
     if not args.draft and embedding.get("model_version") and _is_placeholder(embedding.get("model_version")):
         raise SystemExit("embedding.model_version is still a placeholder; refuse non-draft freeze.")
 
-    dense_block = _load_index_block(dense_index_path, kind="dense")
-    ekell_block = _load_index_block(ekell_index_path, kind="ekell")
+    if args.draft:
+        dense_block = _load_index_block(dense_index_path, kind="dense")
+        ekell_block = _load_index_block(ekell_index_path, kind="ekell")
+    else:
+        if not dense_index_path or _is_placeholder(dense_index_path):
+            raise SystemExit("Complete freeze requires non-placeholder Dense index path.")
+        if not ekell_index_path or _is_placeholder(ekell_index_path):
+            raise SystemExit("Complete freeze requires non-placeholder E-KELL index path.")
+        dense_block = validate_dense_index_integrity_for_freeze(
+            dense_index_path,
+            expected_backend=embedding.get("backend"),
+            expected_model_name=embedding.get("model_name"),
+            expected_model_version=embedding.get("model_version"),
+            expected_dimension=embedding.get("dimension"),
+            expected_corpus_checksum=corpus_checksum,
+        )
+        ekell_block = VectorIndex.validate_directory_for_freeze(
+            ekell_index_path,
+            expected_backend=embedding.get("backend"),
+            expected_model_name=embedding.get("model_name"),
+            expected_model_version=embedding.get("model_version"),
+            expected_dimension=embedding.get("dimension"),
+            expected_corpus_checksum=corpus_checksum,
+        )
     indexes = {
         "dense": dense_block,
         "hybrid_dense_dependency": {"index_checksum": dense_block.get("index_checksum")},
@@ -191,7 +220,7 @@ def main(argv: list[str] | None = None) -> None:
         method_config_paths=method_paths,
         indexes=indexes,
         embedding=embedding or None,
-        producer_checksum_available=bool(producer_declared_checksum),
+        producer_checksum_available=producer_declared_checksum is not None,
         include_legacy_compat_fields=bool(args.include_legacy_compat_fields),
     )
     if args.draft:
@@ -222,10 +251,12 @@ def main(argv: list[str] | None = None) -> None:
                 },
                 method_config_paths=method_paths,
             )
-        except FormalConfigError as exc:
+            temp_path.replace(output_path)
+        except Exception as exc:  # noqa: BLE001
             temp_path.unlink(missing_ok=True)
-            raise SystemExit(f"Incomplete freeze manifest (use --draft to allow): {exc}") from exc
-        temp_path.replace(output_path)
+            if isinstance(exc, FormalConfigError):
+                raise SystemExit(f"Incomplete freeze manifest (use --draft to allow): {exc}") from exc
+            raise SystemExit(f"Complete freeze manifest generation failed: {exc}") from exc
         print(f"Wrote complete freeze manifest to {args.output}")
         print("Confirm freeze_status=frozen in the experiment manifest only after human review.")
         return

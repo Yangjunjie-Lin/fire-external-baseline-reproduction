@@ -10,12 +10,13 @@ expected labels, annotation notes, or target outputs from an Evaluator Bundle.
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from external_baselines.common.checksums import directory_manifest, sha256_file
-from external_baselines.common.io import read_json, read_jsonl, read_jsonl_objects_strict, read_yaml
+from external_baselines.common.io import read_json, read_jsonl, read_yaml
 
 FORBIDDEN_BUNDLE_KEYS = {
     "expected",
@@ -486,7 +487,11 @@ def _formal_case_scenario_text(row: dict[str, Any]) -> str:
 def validate_formal_input_case_records(rows: list[dict[str, Any]]) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
-    for line_no, row in enumerate(rows, start=1):
+    for raw in rows:
+        if isinstance(raw, tuple) and len(raw) == 2:
+            line_no, row = raw
+        else:
+            line_no, row = len(seen) + 1, raw
         if not isinstance(row, dict):
             errors.append(f"formal_input_cases_record_must_be_object:line_{line_no}")
             continue
@@ -500,12 +505,49 @@ def validate_formal_input_case_records(rows: list[dict[str, Any]]) -> list[str]:
         if not case_id.strip():
             errors.append(f"formal_input_cases_case_id_empty:line_{line_no}")
             continue
-        if case_id in seen:
+        if case_id != case_id.strip():
+            errors.append(
+                f"formal_input_cases_case_id_has_surrounding_whitespace:line_{line_no}"
+            )
+            continue
+        if any(unicodedata.category(ch).startswith("C") for ch in case_id):
+            errors.append(
+                f"formal_input_cases_case_id_contains_control_character:line_{line_no}"
+            )
+            continue
+        canonical = case_id
+        if canonical in seen:
             errors.append(f"formal_input_cases_duplicate_case_id:line_{line_no}")
-        seen.add(case_id)
+        seen.add(canonical)
         if not _formal_case_scenario_text(row):
             errors.append(f"formal_input_cases_scenario_missing:line_{line_no}")
     return errors
+
+
+def _read_formal_input_cases_with_source_lines(
+    path: str | Path,
+    *,
+    require_nonempty: bool = False,
+) -> list[tuple[int, dict[str, Any]]]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    rows: list[tuple[int, dict[str, Any]]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"formal_input_cases_invalid_json:line_{line_no}") from exc
+            if not isinstance(value, dict):
+                raise ValueError(f"formal_input_cases_record_must_be_object:line_{line_no}")
+            rows.append((line_no, value))
+    if require_nonempty and not rows:
+        raise ValueError("formal_input_cases_empty")
+    return rows
 
 
 def _resolve_input_cases(
@@ -600,7 +642,10 @@ def _resolve_input_cases(
         if provenance["input_cases_checksum_match"] is not True:
             raise BundleIntegrityError("formal_runner_bundle_input_cases_checksum_mismatch")
         try:
-            rows = read_jsonl_objects_strict(input_path, require_nonempty=True)
+            rows = _read_formal_input_cases_with_source_lines(
+                input_path,
+                require_nonempty=True,
+            )
         except (OSError, ValueError) as exc:
             raise BundleIntegrityError(str(exc)) from exc
         record_errors = validate_formal_input_case_records(rows)
@@ -703,7 +748,11 @@ def load_runner_bundle(bundle_path: str | Path, *, formal: bool = False) -> dict
             corpus_dir = resolved
             break
 
-    producer_checksum = manifest.get("bundle_checksum") or manifest.get("checksum")
+    producer_checksum = (
+        manifest["bundle_checksum"]
+        if "bundle_checksum" in manifest
+        else manifest.get("checksum")
+    )
     consumer_hash = recompute_bundle_checksum(root)
 
     corpus_manifest_payload: Any = None
@@ -776,6 +825,30 @@ def validate_bundle_checksum(bundle: dict[str, Any], *, expected: str | None = N
     }
 
 
+def validate_formal_bundle_aggregate_checksum(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on Formal Runner Bundle aggregate identity mismatches."""
+    consumer = bundle.get("consumer_computed_bundle_hash")
+    producer = bundle.get("producer_declared_checksum")
+    if type(consumer) is not str or not consumer:
+        raise BundleIntegrityError("formal_bundle_consumer_hash_missing")
+    if not SHA256_HEX_RE.fullmatch(consumer):
+        raise BundleIntegrityError("formal_bundle_consumer_hash_invalid")
+    producer_available = producer is not None
+    if producer_available:
+        if type(producer) is not str or not SHA256_HEX_RE.fullmatch(producer):
+            raise BundleIntegrityError("formal_bundle_producer_checksum_invalid")
+        if producer != consumer:
+            raise BundleIntegrityError(
+                "formal_bundle_producer_consumer_checksum_mismatch"
+            )
+    return {
+        "ok": True,
+        "consumer_computed_bundle_hash": consumer,
+        "producer_declared_checksum": producer,
+        "producer_checksum_available": producer_available,
+    }
+
+
 @dataclass
 class RunnerBundleCoverage:
     manifest_case_count: int | None
@@ -836,12 +909,16 @@ def inspect_runner_bundle_case_coverage(
         if scenarios_path.suffix.lower() != ".jsonl":
             raise BundleIntegrityError("formal_runner_bundle_input_cases_must_be_jsonl")
         try:
-            rows = read_jsonl_objects_strict(scenarios_path, require_nonempty=True)
+            rows_with_lines = _read_formal_input_cases_with_source_lines(
+                scenarios_path,
+                require_nonempty=True,
+            )
         except (OSError, ValueError) as exc:
             raise BundleIntegrityError(str(exc)) from exc
-        record_errors = validate_formal_input_case_records(rows)
+        record_errors = validate_formal_input_case_records(rows_with_lines)
         if record_errors:
             raise BundleIntegrityError(", ".join(record_errors))
+        rows = [row for _, row in rows_with_lines]
     else:
         rows = read_jsonl(scenarios_path)
     input_case_ids: list[str] = []

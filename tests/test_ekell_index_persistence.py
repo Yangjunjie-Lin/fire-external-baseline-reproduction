@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,22 @@ def _tiny_kg() -> FireKG:
         triples=[{"head": "hose", "relation": "used_for", "tail": "fire", "source_id": "t1"}],
         evidence_chunks=[{"chunk_id": "c1", "text": "fire hose near exit", "source_id": "s1"}],
     )
+
+
+def _build_ekell_index(tmp_path: Path) -> Path:
+    backend, _ = _backend()
+    index = VectorIndex.from_kg(_tiny_kg(), backend, reject_smoke=True)
+    index_dir = tmp_path / "ekell_idx"
+    index.save_directory(index_dir)
+    return index_dir
+
+
+def _read_manifest(index_dir: Path) -> dict:
+    return json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+
+
+def _write_manifest(index_dir: Path, manifest: dict) -> None:
+    (index_dir / "index_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def test_ekell_index_save_directory(tmp_path: Path) -> None:
@@ -229,3 +246,82 @@ def test_ekell_does_not_rebuild_index_per_case(tmp_path: Path) -> None:
         )
     assert runtime.audit.index_load_count == loads_before
     assert runtime.audit.case_count == 3
+
+
+def test_ekell_freeze_integrity_accepts_valid_index(tmp_path: Path) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+
+    result = VectorIndex.validate_directory_for_freeze(
+        index_dir,
+        expected_backend="text2vec",
+        expected_model_name="fake/bge",
+        expected_model_version="v-test",
+        expected_dimension=8,
+    )
+
+    assert result["index_checksum"]
+    assert result["index_manifest_sha256"]
+    assert result["kg_checksum"]
+    assert result["corpus_checksum"]
+    assert result["actual_embedding_used"] is True
+    assert result["smoke_fallback_used"] is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "index_checksum",
+        "kg_checksum",
+        "corpus_checksum",
+    ],
+)
+def test_ekell_freeze_integrity_requires_required_checksums(tmp_path: Path, field: str) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+    manifest = _read_manifest(index_dir)
+    manifest.pop(field)
+    _write_manifest(index_dir, manifest)
+
+    with pytest.raises(VectorIndexError, match=field):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_freeze_integrity_rejects_tampered_documents_jsonl(tmp_path: Path) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+    docs = index_dir / "documents.jsonl"
+    docs.write_text(docs.read_text(encoding="utf-8").replace("fire hose", "tampered hose", 1), encoding="utf-8")
+
+    with pytest.raises(VectorIndexError, match="documents_file_checksum"):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_freeze_integrity_rejects_tampered_embeddings_same_shape(tmp_path: Path) -> None:
+    import numpy as np
+
+    index_dir = _build_ekell_index(tmp_path)
+    emb = index_dir / "embeddings.npy"
+    arr = np.load(emb)
+    arr[0, 0] = arr[0, 0] + 0.125
+    np.save(emb, arr.astype("float32"))
+
+    with pytest.raises(VectorIndexError, match="embeddings_checksum"):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_freeze_integrity_rejects_index_checksum_mismatch(tmp_path: Path) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+    manifest = _read_manifest(index_dir)
+    manifest["index_checksum"] = "1" * 64
+    _write_manifest(index_dir, manifest)
+
+    with pytest.raises(VectorIndexError, match="index_checksum"):
+        VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+def test_ekell_freeze_integrity_rejects_string_boolean_metadata(tmp_path: Path) -> None:
+    index_dir = _build_ekell_index(tmp_path)
+    manifest = _read_manifest(index_dir)
+    manifest["smoke_fallback_used"] = "false"
+    _write_manifest(index_dir, manifest)
+
+    with pytest.raises(VectorIndexError, match="smoke_fallback_used"):
+        VectorIndex.validate_directory_for_freeze(index_dir)

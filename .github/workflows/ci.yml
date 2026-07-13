@@ -79,6 +79,16 @@ jobs:
             tests/test_formal_config_validator.py \
             tests/test_external_schema_validation.py \
             -k "official_manifest or method_entry_order or disabled_enhanced or enabled_enhanced or freeze_candidate or complete_freeze or primary_filename or primary_schema_name or self_ref or input_cases_provenance or strict_jsonl or case_id"
+      - name: Targeted freeze integrity hardening tests
+        run: |
+          python -m pytest -q \
+            tests/test_bundle_integrity.py \
+            tests/test_dense_real_index.py \
+            tests/test_ekell_index_persistence.py \
+            tests/test_formal_enforcement_and_freeze.py \
+            tests/test_method_set_and_freeze.py \
+            tests/test_formal_compliance.py \
+            -k "aggregate_checksum or producer_consumer or consumer_hash or freeze_integrity or tampered_embeddings or index_manifest_sha256 or freeze_candidate_status or temp_cleanup or original_line or case_id_whitespace or control_character"
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \

@@ -20,6 +20,7 @@ from external_baselines.common.freeze_manifest import (
 from external_baselines.method_registry import comparison_suite_methods
 
 ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_CHECKSUM = object()
 
 
 def _write_minimal_manifest(tmp_path: Path, *, freeze_status: str = "provisional", freeze_manifest=None) -> Path:
@@ -528,7 +529,16 @@ def test_complete_freeze_manifest_passes(tmp_path: Path) -> None:
     assert result["valid"] is True
 
 
-def _run_create_freeze_with_patches(tmp_path: Path, monkeypatch, *, dense_normalize=True, validate_error=None):
+def _run_create_freeze_with_patches(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    dense_normalize=True,
+    validate_error=None,
+    producer_checksum: str | None | object = _DEFAULT_CHECKSUM,
+    consumer_hash: str | None | object = _DEFAULT_CHECKSUM,
+    index_error: Exception | None = None,
+):
     import scripts.create_freeze_manifest as cfm
 
     experiment_manifest = tmp_path / "experiment.yaml"
@@ -539,7 +549,13 @@ def _run_create_freeze_with_patches(tmp_path: Path, monkeypatch, *, dense_normal
     scenarios.write_text('{"case_id":"FBPUB_000001","input":{"scenario":"smoke"}}\n', encoding="utf-8")
     output = tmp_path / "freeze.json"
     bundle_path = tmp_path / "bundle"
-    calls = {"validation": [], "formal_flags": [], "validated_paths": []}
+    calls = {"validation": [], "formal_flags": [], "validated_paths": [], "index_validation": []}
+    resolved_consumer_hash = "c" * 64 if consumer_hash is _DEFAULT_CHECKSUM else consumer_hash
+    resolved_producer_checksum = (
+        resolved_consumer_hash
+        if producer_checksum is _DEFAULT_CHECKSUM
+        else producer_checksum
+    )
     experiment = {
         "bundle": str(bundle_path),
         "raw": {
@@ -558,8 +574,8 @@ def _run_create_freeze_with_patches(tmp_path: Path, monkeypatch, *, dense_normal
     def fake_load_bundle(path, *, formal=False):
         calls["formal_flags"].append(formal)
         return {
-            "producer_declared_checksum": "p" * 64,
-            "consumer_computed_bundle_hash": "c" * 64,
+            "producer_declared_checksum": resolved_producer_checksum,
+            "consumer_computed_bundle_hash": resolved_consumer_hash,
             "prediction_schema_sha256": "s" * 64,
             "scenarios_path": str(scenarios),
             "input_cases_sha256": "i" * 64,
@@ -603,12 +619,62 @@ def _run_create_freeze_with_patches(tmp_path: Path, monkeypatch, *, dense_normal
         assert Path(path).is_file()
         return {"ok": True}
 
+    def fake_validate_dense_index(index_dir, **_kwargs):
+        calls["index_validation"].append(("dense", Path(index_dir)))
+        if index_error is not None:
+            raise index_error
+        return {
+            "index_type": "dense_evidence_index",
+            "index_dir": str(index_dir),
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+            "document_count": 1,
+            "corpus_checksum": "a" * 64,
+            "documents_checksum": "d" * 64,
+            "documents_file_checksum": "e" * 64,
+            "embeddings_checksum": "f" * 64,
+            "evidence_source_checksum": "b" * 64,
+            "index_checksum": "1" * 64,
+            "index_manifest_sha256": "2" * 64,
+            "actual_embedding_used": True,
+            "smoke_fallback_used": False,
+        }
+
+    def fake_validate_ekell_index(index_dir, **_kwargs):
+        calls["index_validation"].append(("ekell", Path(index_dir)))
+        if index_error is not None:
+            raise index_error
+        return {
+            "index_type": "ekell_kg_vector_index",
+            "index_dir": str(index_dir),
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+            "document_count": 1,
+            "kg_checksum": "3" * 64,
+            "corpus_checksum": "a" * 64,
+            "documents_checksum": "4" * 64,
+            "documents_file_checksum": "5" * 64,
+            "embeddings_checksum": "6" * 64,
+            "index_checksum": "7" * 64,
+            "index_manifest_sha256": "8" * 64,
+            "actual_embedding_used": True,
+            "smoke_fallback_used": False,
+        }
+
     monkeypatch.setattr(cfm, "validate_experiment_manifest", fake_validate)
     monkeypatch.setattr(cfm, "load_experiment_manifest", lambda _path: experiment)
     monkeypatch.setattr(cfm, "load_runner_bundle", fake_load_bundle)
     monkeypatch.setattr(cfm, "enabled_methods", fake_enabled_methods)
     monkeypatch.setattr(cfm, "build_method_config", fake_build_method_config)
     monkeypatch.setattr(cfm, "validate_freeze_manifest", fake_validate_freeze)
+    monkeypatch.setattr(cfm, "validate_dense_index_integrity_for_freeze", fake_validate_dense_index)
+    monkeypatch.setattr(cfm.VectorIndex, "validate_directory_for_freeze", fake_validate_ekell_index)
     cfm.main(
         [
             "--experiment-manifest",
@@ -633,7 +699,71 @@ def test_complete_freeze_calls_bundle_loader_with_formal_true(tmp_path: Path, mo
     assert calls["validation"][0]["method_set"] == "comparison_suite"
     assert calls["validation"][0]["runtime_bundle_path"]
     assert calls["validated_paths"][0].name == "freeze.json.tmp"
+    assert [kind for kind, _path in calls["index_validation"]] == ["dense", "ekell"]
     assert not output.with_name(f"{output.name}.tmp").exists()
+
+
+def test_complete_freeze_rejects_bundle_producer_consumer_checksum_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+        )
+
+    assert not (tmp_path / "freeze.json").exists()
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def test_complete_freeze_accepts_missing_optional_producer_checksum(tmp_path: Path, monkeypatch) -> None:
+    output, _calls = _run_create_freeze_with_patches(
+        tmp_path,
+        monkeypatch,
+        producer_checksum=None,
+        consumer_hash="c" * 64,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["runner_bundle"]["producer_declared_checksum"] is None
+    assert payload["runner_bundle"]["producer_checksum_available"] is False
+
+
+def test_complete_freeze_rejects_invalid_producer_checksum_format(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_checksum_invalid"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="deadbeef",
+            consumer_hash="c" * 64,
+        )
+
+
+def test_complete_freeze_requires_consumer_bundle_hash(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_consumer_hash_missing"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum=None,
+            consumer_hash=None,
+        )
+
+
+def test_bundle_checksum_failure_occurs_before_index_loading(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            producer_checksum="a" * 64,
+            consumer_hash="c" * 64,
+            index_error=RuntimeError("index should not load"),
+        )
+
+    assert not (tmp_path / "freeze.json").exists()
+    assert not (tmp_path / "freeze.json.tmp").exists()
 
 
 def test_complete_freeze_rejects_string_boolean(tmp_path: Path, monkeypatch) -> None:
@@ -653,6 +783,157 @@ def test_complete_freeze_does_not_leave_output_on_failure(tmp_path: Path, monkey
 
     assert not (tmp_path / "freeze.json").exists()
     assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def test_complete_freeze_cleans_temp_on_validator_runtime_error(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="Complete freeze manifest generation failed"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            validate_error=RuntimeError("validator exploded"),
+        )
+
+    assert not (tmp_path / "freeze.json").exists()
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def test_complete_freeze_preserves_existing_output_when_new_freeze_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "freeze.json"
+    output.write_text('{"previous": true}\n', encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="Complete freeze manifest generation failed"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            validate_error=RuntimeError("validator exploded"),
+        )
+
+    assert output.read_text(encoding="utf-8") == '{"previous": true}\n'
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def test_complete_freeze_cleans_temp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "freeze.json"
+    output.write_text('{"previous": true}\n', encoding="utf-8")
+    original_replace = Path.replace
+
+    def fail_replace(self, target):  # noqa: ANN001
+        if self.name == "freeze.json.tmp":
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(SystemExit, match="Complete freeze manifest generation failed"):
+        _run_create_freeze_with_patches(tmp_path, monkeypatch)
+
+    assert output.read_text(encoding="utf-8") == '{"previous": true}\n'
+    assert not (tmp_path / "freeze.json.tmp").exists()
+
+
+def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]]:
+    shared = tmp_path / "shared.yaml"
+    shared.write_text("llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n", encoding="utf-8")
+    methods: dict[str, str] = {}
+    for mid in comparison_suite_methods():
+        method = tmp_path / f"{mid}.yaml"
+        method.write_text(f"method_id: {mid}\n", encoding="utf-8")
+        methods[mid] = str(method)
+    evidence = tmp_path / "selected.json"
+    evidence.write_text('{"selected": true}\n', encoding="utf-8")
+    experiment = tmp_path / "experiment.yaml"
+    raw = {
+        "shared_model_config": str(shared),
+        "methods": [{"method_id": mid, "config": path} for mid, path in methods.items()],
+    }
+    experiment.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    payload = build_freeze_manifest_payload(
+        experiment_manifest_path=experiment,
+        experiment_raw=raw,
+        selected_dev_run=evidence,
+        producer_declared_checksum=None,
+        consumer_computed_hash="c" * 64,
+        input_cases_sha256="9" * 64,
+        corpus_checksum="a" * 64,
+        schema_checksum="e" * 64,
+        method_config_paths=methods,
+        embedding={
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+        },
+        indexes={
+            "dense": {
+                "index_checksum": "1" * 64,
+                "index_manifest_sha256": "2" * 64,
+                "corpus_checksum": "a" * 64,
+            },
+            "hybrid_dense_dependency": {"index_checksum": "1" * 64},
+            "ekell": {
+                "index_checksum": "3" * 64,
+                "index_manifest_sha256": "4" * 64,
+                "kg_checksum": "5" * 64,
+                "corpus_checksum": "a" * 64,
+            },
+        },
+        producer_checksum_available=False,
+    )
+    return experiment, payload, methods
+
+
+@pytest.mark.parametrize(
+    ("block", "field", "match"),
+    [
+        ("dense", "index_checksum", "indexes.dense.index_checksum"),
+        ("dense", "index_manifest_sha256", "indexes.dense.index_manifest_sha256"),
+        ("hybrid_dense_dependency", "index_checksum", "indexes.hybrid_dense_dependency.index_checksum"),
+        ("ekell", "index_checksum", "indexes.ekell.index_checksum"),
+        ("ekell", "index_manifest_sha256", "indexes.ekell.index_manifest_sha256"),
+    ],
+)
+def test_complete_freeze_requires_index_identity_fields(
+    tmp_path: Path,
+    block: str,
+    field: str,
+    match: str,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["indexes"][block].pop(field)
+
+    with pytest.raises(FormalConfigError, match=match):
+        validate_freeze_manifest(
+            payload,
+            experiment_manifest_path=experiment,
+            experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+            require_complete=True,
+            expected_runner_bundle_checksum="c" * 64,
+            expected_corpus_checksum="a" * 64,
+            expected_prediction_schema_checksum="e" * 64,
+            loaded_index_manifests=payload["indexes"],
+            method_config_paths=methods,
+        )
+
+
+def test_complete_freeze_rejects_dense_hybrid_checksum_mismatch(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["indexes"]["hybrid_dense_dependency"]["index_checksum"] = "9" * 64
+
+    with pytest.raises(FormalConfigError, match="hybrid dense dependency checksum"):
+        validate_freeze_manifest(
+            payload,
+            experiment_manifest_path=experiment,
+            experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+            require_complete=True,
+            expected_runner_bundle_checksum="c" * 64,
+            expected_corpus_checksum="a" * 64,
+            expected_prediction_schema_checksum="e" * 64,
+            loaded_index_manifests=payload["indexes"],
+            method_config_paths=methods,
+        )
 
 
 def test_comparison_formal_validates_dense() -> None:

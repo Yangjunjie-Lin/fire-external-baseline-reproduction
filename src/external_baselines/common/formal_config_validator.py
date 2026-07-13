@@ -430,12 +430,14 @@ def validate_dense_config_for_real_run(
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
         if _requires_paper_facing_strictness(validation_stage):
-            from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
+            from external_baselines.retrieval.dense_index import (
+                DenseIndexError,
+                validate_dense_index_integrity_for_freeze,
+            )
 
             try:
-                validate_dense_index_directory(
+                validate_dense_index_integrity_for_freeze(
                     path,
-                    load_embeddings=False,
                     expected_model_name=_validate_exact_nonempty_string(
                         dense.get("model_name"),
                         field="dense_rag.model_name",
@@ -582,7 +584,10 @@ def validate_hybrid_config_for_real_run(
 
 
 def validate_ekell_vector_for_formal(
-    config: dict[str, Any], *, allow_placeholders: bool = False
+    config: dict[str, Any],
+    *,
+    allow_placeholders: bool = False,
+    validation_stage: str = "formal",
 ) -> None:
     vector = config.get("ekell_vector") or (config.get("ekell_style") or {}).get("vector") or {}
     if not isinstance(vector, dict) or not vector:
@@ -636,21 +641,37 @@ def validate_ekell_vector_for_formal(
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
 
         try:
-            VectorIndex.validate_directory(
-                path,
-                load_embeddings=False,
-                expected_backend=backend,
-                expected_model_name=_validate_exact_nonempty_string(
-                    vector.get("model_name"),
-                    field="ekell_vector.model_name",
-                ),
-                expected_model_version=_validate_exact_nonempty_string(
-                    vector.get("model_version"),
-                    field="ekell_vector.model_version",
-                ),
-                expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
-                require_real_embedding=True,
-            )
+            if _requires_paper_facing_strictness(validation_stage):
+                VectorIndex.validate_directory_for_freeze(
+                    path,
+                    expected_backend=backend,
+                    expected_model_name=_validate_exact_nonempty_string(
+                        vector.get("model_name"),
+                        field="ekell_vector.model_name",
+                    ),
+                    expected_model_version=_validate_exact_nonempty_string(
+                        vector.get("model_version"),
+                        field="ekell_vector.model_version",
+                    ),
+                    expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                    expected_kg_checksum=str(config.get("kg_checksum") or "") or None,
+                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
+                )
+            else:
+                VectorIndex.load_directory(
+                    path,
+                    expected_backend=backend,
+                    expected_model_name=_validate_exact_nonempty_string(
+                        vector.get("model_name"),
+                        field="ekell_vector.model_name",
+                    ),
+                    expected_model_version=_validate_exact_nonempty_string(
+                        vector.get("model_version"),
+                        field="ekell_vector.model_version",
+                    ),
+                    expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                    require_real_embedding=True,
+                )
         except VectorIndexError as exc:
             raise FormalConfigError(str(exc)) from exc
 
@@ -736,7 +757,11 @@ def validate_method_config(
                 f"Formal method {mid!r} requires llm block in merged config (from shared_model_config)."
             )
         if mid in FORMAL_EKELL_METHODS:
-            validate_ekell_vector_for_formal(config, allow_placeholders=allow_placeholders)
+            validate_ekell_vector_for_formal(
+                config,
+                allow_placeholders=allow_placeholders,
+                validation_stage=validation_stage,
+            )
         if mid == "dense_rag":
             validate_dense_config_for_real_run(
                 config,
@@ -918,9 +943,9 @@ def validate_experiment_manifest(
         if freeze_status not in {"provisional", "frozen"}:
             errors.append(f"dry_run validation requires freeze_status provisional|frozen (got {freeze_status!r}).")
     elif stage == "freeze_candidate":
-        if freeze_status not in {"provisional", "frozen"}:
+        if freeze_status != "provisional":
             errors.append(
-                "freeze_candidate validation requires freeze_status provisional|frozen "
+                "freeze_candidate validation requires freeze_status=provisional "
                 f"(got {freeze_status!r})."
             )
     else:  # formal

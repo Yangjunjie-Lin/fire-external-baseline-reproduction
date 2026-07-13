@@ -92,7 +92,8 @@ python scripts/run_interop_baselines.py \
 
 # 5) After DEV selection — complete freeze generation:
 #    create_freeze_manifest.py runs freeze-candidate validation first, then loads
-#    the Runner Bundle with Formal authority and writes the freeze atomically.
+#    the Runner Bundle with Formal authority, verifies aggregate Bundle identity
+#    plus persisted Dense/E-KELL index integrity, and writes atomically.
 python scripts/create_freeze_manifest.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
@@ -100,6 +101,9 @@ python scripts/create_freeze_manifest.py \
   --output configs/freeze/comparison_freeze_manifest_v1.json
 # Use --draft only while fields are incomplete; draft output is not a complete
 # Formal identity. Non-draft requires complete checksums and real identities.
+# Non-draft rejects producer/consumer Bundle checksum mismatch before index
+# loading, removes the temporary output on any failure, and preserves any
+# existing final freeze file.
 
 # 6) Formal validation (requires freeze_status=frozen + freeze_manifest)
 python scripts/validate_formal_config.py \
@@ -186,6 +190,11 @@ python scripts/validate_formal_config.py \
 - `--include-supplemental` is deprecated; use `--method-set comparison_suite`.
 - `comparison_suite_methods` is the sole ordered five-method authority. The `methods` array is an unordered configuration registry and may contain disabled non-comparison entries, but no non-comparison entry may be enabled for a Formal comparison-suite run.
 - Formal model identity is frozen in YAML; env vars supply credentials only.
+- Complete freeze generation verifies the Runner Bundle aggregate identity in addition to per-file input/schema checksums. A producer-declared checksum is optional, but when present it must be a lowercase SHA-256 and exactly match the consumer-computed Bundle hash.
+- Freeze-candidate validation accepts only `freeze_status=provisional`; set `freeze_status=frozen` only after the complete freeze file is generated and manually reviewed.
+- Freeze-candidate validation performs full persisted-index integrity checks for Dense, Hybrid, and E-KELL resources: documents, embedding files, semantic document checksums, manifest SHA-256, final index checksums, model identity, dimensions, corpus/KG identity, and real-embedding evidence.
+- Complete freezes must contain valid Dense and E-KELL `index_checksum` and `index_manifest_sha256`; Hybrid must reference exactly the same Dense index checksum.
+- Complete-freeze writes are transactional: any failure removes the temporary output and preserves an existing final freeze file.
 - Formal control/diagnostics directory is outside the immutable run root:
 
 ```text

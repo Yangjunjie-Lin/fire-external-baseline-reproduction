@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import math
 import platform
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from external_baselines.common.checksums import sha256_json
+from external_baselines.common.checksums import sha256_file, sha256_json
+from external_baselines.common.io import read_json, read_jsonl
 from external_baselines.ekell_style.embedding_backends import (
     EmbeddingBackend,
     embedding_package_versions,
@@ -30,6 +32,9 @@ from external_baselines.ekell_style.kg_loader import (
 
 class VectorIndexError(RuntimeError):
     pass
+
+
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 def require_ekell_formal_embedding_manifest(manifest: dict[str, Any]) -> None:
@@ -53,6 +58,107 @@ class VectorDocument:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def ekell_documents_semantic_checksum(documents: Sequence[VectorDocument]) -> str:
+    return sha256_json([document.to_dict() for document in documents])
+
+
+def ekell_index_identity_checksum(
+    *,
+    backend: str,
+    model_name: str,
+    model_version: str,
+    dimension: int,
+    document_count: int,
+    documents_checksum: str,
+    embeddings_checksum: str,
+    kg_checksum: str,
+    corpus_checksum: str,
+) -> str:
+    return sha256_json(
+        {
+            "backend": backend,
+            "model_name": model_name,
+            "model_version": model_version,
+            "dimension": dimension,
+            "document_count": document_count,
+            "documents_checksum": documents_checksum,
+            "embeddings_checksum": embeddings_checksum,
+            "kg_checksum": kg_checksum,
+            "corpus_checksum": corpus_checksum,
+        }
+    )
+
+
+def _require_plain_file(path: Path, *, code: str) -> None:
+    if not path.is_file():
+        raise VectorIndexError(code)
+
+
+def _require_manifest_object(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise VectorIndexError("ekell_index_manifest_must_be_object")
+    return value
+
+
+def _require_exact_nonempty_string(manifest: dict[str, Any], field: str) -> str:
+    value = manifest.get(field)
+    if type(value) is not str or not value:
+        raise VectorIndexError(f"ekell_index_{field}_must_be_nonempty_string")
+    return value
+
+
+def _require_positive_int(manifest: dict[str, Any], field: str) -> int:
+    value = manifest.get(field)
+    if type(value) is not int or value <= 0:
+        raise VectorIndexError(f"ekell_index_{field}_must_be_positive_int")
+    return value
+
+
+def _require_exact_bool(manifest: dict[str, Any], field: str) -> bool:
+    value = manifest.get(field)
+    if type(value) is not bool:
+        raise VectorIndexError(f"ekell_index_{field}_must_be_bool")
+    return value
+
+
+def _read_exact_bool(mapping: dict[str, Any], field: str, *, default: bool | None = None) -> bool:
+    value = mapping.get(field)
+    if value is None and default is not None:
+        return default
+    if type(value) is not bool:
+        raise VectorIndexError(f"ekell_index_{field}_must_be_bool")
+    return value
+
+
+def _require_sha256(manifest: dict[str, Any], field: str) -> str:
+    value = manifest.get(field)
+    if type(value) is not str or not SHA256_HEX_RE.fullmatch(value):
+        raise VectorIndexError(f"ekell_index_{field}_invalid")
+    return value
+
+
+def _read_vector_documents_strict(path: Path) -> list[VectorDocument]:
+    documents: list[VectorDocument] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise VectorIndexError(f"ekell_index_documents_invalid_json:line_{line_no}") from exc
+            if not isinstance(value, dict):
+                raise VectorIndexError(f"ekell_index_documents_record_must_be_object:line_{line_no}")
+            try:
+                documents.append(VectorDocument(**value))
+            except TypeError as exc:
+                raise VectorIndexError(f"ekell_index_documents_invalid_record:line_{line_no}") from exc
+    if not documents:
+        raise VectorIndexError("ekell_index_documents_empty")
+    return documents
 
 
 def kg_segments(kg: FireKG) -> list[VectorDocument]:
@@ -303,7 +409,6 @@ class VectorIndex:
         import os
         import tempfile
 
-        from external_baselines.common.checksums import sha256_file
         from external_baselines.common.io import ensure_dir, write_jsonl
 
         index_dir = Path(index_dir)
@@ -322,21 +427,19 @@ class VectorIndex:
 
         docs_file_checksum = sha256_file(docs_path)
         embeddings_checksum = sha256_file(emb_path)
-        documents_checksum = sha256_json(documents_payload)
+        documents_checksum = ekell_documents_semantic_checksum(self.documents)
         meta = dict(self.metadata)
         dimension = int(meta.get("dimension") or (len(self.vectors[0]) if self.vectors else 0))
-        index_checksum = sha256_json(
-            {
-                "backend": meta.get("backend"),
-                "model_name": meta.get("embedding_model") or meta.get("model_name"),
-                "model_version": meta.get("model_version"),
-                "dimension": dimension,
-                "document_count": len(self.documents),
-                "documents_checksum": documents_checksum,
-                "embeddings_checksum": embeddings_checksum,
-                "kg_checksum": meta.get("kg_checksum"),
-                "corpus_checksum": meta.get("corpus_checksum"),
-            }
+        index_checksum = ekell_index_identity_checksum(
+            backend=str(meta.get("backend")),
+            model_name=str(meta.get("embedding_model") or meta.get("model_name")),
+            model_version=str(meta.get("model_version")),
+            dimension=dimension,
+            document_count=len(self.documents),
+            documents_checksum=documents_checksum,
+            embeddings_checksum=embeddings_checksum,
+            kg_checksum=str(meta.get("kg_checksum")),
+            corpus_checksum=str(meta.get("corpus_checksum")),
         )
         manifest = {
             "index_type": "ekell_kg_vector_index",
@@ -344,7 +447,11 @@ class VectorIndex:
             "model_name": meta.get("embedding_model") or meta.get("model_name"),
             "model_version": meta.get("model_version"),
             "dimension": dimension,
-            "normalize_embeddings": bool(meta.get("normalize_embeddings", True)),
+            "normalize_embeddings": _read_exact_bool(
+                meta,
+                "normalize_embeddings",
+                default=True,
+            ),
             "document_count": len(self.documents),
             "kg_checksum": meta.get("kg_checksum"),
             "corpus_checksum": meta.get("corpus_checksum"),
@@ -352,8 +459,8 @@ class VectorIndex:
             "documents_file_checksum": docs_file_checksum,
             "embeddings_checksum": embeddings_checksum,
             "index_checksum": index_checksum,
-            "actual_embedding_used": bool(meta.get("actual_embedding_used")),
-            "smoke_fallback_used": bool(meta.get("smoke_fallback_used")),
+            "actual_embedding_used": _read_exact_bool(meta, "actual_embedding_used"),
+            "smoke_fallback_used": _read_exact_bool(meta, "smoke_fallback_used"),
             "package_versions": meta.get("package_versions") or {},
             "index_dir": str(index_dir).replace("\\", "/"),
         }
@@ -368,6 +475,131 @@ class VectorIndex:
                 tmp.unlink(missing_ok=True)
         self.metadata = {**meta, **manifest}
         return manifest
+
+    @classmethod
+    def validate_directory_for_freeze(
+        cls,
+        index_dir: str | Path,
+        *,
+        expected_backend: str | None = None,
+        expected_model_name: str | None = None,
+        expected_model_version: str | None = None,
+        expected_dimension: int | None = None,
+        expected_kg_checksum: str | None = None,
+        expected_corpus_checksum: str | None = None,
+    ) -> dict[str, Any]:
+        index_dir = Path(index_dir)
+        if index_dir.is_file():
+            if index_dir.suffix.lower() == ".json":
+                raise VectorIndexError("legacy_ekell_json_forbidden_in_formal")
+            raise VectorIndexError("ekell_index_path_not_directory")
+        if not index_dir.is_dir():
+            raise VectorIndexError("ekell_index_path_not_directory")
+
+        docs_path = index_dir / "documents.jsonl"
+        emb_path = index_dir / "embeddings.npy"
+        manifest_path = index_dir / "index_manifest.json"
+        _require_plain_file(docs_path, code="ekell_index_documents_missing")
+        _require_plain_file(emb_path, code="ekell_index_embeddings_missing")
+        _require_plain_file(manifest_path, code="ekell_index_manifest_missing")
+
+        manifest = _require_manifest_object(read_json(manifest_path))
+        index_type = _require_exact_nonempty_string(manifest, "index_type")
+        if index_type != "ekell_kg_vector_index":
+            raise VectorIndexError("ekell_index_type_mismatch")
+        backend = _require_exact_nonempty_string(manifest, "backend")
+        model_name = _require_exact_nonempty_string(manifest, "model_name")
+        model_version = _require_exact_nonempty_string(manifest, "model_version")
+        dimension = _require_positive_int(manifest, "dimension")
+        document_count = _require_positive_int(manifest, "document_count")
+        normalize_embeddings = _require_exact_bool(manifest, "normalize_embeddings")
+        kg_checksum = _require_sha256(manifest, "kg_checksum")
+        corpus_checksum = _require_sha256(manifest, "corpus_checksum")
+        documents_checksum = _require_sha256(manifest, "documents_checksum")
+        documents_file_checksum = _require_sha256(manifest, "documents_file_checksum")
+        embeddings_checksum = _require_sha256(manifest, "embeddings_checksum")
+        index_checksum = _require_sha256(manifest, "index_checksum")
+        actual_embedding_used = _require_exact_bool(manifest, "actual_embedding_used")
+        smoke_fallback_used = _require_exact_bool(manifest, "smoke_fallback_used")
+        if actual_embedding_used is not True:
+            raise VectorIndexError("actual_embedding_used_must_be_true")
+        if smoke_fallback_used is not False:
+            raise VectorIndexError("smoke_fallback_used_must_be_false")
+
+        if expected_backend and backend != str(expected_backend):
+            raise VectorIndexError("backend mismatch.")
+        if expected_model_name and model_name != str(expected_model_name):
+            raise VectorIndexError("model_name mismatch.")
+        if expected_model_version and model_version != str(expected_model_version):
+            raise VectorIndexError("model_version mismatch.")
+        if expected_dimension is not None and dimension != int(expected_dimension):
+            raise VectorIndexError("dimension mismatch.")
+        if expected_kg_checksum and kg_checksum != str(expected_kg_checksum):
+            raise VectorIndexError("kg_checksum mismatch.")
+        if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
+            raise VectorIndexError("corpus_checksum mismatch.")
+
+        documents = _read_vector_documents_strict(docs_path)
+        if len(documents) != document_count:
+            raise VectorIndexError("document_count does not match documents.jsonl length.")
+        actual_documents_file_checksum = sha256_file(docs_path)
+        if actual_documents_file_checksum != documents_file_checksum:
+            raise VectorIndexError("documents_file_checksum mismatch.")
+        actual_embeddings_checksum = sha256_file(emb_path)
+        if actual_embeddings_checksum != embeddings_checksum:
+            raise VectorIndexError("embeddings_checksum mismatch.")
+        recomputed_documents_checksum = ekell_documents_semantic_checksum(documents)
+        if recomputed_documents_checksum != documents_checksum:
+            raise VectorIndexError("documents_checksum mismatch.")
+
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover
+            raise VectorIndexError("numpy is required to validate E-KELL embeddings (.npy).") from exc
+        arr = np.load(emb_path, mmap_mode="r")
+        if len(arr.shape) != 2:
+            raise VectorIndexError("embeddings.npy must be a two-dimensional array.")
+        row_count, dim = int(arr.shape[0]), int(arr.shape[1])
+        if row_count <= 0 or dim <= 0:
+            raise VectorIndexError("embeddings.npy must have positive row count and dimension.")
+        if row_count != document_count:
+            raise VectorIndexError("embeddings.npy row count does not match documents.")
+        if dim != dimension:
+            raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
+
+        recomputed_index_checksum = ekell_index_identity_checksum(
+            backend=backend,
+            model_name=model_name,
+            model_version=model_version,
+            dimension=dimension,
+            document_count=document_count,
+            documents_checksum=recomputed_documents_checksum,
+            embeddings_checksum=actual_embeddings_checksum,
+            kg_checksum=kg_checksum,
+            corpus_checksum=corpus_checksum,
+        )
+        if recomputed_index_checksum != index_checksum:
+            raise VectorIndexError("index_checksum mismatch.")
+
+        return {
+            "index_type": index_type,
+            "index_dir": str(index_dir).replace("\\", "/"),
+            "backend": backend,
+            "model_name": model_name,
+            "model_version": model_version,
+            "dimension": dimension,
+            "normalize_embeddings": normalize_embeddings,
+            "document_count": document_count,
+            "kg_checksum": kg_checksum,
+            "corpus_checksum": corpus_checksum,
+            "documents_checksum": recomputed_documents_checksum,
+            "documents_file_checksum": actual_documents_file_checksum,
+            "embeddings_checksum": actual_embeddings_checksum,
+            "index_checksum": recomputed_index_checksum,
+            "index_manifest_sha256": sha256_file(manifest_path),
+            "actual_embedding_used": actual_embedding_used,
+            "smoke_fallback_used": smoke_fallback_used,
+        }
 
     @classmethod
     def validate_directory(
@@ -402,8 +634,6 @@ class VectorIndex:
                 require_real_embedding=require_real_embedding,
             )
             return dict(loaded.metadata)
-        from external_baselines.common.io import read_json, read_jsonl
-
         docs_path = index_dir / "documents.jsonl"
         emb_path = index_dir / "embeddings.npy"
         manifest_path = index_dir / "index_manifest.json"
@@ -452,9 +682,6 @@ class VectorIndex:
         expected_corpus_checksum: str | None = None,
         require_real_embedding: bool = False,
     ) -> "VectorIndex":
-        from external_baselines.common.checksums import sha256_file
-        from external_baselines.common.io import read_json, read_jsonl
-
         index_dir = Path(index_dir)
         docs_path = index_dir / "documents.jsonl"
         emb_path = index_dir / "embeddings.npy"
@@ -486,7 +713,7 @@ class VectorIndex:
         if int(manifest.get("dimension") or 0) != dim:
             raise VectorIndexError("Manifest dimension does not match embeddings.npy.")
 
-        documents_checksum = sha256_json([document.to_dict() for document in documents])
+        documents_checksum = ekell_documents_semantic_checksum(documents)
         if documents_checksum != manifest.get("documents_checksum"):
             raise VectorIndexError("documents_checksum mismatch.")
         if manifest.get("documents_file_checksum") and sha256_file(docs_path) != manifest.get(
@@ -496,18 +723,16 @@ class VectorIndex:
         if sha256_file(emb_path) != manifest.get("embeddings_checksum"):
             raise VectorIndexError("embeddings_checksum mismatch.")
 
-        recomputed = sha256_json(
-            {
-                "backend": manifest.get("backend"),
-                "model_name": manifest.get("model_name"),
-                "model_version": manifest.get("model_version"),
-                "dimension": dim,
-                "document_count": len(documents),
-                "documents_checksum": documents_checksum,
-                "embeddings_checksum": manifest.get("embeddings_checksum"),
-                "kg_checksum": manifest.get("kg_checksum"),
-                "corpus_checksum": manifest.get("corpus_checksum"),
-            }
+        recomputed = ekell_index_identity_checksum(
+            backend=str(manifest.get("backend")),
+            model_name=str(manifest.get("model_name")),
+            model_version=str(manifest.get("model_version")),
+            dimension=dim,
+            document_count=len(documents),
+            documents_checksum=documents_checksum,
+            embeddings_checksum=str(manifest.get("embeddings_checksum")),
+            kg_checksum=str(manifest.get("kg_checksum")),
+            corpus_checksum=str(manifest.get("corpus_checksum")),
         )
         if manifest.get("index_checksum") and recomputed != manifest.get("index_checksum"):
             raise VectorIndexError("index_checksum mismatch.")
