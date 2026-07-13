@@ -52,7 +52,18 @@ def compute_runner_bundle_identity(bundle: dict[str, Any]) -> dict[str, Any]:
         "producer_declared_checksum": bundle.get("producer_declared_checksum") or bundle.get("bundle_checksum"),
         "consumer_computed_hash": bundle.get("consumer_computed_bundle_hash")
         or bundle.get("recomputed_bundle_checksum"),
-        "input_cases_sha256": sha256_file(scenarios_path) if scenarios_path and Path(scenarios_path).is_file() else None,
+        "input_cases_sha256": bundle.get("input_cases_sha256")
+        or (sha256_file(scenarios_path) if scenarios_path and Path(scenarios_path).is_file() else None),
+        "input_cases_source": bundle.get("input_cases_source"),
+        "input_cases_path": scenarios_path,
+        "input_cases_relpath": bundle.get("input_cases_relpath"),
+        "input_cases_declared_sha256": bundle.get("input_cases_declared_sha256"),
+        "input_cases_inside_bundle": bundle.get("input_cases_inside_bundle"),
+        "input_cases_checksum_declared": bundle.get("input_cases_checksum_declared"),
+        "input_cases_checksum_valid": bundle.get("input_cases_checksum_valid"),
+        "input_cases_checksum_match": bundle.get("input_cases_checksum_match"),
+        "input_cases_authoritative": bundle.get("input_cases_authoritative"),
+        "input_cases_formal_eligible": bundle.get("input_cases_formal_eligible"),
         "prediction_schema_sha256": bundle.get("prediction_schema_sha256")
         or (sha256_file(schema_path) if schema_path and Path(schema_path).is_file() else None),
         "prediction_schema_source": bundle.get("prediction_schema_source"),
@@ -131,6 +142,17 @@ def validate_formal_runner_bundle_integrity(
         for item in file_report.get("mismatches") or []:
             mismatches.append({"type": "file_checksum", "detail": item})
 
+    input_authority_ok = (
+        live.get("input_cases_source") == "bundle_manifest"
+        and live.get("input_cases_inside_bundle") is True
+        and live.get("input_cases_checksum_declared") is True
+        and live.get("input_cases_checksum_match") is True
+        and live.get("input_cases_authoritative") is True
+        and live.get("input_cases_formal_eligible") is True
+    )
+    if not input_authority_ok:
+        errors.append("formal_input_cases_authority_invalid")
+
     schema_authority_ok = (
         live.get("prediction_schema_source") == "bundle_manifest"
         and live.get("prediction_schema_inside_bundle") is True
@@ -196,6 +218,7 @@ def validate_formal_runner_bundle_integrity(
         and consumer_hash_match
         and (producer_checksum_match if producer_required else True)
         and input_cases_integrity
+        and input_authority_ok
         and prediction_schema_integrity
         and schema_authority_ok
         and corpus_integrity
@@ -210,6 +233,7 @@ def validate_formal_runner_bundle_integrity(
         "expected_consumer_computed_hash": expected_consumer or None,
         "consumer_hash_match": consumer_hash_match,
         "input_cases_integrity": input_cases_integrity,
+        "input_cases_authority_ok": input_authority_ok,
         "prediction_schema_integrity": prediction_schema_integrity,
         "prediction_schema_authority_ok": schema_authority_ok,
         "corpus_integrity": corpus_integrity,
@@ -230,6 +254,16 @@ def validate_formal_runner_bundle_integrity(
         "corpus_aggregate_sha256": live.get("corpus_aggregate_sha256"),
         "expected_corpus_aggregate_sha256": expected_corpus or None,
         "file_checksum_report_ok": file_report_ok,
+        "input_cases_path": live.get("input_cases_path"),
+        "input_cases_relpath": live.get("input_cases_relpath"),
+        "input_cases_source": live.get("input_cases_source"),
+        "input_cases_declared_sha256": live.get("input_cases_declared_sha256"),
+        "input_cases_inside_bundle": live.get("input_cases_inside_bundle"),
+        "input_cases_checksum_declared": live.get("input_cases_checksum_declared"),
+        "input_cases_checksum_valid": live.get("input_cases_checksum_valid"),
+        "input_cases_checksum_match": live.get("input_cases_checksum_match"),
+        "input_cases_authoritative": live.get("input_cases_authoritative"),
+        "input_cases_formal_eligible": live.get("input_cases_formal_eligible"),
         "mismatches": mismatches,
         "errors": errors,
         "bundle_checksum_validation": bundle_validation,

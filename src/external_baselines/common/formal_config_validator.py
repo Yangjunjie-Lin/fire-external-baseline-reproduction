@@ -822,6 +822,7 @@ def validate_experiment_manifest(
             "experiment_id",
             "schema_version",
             "track",
+            "run_mode",
             "base_config",
             "shared_model_config",
             "freeze_manifest",
@@ -854,11 +855,14 @@ def validate_experiment_manifest(
                 except FormalConfigError as exc:
                     errors.append(str(exc))
 
-    run_mode = _validate_exact_nonempty_string(
-        raw["run_mode"] if "run_mode" in raw else "formal",
-        field="run_mode",
-        allow_placeholders=allow_placeholders,
-    ).lower()
+    if stage == "formal" and "run_mode" not in raw:
+        run_mode = ""
+    else:
+        run_mode = _validate_exact_nonempty_string(
+            raw["run_mode"] if "run_mode" in raw else "formal",
+            field="run_mode",
+            allow_placeholders=allow_placeholders,
+        ).lower()
     if run_mode != "formal":
         errors.append(f"run_mode must be 'formal' for paper-facing manifest (got {run_mode!r})")
 
@@ -964,30 +968,53 @@ def validate_experiment_manifest(
         canonicalize_method_id(_validate_exact_nonempty_string(m, field="supplemental_methods[]"))
         for m in (raw.get("supplemental_methods") or [])
     ]
-    declared_comparison = [
-        canonicalize_method_id(_validate_exact_nonempty_string(m, field="comparison_suite_methods[]"))
-        for m in (raw.get("comparison_suite_methods") or [])
-    ]
+    declared_comparison: list[str] = []
+    raw_comparison_methods = raw.get("comparison_suite_methods")
+    if stage == "formal" and method_set_name == "comparison_suite":
+        if "comparison_suite_methods" not in raw:
+            errors.append("formal comparison suite requires explicit comparison_suite_methods.")
+        elif raw_comparison_methods is None or not isinstance(raw_comparison_methods, list):
+            errors.append("comparison_suite_methods must be a YAML list.")
+        elif not raw_comparison_methods:
+            errors.append("comparison_suite_methods must be a non-empty YAML list.")
+        else:
+            for item in raw_comparison_methods:
+                try:
+                    exact = _validate_exact_nonempty_string(item, field="comparison_suite_methods[]")
+                except FormalConfigError as exc:
+                    errors.append(str(exc))
+                    continue
+                canonical = canonicalize_method_id(exact)
+                if canonical != exact:
+                    errors.append(f"comparison_suite_methods must use canonical method IDs, not alias {exact!r}.")
+                declared_comparison.append(canonical)
+    else:
+        declared_comparison = [
+            canonicalize_method_id(_validate_exact_nonempty_string(m, field="comparison_suite_methods[]"))
+            for m in (raw_comparison_methods or [])
+        ]
 
-    if method_set_name == "comparison_suite":
-        if declared_comparison:
-            if declared_comparison != COMPARISON_SUITE_EXACT:
-                errors.append(
-                    "comparison_suite_methods must be exactly "
-                    f"{COMPARISON_SUITE_EXACT} (got {declared_comparison})"
-                )
-            forbidden = set(paper_fidelity_methods()) | {
-                "ekell_style_enhanced",
-                "lightrag",
-                "microsoft_graphrag",
-                "fallback_graph_retrieval",
-            }
-            extras = [m for m in declared_comparison if m in forbidden]
-            if extras:
-                errors.append(f"comparison_suite_methods must not include {extras}.")
-            missing = [m for m in COMPARISON_SUITE_EXACT if m not in declared_comparison]
-            if missing:
-                errors.append(f"comparison_suite_methods missing required methods: {missing}.")
+    if method_set_name == "comparison_suite" and (stage == "formal" or declared_comparison):
+        if declared_comparison != COMPARISON_SUITE_EXACT:
+            errors.append(
+                "comparison_suite_methods must be exactly "
+                f"{COMPARISON_SUITE_EXACT} (got {declared_comparison})"
+            )
+        duplicates = sorted({m for m in declared_comparison if declared_comparison.count(m) > 1})
+        if duplicates:
+            errors.append(f"comparison_suite_methods contains duplicates: {duplicates}.")
+        forbidden = set(paper_fidelity_methods()) | {
+            "ekell_style_enhanced",
+            "lightrag",
+            "microsoft_graphrag",
+            "fallback_graph_retrieval",
+        }
+        extras = [m for m in declared_comparison if m in forbidden]
+        if extras:
+            errors.append(f"comparison_suite_methods must not include {extras}.")
+        missing = [m for m in COMPARISON_SUITE_EXACT if m not in declared_comparison]
+        if missing:
+            errors.append(f"comparison_suite_methods missing required methods: {missing}.")
 
     for mid in declared_pf:
         if mid in declared_main:
@@ -1091,6 +1118,35 @@ def validate_experiment_manifest(
             )
         except FormalConfigError as exc:
             errors.append(f"hybrid_rag/dense_rag identity: {exc}")
+
+    if stage == "formal" and method_set_name == "comparison_suite":
+        method_entry_ids: list[str] = []
+        enabled_entry_ids: list[str] = []
+        for entry in methods:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                mid = canonicalize_method_id(
+                    _validate_exact_nonempty_string(entry.get("method_id"), field="methods[].method_id")
+                )
+            except FormalConfigError:
+                continue
+            method_entry_ids.append(mid)
+            if entry.get("enabled", True) is True:
+                enabled_entry_ids.append(mid)
+            elif mid in COMPARISON_SUITE_EXACT:
+                errors.append(f"Required comparison suite method entry disabled: {mid}.")
+        missing_entries = [m for m in COMPARISON_SUITE_EXACT if m not in method_entry_ids]
+        extra_entries = [m for m in method_entry_ids if m not in COMPARISON_SUITE_EXACT]
+        if missing_entries:
+            errors.append(f"comparison suite methods missing method entries: {missing_entries}.")
+        if extra_entries:
+            errors.append(f"comparison suite methods contain extra method entries: {extra_entries}.")
+        if enabled_entry_ids != COMPARISON_SUITE_EXACT:
+            errors.append(
+                "enabled comparison suite method entries must exactly match "
+                f"{COMPARISON_SUITE_EXACT} (got {enabled_entry_ids})."
+            )
 
     enabled_main = [
         canonicalize_method_id(_validate_exact_nonempty_string(e.get("method_id"), field="methods[].method_id"))

@@ -152,6 +152,10 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         "methods": resolved,
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
         "comparison_suite_methods": list(raw.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS),
+        "comparison_suite_methods_explicit": (
+            "comparison_suite_methods" in raw
+            and raw.get("comparison_suite_methods") is not None
+        ),
         "supplemental_methods": list(raw.get("supplemental_methods") or SUPPLEMENTAL_METHODS),
         "bundle": _optional_manifest_string(raw, "bundle"),
         "freeze_manifest": _optional_manifest_string(raw, "freeze_manifest"),
