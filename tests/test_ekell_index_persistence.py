@@ -579,3 +579,205 @@ def test_strict_kg_rejects_evidence_missing_text(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="evidence_text_missing"):
         load_kg_strict(corpus)
+
+
+def _write_strict_row(corpus: Path, filename: str, row: dict) -> None:
+    (corpus / filename).write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+def test_strict_kg_rejects_numeric_evidence_text(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": "c1", "text": 456, "source_id": "s1"},
+    )
+    with pytest.raises(ValueError, match="evidence_text_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_boolean_evidence_text(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": "c1", "text": True, "source_id": "s1"},
+    )
+    with pytest.raises(ValueError, match="evidence_text_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_list_evidence_text(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": "c1", "text": ["not", "text"], "source_id": "s1"},
+    )
+    with pytest.raises(ValueError, match="evidence_text_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_semantic_text_surrounding_whitespace(
+    tmp_path: Path,
+) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": "c1", "text": " padded evidence ", "source_id": "s1"},
+    )
+    with pytest.raises(
+        ValueError,
+        match="evidence_text_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_numeric_relation_label(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "triples.jsonl",
+        {"head": 1, "relation": 2, "tail": 3},
+    )
+    with pytest.raises(ValueError, match="triple_relation_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_float_head_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "triples.jsonl",
+        {"head": 1.5, "relation": "used_for", "tail": 3},
+    )
+    with pytest.raises(ValueError, match="triple_head_identifier_invalid_type"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_boolean_tail_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "triples.jsonl",
+        {"head": 1, "relation": "used_for", "tail": False},
+    )
+    with pytest.raises(ValueError, match="triple_tail_identifier_invalid_type"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_accepts_integer_entity_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "entities.jsonl",
+        {"entity_id": 1, "name": "hose"},
+    )
+    kg = load_kg_strict(corpus)
+    assert kg.entities[0]["entity_id"] == 1
+
+
+def test_strict_kg_accepts_integer_chunk_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": 1, "text": "hose evidence", "citation": "manual"},
+    )
+    kg = load_kg_strict(corpus)
+    assert kg.evidence_chunks[0]["chunk_id"] == 1
+
+
+def test_strict_kg_requires_string_source_or_citation(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    _write_strict_row(
+        corpus,
+        "evidence_chunks.jsonl",
+        {"chunk_id": "c1", "text": "hose evidence", "source_id": 789},
+    )
+    with pytest.raises(ValueError, match="evidence_source_or_citation_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_error_contains_file_line_and_field(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '\n{"chunk_id":"c1","text":123,"source_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "kg_schema_invalid:evidence_chunks.jsonl:line_2:"
+            "evidence_text_must_be_string"
+        ),
+    ):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_duplicate_chunk_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"chunk_id":"c1","text":"first","source_id":"s1"}',
+                '{"chunk_id":"c1","text":"second","source_id":"s2"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_evidence_chunk_id:c1"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_duplicate_entity_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"entity_id":1,"name":"hose"}',
+                '{"entity_id":1,"name":"hydrant"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_entity_id:1"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_duplicate_relation_id(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "relations.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"relation_id":"r1","name":"used_for"}',
+                '{"relation_id":"r1","name":"supports"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_relation_id:r1"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_duplicate_triple(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire"}',
+                '{"head":"hose","relation":"used_for","tail":"fire"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"kg_duplicate_triple:hose\|used_for\|fire",
+    ):
+        load_kg_strict(corpus)

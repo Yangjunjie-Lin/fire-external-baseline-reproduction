@@ -64,6 +64,20 @@ valid report exits `0`. Relative resource paths are resolved from their declared
 repository, experiment-manifest, or Bundle policy and never from an arbitrary
 current working directory.
 
+The experiment-manifest loader is the single authority for base, shared,
+method, Runner Bundle, and freeze-manifest resource paths. Formal validation
+and preflight consume its resolved contract without raw-path fallback.
+Machine-local absolute paths are diagnostic only. Selected DEV evidence is
+frozen with a canonical portable path and SHA-256; a complete legacy freeze
+whose selected DEV evidence is a string must be regenerated.
+
+Before any embedding backend initialization or persisted-index write, the
+official builder runs full experiment-level `index_build_candidate` validation.
+Strict FireKG validation separates identifier fields from semantic text:
+protocol-approved integer IDs are allowed, but booleans and floats are not;
+evidence text, relation labels, citations, URLs, and source paths must be exact
+non-empty strings without numeric coercion.
+
 Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Formal aliases mirror main-project `taxonomy.py` (commit `f228867480eb369c2b55cde3185af548965a23a5`). DEV-only aliases require explicit enable and are forbidden in formal runs. Final prediction JSONL must contain canonical IDs only; parser requires all decision/response/action fields to be explicitly present in formal mode. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
 
 After DEV selection, the complete freeze binds the prompt directory selected by

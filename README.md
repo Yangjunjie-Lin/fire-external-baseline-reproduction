@@ -55,6 +55,23 @@ record must be an object, and errors retain the original filename and line
 number. Repository, experiment, Bundle, index, evidence, and prompt paths use
 explicit resolution policies rather than the process working directory.
 
+Experiment-manifest resources are resolved once by the manifest loader. Formal
+validation and preflight consume that resolved path contract and do not
+reinterpret raw paths. Manifest-relative paths use the experiment directory,
+repository-relative paths use the repository root, and Bundle-relative paths
+use the Bundle root; no Formal resource path depends on the process current
+working directory.
+
+Selected DEV evidence is frozen as a portable canonical path plus SHA-256.
+Machine-specific resolved absolute paths are diagnostic only and are not
+authoritative. Complete freezes containing the legacy string-form selected DEV
+evidence path must be regenerated. Before loading an embedding model or writing
+a persisted index, the official index builder runs full experiment-level
+`index_build_candidate` validation. Strict FireKG validation permits exact
+strings or protocol-approved integers for identifier fields (never booleans or
+floats), while evidence text, relation labels, citations, URLs, and source paths
+must be exact non-empty strings and are never accepted by numeric coercion.
+
 Readiness gates:
 
 | Flag | Value |

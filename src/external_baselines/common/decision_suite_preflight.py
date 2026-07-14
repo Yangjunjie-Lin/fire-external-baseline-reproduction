@@ -22,7 +22,11 @@ from external_baselines.common.generation_identity import (
     validate_shared_generation_identity,
 )
 from external_baselines.common.io import read_json, read_yaml
-from external_baselines.common.path_resolution import PathContext, resolve_declared_path
+from external_baselines.common.path_resolution import (
+    PathContext,
+    resolve_declared_path,
+    resolve_path_reference,
+)
 from external_baselines.common.strict_config_types import (
     require_exact_bool,
     require_exact_int,
@@ -40,6 +44,8 @@ from external_baselines.interop.bundle import (
     validate_bundle_checksum,
 )
 from external_baselines.method_registry import canonicalize_method_id
+
+ROOT_REL = Path(__file__).resolve().parents[3]
 
 EKELL_LOGICAL_COMPONENTS = (
     ("parse_query", "external_baselines.ekell_style.logical_query.parser", "parse_query"),
@@ -81,58 +87,63 @@ class MethodPreflightResult:
 
 
 def _resolve_path(config: dict[str, Any], rel: str | Path) -> Path:
-    root = Path(__file__).resolve().parents[3]
     if not str(rel).strip():
         # Dry-run configs may omit optional resources; Formal callers reject the
         # empty declaration before resolution through _preflight_string().
-        return root
+        return ROOT_REL
     return resolve_declared_path(
         rel,
-        context=PathContext(repository_root=root),
+        context=PathContext(repository_root=ROOT_REL),
         policy="repository_relative",
         must_exist=False,
     )
 
 
-def _load_freeze_manifest(experiment_manifest: Path | None) -> dict[str, Any] | None:
-    if experiment_manifest is None or not experiment_manifest.is_file():
+def _load_freeze_manifest(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not manifest:
         return None
-    from external_baselines.common.experiment_manifest import load_experiment_manifest
-
-    manifest = load_experiment_manifest(experiment_manifest)
-    freeze_path = manifest.get("freeze_manifest")
-    if not freeze_path:
+    freeze_path = manifest.get("freeze_manifest_resolved")
+    freeze_policy = manifest.get("freeze_manifest_path_policy")
+    if not manifest.get("freeze_manifest_declared"):
         return None
-    root = Path(__file__).resolve().parents[3]
-    freeze_file = resolve_declared_path(
-        str(freeze_path),
-        context=PathContext(
-            repository_root=root,
-            experiment_manifest_path=experiment_manifest,
-        ),
-        policy="repository_relative",
-        must_exist=False,
-    )
-    if not freeze_file.is_file():
-        return None
+    if freeze_policy not in {
+        "experiment_relative",
+        "repository_relative",
+        "absolute_external",
+    }:
+        raise FormalConfigError(f"freeze_manifest_path_policy_invalid:{freeze_policy!r}")
+    freeze_file = Path(str(freeze_path or ""))
+    if not freeze_file.is_file() or freeze_file.is_symlink():
+        raise FormalConfigError("freeze_manifest_resolved_file_missing")
     return read_json(freeze_file)
 
 
-def _load_shared_model_config(experiment_manifest: Path | None) -> dict[str, Any]:
-    if experiment_manifest is None or not experiment_manifest.is_file():
+def _load_shared_model_config(manifest: dict[str, Any] | None) -> dict[str, Any]:
+    if not manifest:
         return {}
-    from external_baselines.common.experiment_manifest import load_experiment_manifest
-
-    manifest = load_experiment_manifest(experiment_manifest)
-    shared_path = manifest.get("shared_model_config")
+    shared_path = manifest.get("shared_model_config_resolved")
     if not shared_path:
         return {}
-    shared_file = Path(str(shared_path))
-    if not shared_file.is_file():
-        shared_file = Path(__file__).resolve().parents[3] / str(shared_path)
-    if not shared_file.is_file():
-        return {}
-    return read_yaml(shared_file)
+    shared_config_file = Path(str(shared_path))
+    if not shared_config_file.is_file() or shared_config_file.is_symlink():
+        raise FormalConfigError("shared_model_config_resolved_file_missing")
+    return read_yaml(shared_config_file)
+
+
+def _repository_resource_reference(declared: Any) -> dict[str, Any] | None:
+    if type(declared) is not str or not declared.strip():
+        return None
+    reference = resolve_path_reference(
+        declared,
+        context=PathContext(repository_root=ROOT_REL),
+        policy=(
+            "absolute_external"
+            if Path(declared).is_absolute()
+            else "repository_relative"
+        ),
+        must_exist=False,
+    )
+    return reference.to_dict()
 
 
 def _validate_runner_bundle_integrity(
@@ -236,9 +247,7 @@ def _validate_ekell_prompts(
             try:
                 actual_bundle = validate_and_hash_prompt_bundle(
                     declared_prompt_dir or prompt_dir,
-                    path_context=PathContext(
-                        repository_root=Path(__file__).resolve().parents[3]
-                    ),
+                    path_context=PathContext(repository_root=ROOT_REL),
                 )
             except (OSError, TypeError, ValueError) as exc:
                 errors.append(str(exc))
@@ -661,12 +670,53 @@ def preflight_decision_suite(
 ) -> dict[str, Any]:
     """Validate all method resources before any LLM client initialization."""
     formal = execution_stage == "formal"
-    bundle = load_runner_bundle(runner_bundle, formal=formal)
-    freeze = _load_freeze_manifest(experiment_manifest) if formal else None
+    from external_baselines.common.experiment_manifest import load_experiment_manifest
+
+    manifest = (
+        load_experiment_manifest(experiment_manifest)
+        if experiment_manifest is not None
+        else None
+    )
+    bundle_reference = resolve_path_reference(
+        runner_bundle,
+        context=PathContext(repository_root=ROOT_REL),
+        policy=(
+            "absolute_external"
+            if Path(runner_bundle).is_absolute()
+            else "repository_relative"
+        ),
+        must_exist=False,
+    )
+    resource_paths = dict((manifest or {}).get("path_provenance") or {})
+    resource_paths["runner_bundle_runtime"] = bundle_reference.to_dict()
+    shared_errors: list[str] = []
+    if formal and manifest and manifest.get("bundle_resolved"):
+        if Path(str(manifest["bundle_resolved"])) != bundle_reference.resolved_path:
+            shared_errors.append("runtime_bundle_path_mismatch_with_manifest")
+    bundle = load_runner_bundle(bundle_reference.resolved_path, formal=formal)
+    try:
+        freeze = _load_freeze_manifest(manifest) if formal else None
+    except FormalConfigError as exc:
+        freeze = None
+        shared_errors.append(str(exc))
     scenarios_path = bundle.get("scenarios_path")
     schema_path = bundle.get("prediction_schema_path")
     corpus_dir = bundle.get("corpus_dir")
-    shared_errors: list[str] = []
+
+    dense_method = method_configs.get("dense_rag") or {}
+    dense_block = dense_method.get("dense_rag") or {}
+    ekell_method = method_configs.get("ekell_style_controlled_shared_llm") or {}
+    ekell_block = ekell_method.get("ekell_vector") or {}
+    ekell_style = ekell_method.get("ekell_style") or {}
+    for label, declared in (
+        ("dense_index", dense_block.get("index_path")),
+        ("ekell_index", ekell_block.get("index_path")),
+        ("prompt_dir", ekell_style.get("prompt_dir")),
+    ):
+        try:
+            resource_paths[label] = _repository_resource_reference(declared)
+        except (TypeError, ValueError) as exc:
+            resource_paths[label] = {"error": str(exc)}
 
     bundle_integrity = _validate_runner_bundle_integrity(bundle, formal=formal, freeze=freeze)
     if formal and not bundle_integrity.get("ok"):
@@ -675,6 +725,7 @@ def preflight_decision_suite(
             "ok": False,
             "execution_stage": execution_stage,
             "runner_bundle": str(runner_bundle),
+            "resource_paths": resource_paths,
             "shared_errors": shared_errors,
             "runner_bundle_integrity": bundle_integrity,
             "shared_generation_identity": {"ok": False, "mismatches": []},
@@ -724,7 +775,11 @@ def preflight_decision_suite(
         except Exception as exc:  # noqa: BLE001
             shared_errors.append(f"formal_alias_validation_failed:{exc}")
 
-    shared_model_cfg = _load_shared_model_config(experiment_manifest)
+    try:
+        shared_model_cfg = _load_shared_model_config(manifest)
+    except FormalConfigError as exc:
+        shared_model_cfg = {}
+        shared_errors.append(str(exc))
     generation_identity = validate_shared_generation_identity(
         method_ids=method_ids,
         method_configs=method_configs,
@@ -830,6 +885,7 @@ def preflight_decision_suite(
         "ok": all_ok and generation_identity.get("ok", True),
         "execution_stage": execution_stage,
         "runner_bundle": str(runner_bundle),
+        "resource_paths": resource_paths,
         "shared_errors": shared_errors,
         "runner_bundle_integrity": bundle_integrity,
         "shared_generation_identity": generation_identity,

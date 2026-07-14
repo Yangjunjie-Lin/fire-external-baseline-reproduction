@@ -27,6 +27,7 @@ from external_baselines.common.firebench_taxonomy import (
     membership_set,
 )
 from external_baselines.common.formal_config_validator import FormalConfigError, validate_llm_for_formal
+from external_baselines.common.path_resolution import PathContext, resolve_path_reference
 from external_baselines.common.runtime_evidence import (
     RuntimeEvidence,
     collect_llm_evidence,
@@ -1363,8 +1364,6 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
         method_cfgs[mid] = path
 
     identity = _frozen_runner_bundle_identity(bundle)
-    dev_evidence = tmp_path / "selected_dev_run.json"
-    dev_evidence.write_text('{"selected": true}\n', encoding="utf-8")
 
     method_entries = [
         {"method_id": mid, "config": str(cfg), "enabled": True}
@@ -1435,7 +1434,15 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
             "methods": method_entries,
             "bundle": bundle_dir.as_posix(),
         },
-        selected_dev_run=dev_evidence,
+        selected_dev_run=resolve_path_reference(
+            "tests/fixtures/minimal_ekell_corpus/evidence_chunks.jsonl",
+            context=PathContext(
+                repository_root=ROOT,
+                experiment_manifest_path=exp,
+            ),
+            policy="repository_relative",
+            expected_kind="file",
+        ),
         producer_declared_checksum=identity.get("producer_declared_checksum"),
         consumer_computed_hash=identity.get("consumer_computed_hash"),
         input_cases_sha256=identity.get("input_cases_sha256"),
@@ -3162,12 +3169,18 @@ def test_complete_freeze_requires_input_cases_sha(tmp_path):
         ),
         encoding="utf-8",
     )
-    dev_evidence = tmp_path / "selected_dev_run.json"
-    dev_evidence.write_text('{"selected": true}\n', encoding="utf-8")
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=manifest,
         experiment_raw={"shared_model_config": str(shared), "methods": method_entries},
-        selected_dev_run=dev_evidence,
+        selected_dev_run=resolve_path_reference(
+            "tests/fixtures/minimal_ekell_corpus/evidence_chunks.jsonl",
+            context=PathContext(
+                repository_root=ROOT,
+                experiment_manifest_path=manifest,
+            ),
+            policy="repository_relative",
+            expected_kind="file",
+        ),
         producer_declared_checksum="0" * 64,
         consumer_computed_hash="1" * 64,
         corpus_checksum="0" * 64,
@@ -3746,10 +3759,20 @@ def test_freeze_records_producer_and_consumer_separately(tmp_path):
 
     manifest = tmp_path / "m.yaml"
     manifest.write_text("experiment_id: x\nshared_model_config: configs/deterministic_heuristic_smoke.yaml\n", encoding="utf-8")
+    evidence = tmp_path / "dev.json"
+    evidence.write_text('{"selected": true}\n', encoding="utf-8")
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=manifest,
         experiment_raw={"shared_model_config": "configs/deterministic_heuristic_smoke.yaml", "methods": []},
-        selected_dev_run=tmp_path / "dev.json",
+        selected_dev_run=resolve_path_reference(
+            evidence.name,
+            context=PathContext(
+                repository_root=tmp_path,
+                experiment_manifest_path=manifest,
+            ),
+            policy="experiment_relative",
+            expected_kind="file",
+        ),
         producer_declared_checksum="a" * 64,
         consumer_computed_hash="b" * 64,
         input_cases_sha256="c" * 64,

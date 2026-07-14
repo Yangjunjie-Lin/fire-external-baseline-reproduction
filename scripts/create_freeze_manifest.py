@@ -32,8 +32,12 @@ from external_baselines.common.io import read_json, write_json  # noqa: E402
 from external_baselines.common.path_resolution import (  # noqa: E402
     PathContext,
     resolve_declared_path,
+    resolve_path_reference,
 )
-from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
+from external_baselines.common.strict_config_types import (  # noqa: E402
+    require_exact_bool,
+    require_exact_nonempty_string,
+)
 from external_baselines.ekell_style.kg_loader import (  # noqa: E402
     fire_kg_checksum,
     load_kg_strict,
@@ -106,16 +110,39 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    evidence = _repo_path(args.selected_dev_run)
-    if not evidence.is_file() or evidence.stat().st_size <= 0:
-        raise SystemExit(f"selected DEV evidence missing or empty: {evidence}")
-
     experiment_manifest_path = _repo_path(args.experiment_manifest)
     experiment = load_experiment_manifest(experiment_manifest_path)
     raw = experiment.get("raw") or {}
+    try:
+        selected_dev_declared = require_exact_nonempty_string(
+            args.selected_dev_run,
+            field="selected_dev_run",
+        )
+        selected_dev_ref = resolve_path_reference(
+            selected_dev_declared,
+            context=PathContext(
+                repository_root=ROOT,
+                experiment_manifest_path=experiment_manifest_path,
+            ),
+            policy=(
+                "absolute_external"
+                if Path(selected_dev_declared).is_absolute()
+                else "repository_relative"
+            ),
+            expected_kind="file",
+        )
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        raise SystemExit(f"selected DEV evidence missing or invalid: {exc}") from exc
+    if selected_dev_ref.resolved_path.stat().st_size <= 0:
+        raise SystemExit(
+            f"selected DEV evidence missing or empty: {selected_dev_ref.resolved_path}"
+        )
+    if not args.draft and selected_dev_ref.external:
+        raise SystemExit("selected_dev_evidence_external_path_not_portable")
+
     method_paths = {
         str(e.get("method_id")): str(e.get("config"))
-        for e in (raw.get("methods") or [])
+        for e in (experiment.get("methods") or [])
         if isinstance(e, dict) and e.get("method_id") and e.get("config")
     }
     for mid in comparison_suite_methods():
@@ -129,11 +156,32 @@ def main(argv: list[str] | None = None) -> None:
     evidence_source_checksum = None
     bundle_kg_checksum = None
     schema_checksum = None
-    bundle_path = args.bundle or experiment.get("bundle")
+    bundle_ref = None
+    if args.bundle:
+        bundle_ref = resolve_path_reference(
+            args.bundle,
+            context=PathContext(repository_root=ROOT),
+            policy=(
+                "absolute_external"
+                if Path(args.bundle).is_absolute()
+                else "repository_relative"
+            ),
+            must_exist=False,
+        )
+        manifest_bundle = experiment.get("bundle_resolved")
+        if manifest_bundle and bundle_ref.resolved_path != Path(str(manifest_bundle)):
+            raise SystemExit("runtime_bundle_path_mismatch_with_manifest")
+    elif experiment.get("bundle_resolved"):
+        bundle_ref = resolve_path_reference(
+            Path(str(experiment["bundle_resolved"])),
+            context=PathContext(repository_root=ROOT),
+            policy="absolute_external",
+            must_exist=False,
+        )
+    bundle_path = bundle_ref.resolved_path if bundle_ref else None
     bundle = None
     if bundle_path and not _is_placeholder(bundle_path):
         try:
-            bundle_path = _repo_path(bundle_path)
             bundle = load_runner_bundle(bundle_path, formal=not args.draft)
             if not args.draft:
                 validate_formal_bundle_aggregate_checksum(bundle)
@@ -182,7 +230,9 @@ def main(argv: list[str] | None = None) -> None:
 
     methods = enabled_methods(experiment, method_set="comparison_suite")
     dense_index_path = None
+    dense_index_declared = None
     ekell_index_path = None
+    ekell_index_declared = None
     embedding_candidates: dict[str, dict] = {}
     ekell_expected_kg_checksum = bundle_kg_checksum
     for entry in methods:
@@ -190,7 +240,9 @@ def main(argv: list[str] | None = None) -> None:
         mid = entry["method_id"]
         if mid == "dense_rag":
             dense = cfg.get("dense_rag") or {}
-            dense_index_path = dense.get("index_path")
+            if dense.get("index_path"):
+                dense_index_declared = dense["index_path"]
+                dense_index_path = _repo_path(dense_index_declared)
             embedding_candidates[mid] = {
                 "backend": dense.get("backend"),
                 "model_name": dense.get("model_name"),
@@ -218,7 +270,9 @@ def main(argv: list[str] | None = None) -> None:
                 }
         elif mid == "ekell_style_controlled_shared_llm":
             vector = cfg.get("ekell_vector") or {}
-            ekell_index_path = vector.get("index_path")
+            if vector.get("index_path"):
+                ekell_index_declared = vector["index_path"]
+                ekell_index_path = _repo_path(ekell_index_declared)
             configured_kg_checksum = cfg.get("kg_checksum")
             if (
                 configured_kg_checksum is not None
@@ -297,7 +351,7 @@ def main(argv: list[str] | None = None) -> None:
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=experiment_manifest_path,
         experiment_raw=raw,
-        selected_dev_run=evidence,
+        selected_dev_run=selected_dev_ref,
         producer_declared_checksum=producer_declared_checksum,
         consumer_computed_hash=consumer_computed_hash or bundle_checksum,
         input_cases_sha256=input_cases_sha256,
@@ -311,20 +365,39 @@ def main(argv: list[str] | None = None) -> None:
     )
     provenance = payload.setdefault("path_provenance", {})
     for label, declared in (
-        ("runner_bundle", bundle_path),
-        ("dense_index", dense_index_path),
-        ("ekell_index", ekell_index_path),
+        ("dense_index", dense_index_declared),
+        ("ekell_index", ekell_index_declared),
         ("freeze_manifest", args.output),
     ):
         if declared:
-            resolved = _repo_path(declared)
-            provenance[label] = {
-                "declared_path": str(declared).replace("\\", "/"),
-                "resolved_path": str(resolved),
-                "path_policy": (
-                    "absolute" if Path(declared).is_absolute() else "repository_relative"
+            reference = resolve_path_reference(
+                declared,
+                context=PathContext(repository_root=ROOT),
+                policy=(
+                    "absolute_external"
+                    if Path(declared).is_absolute()
+                    else "repository_relative"
                 ),
-            }
+                must_exist=False,
+            )
+            freeze_reference = reference.to_dict()
+            freeze_reference["resolved_path_at_freeze"] = str(
+                reference.resolved_path
+            )
+            freeze_reference["resolved_path_authoritative"] = False
+            provenance[label] = freeze_reference
+    if bundle_ref is not None:
+        bundle_provenance = dict(
+            (experiment.get("path_provenance") or {}).get("runner_bundle")
+            or bundle_ref.to_dict()
+        )
+        bundle_provenance["runtime_resolved_path"] = str(bundle_ref.resolved_path)
+        bundle_provenance["runtime_resolved_path_authoritative"] = False
+        bundle_provenance["resolved_path_at_freeze"] = str(
+            bundle_ref.resolved_path
+        )
+        bundle_provenance["resolved_path_authoritative"] = False
+        provenance["runner_bundle"] = bundle_provenance
     if args.draft:
         payload["freeze_status"] = "draft"
         payload["draft"] = True
@@ -355,6 +428,7 @@ def main(argv: list[str] | None = None) -> None:
                     "ekell": ekell_block,
                 },
                 method_config_paths=method_paths,
+                repository_root=ROOT,
             )
             temp_path.replace(output_path)
         except Exception as exc:  # noqa: BLE001

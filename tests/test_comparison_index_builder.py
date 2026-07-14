@@ -127,7 +127,7 @@ def _write_experiment(
         methods.append(
             {
                 "method_id": method_id,
-                "config": str(path),
+                "config": path.relative_to(tmp_path).as_posix(),
                 "enabled": True,
             }
         )
@@ -145,9 +145,9 @@ def _write_experiment(
         "fail_on_duplicate_case_id": True,
         "fail_on_missing_case": True,
         "fail_on_extra_case": True,
-        "bundle": str(bundle) if bundle else None,
-        "base_config": str(base),
-        "shared_model_config": str(shared),
+        "bundle": bundle.relative_to(tmp_path).as_posix() if bundle else None,
+        "base_config": base.relative_to(tmp_path).as_posix(),
+        "shared_model_config": shared.relative_to(tmp_path).as_posix(),
         "main_table_methods": [
             "direct_llm",
             "bm25_rag",
@@ -232,6 +232,25 @@ def _invoke(manifest: Path, tmp_path: Path) -> tuple[int, dict[str, Any]]:
     return code, report
 
 
+def _invoke_build(manifest: Path, output: Path) -> tuple[int, dict[str, Any]]:
+    try:
+        builder.main(
+            [
+                "--experiment-manifest",
+                str(manifest),
+                "--output",
+                str(output),
+            ]
+        )
+    except SystemExit as exc:
+        code = int(exc.code)
+    else:
+        code = 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["ok"] is (code == 0)
+    return code, report
+
+
 def _valid_fixture(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     bundle = _make_runner_bundle(tmp_path)
     return _write_experiment(tmp_path, bundle, build_indexes=True)
@@ -283,7 +302,8 @@ def test_validate_only_dense_placeholder_exits_one(tmp_path: Path) -> None:
     _mutate_yaml(paths["dense_rag"], "dense_rag", "model_version", "REPLACE_ME")
     code, report = _invoke(manifest, tmp_path)
     assert code == 1
-    assert "dense_model_version_placeholder" in report["errors"]
+    assert report["experiment_validation"]["ok"] is False
+    assert any("model_version" in error and "placeholder" in error for error in report["errors"])
 
 
 def test_validate_only_dense_index_missing_exits_one(tmp_path: Path) -> None:
@@ -313,7 +333,8 @@ def test_validate_only_ekell_placeholder_exits_one(tmp_path: Path) -> None:
     )
     code, report = _invoke(manifest, tmp_path)
     assert code == 1
-    assert "ekell_model_version_placeholder" in report["errors"]
+    assert report["experiment_validation"]["ok"] is False
+    assert any("model_version" in error and "placeholder" in error for error in report["errors"])
 
 
 def test_validate_only_ekell_index_missing_exits_one(tmp_path: Path) -> None:
@@ -385,13 +406,13 @@ def test_builder_rejects_integer_reject_smoke(tmp_path: Path) -> None:
 
 def test_builder_rejects_string_dimension(tmp_path: Path) -> None:
     _assert_builder_rejects_invalid_exact_config_type(
-        tmp_path, "dense_rag", "dimension", "8", "exact integer"
+        tmp_path, "dense_rag", "dimension", "8", "exact YAML integer"
     )
 
 
 def test_builder_rejects_float_dimension(tmp_path: Path) -> None:
     _assert_builder_rejects_invalid_exact_config_type(
-        tmp_path, "dense_rag", "dimension", 8.0, "exact integer"
+        tmp_path, "dense_rag", "dimension", 8.0, "exact YAML integer"
     )
 
 
@@ -418,7 +439,8 @@ def test_builder_rejects_placeholder_model_version(tmp_path: Path) -> None:
     )
     code, report = _invoke(manifest, tmp_path)
     assert code == 1
-    assert "dense_model_version_placeholder" in report["errors"]
+    assert report["experiment_validation"]["ok"] is False
+    assert any("model_version" in error and "placeholder" in error for error in report["errors"])
 
 
 def test_builder_does_not_truthiness_coerce_false_string(tmp_path: Path) -> None:
@@ -437,3 +459,74 @@ def test_dense_source_identity_matches_real_fixture(tmp_path: Path) -> None:
     evidence = tmp_path / "runner_bundle" / "corpus" / "evidence_chunks.jsonl"
     assert report["indexes"]["dense"]["evidence_source_checksum"] == sha256_file(evidence)
     assert paths["dense_index"].is_dir()
+
+
+def test_builder_runs_experiment_gate_before_embedding_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.dense_rag.pipeline as dense_pipeline
+    import external_baselines.ekell_style.embedding_backends as embedding_backends
+
+    bundle = _make_runner_bundle(tmp_path)
+    manifest, _paths = _write_experiment(tmp_path, bundle, build_indexes=False)
+    events: list[str] = []
+
+    def reject_experiment(*_args, **_kwargs):
+        events.append("experiment_gate")
+        raise ValueError("gate-rejected")
+
+    def forbidden_embedding(*_args, **_kwargs):
+        events.append("embedding_backend")
+        raise AssertionError("embedding backend initialized before experiment gate")
+
+    monkeypatch.setattr(builder, "validate_experiment_manifest", reject_experiment)
+    monkeypatch.setattr(dense_pipeline, "build_dense_index", forbidden_embedding)
+    monkeypatch.setattr(
+        embedding_backends,
+        "create_embedding_backend",
+        forbidden_embedding,
+    )
+
+    code, report = _invoke_build(manifest, tmp_path / "gate-report.json")
+
+    assert code == 1
+    assert events == ["experiment_gate"]
+    assert report["experiment_validation"]["ok"] is False
+
+
+def test_builder_runs_experiment_gate_before_index_directory_creation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = _make_runner_bundle(tmp_path)
+    manifest, paths = _write_experiment(tmp_path, bundle, build_indexes=False)
+    monkeypatch.setattr(
+        builder,
+        "validate_experiment_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("gate-rejected")),
+    )
+
+    code, _report = _invoke_build(manifest, tmp_path / "directory-gate-report.json")
+
+    assert code == 1
+    assert not paths["dense_index"].exists()
+    assert not paths["ekell_index"].exists()
+
+
+def test_builder_reports_experiment_gate_failure(tmp_path: Path) -> None:
+    bundle = _make_runner_bundle(tmp_path)
+    manifest, paths = _write_experiment(tmp_path, bundle, build_indexes=False)
+    _mutate_yaml(manifest, None, "run_mode", "smoke")
+
+    code, report = _invoke_build(manifest, tmp_path / "invalid-experiment-report.json")
+
+    assert code == 1
+    assert report["experiment_validation"]["stage"] == "index_build_candidate"
+    assert report["experiment_validation"]["ok"] is False
+    assert any(
+        error.startswith("experiment_index_build_candidate_validation_failed:")
+        for error in report["errors"]
+    )
+    assert not paths["dense_index"].exists()
+    assert not paths["ekell_index"].exists()

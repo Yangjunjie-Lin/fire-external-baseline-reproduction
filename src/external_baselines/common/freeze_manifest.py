@@ -16,7 +16,12 @@ from external_baselines.common.experiment_manifest import (
 )
 from external_baselines.common.formal_config_validator import FormalConfigError, _is_placeholder
 from external_baselines.common.io import read_json
-from external_baselines.common.path_resolution import PathContext, resolve_declared_path
+from external_baselines.common.path_resolution import (
+    PathContext,
+    ResolvedPathReference,
+    resolve_declared_path,
+    resolve_path_reference,
+)
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
 from external_baselines.ekell_style.prompt_identity import (
     EKELL_REQUIRED_PROMPTS,
@@ -29,7 +34,6 @@ SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 REQUIRED_COMPLETE_FIELDS = (
     "selected_dev_run_evidence",
-    "selected_dev_run_evidence_sha256",
     "experiment_core_sha256",
     "base_config_sha256",
     "shared_model_config_sha256",
@@ -183,11 +187,11 @@ def _freeze_config_identities(
         or resolved.get("base_config")
         or _raw_experiment_mapping(experiment).get("base_config")
     )
-    shared = resolved.get("shared_model_config") or _raw_experiment_mapping(experiment).get(
+    shared = resolved.get("shared_model_config_resolved") or resolved.get(
         "shared_model_config"
-    )
-    base_sha = sha256_file(_resolve_path(str(base))) if base else None
-    shared_sha = sha256_file(_resolve_path(str(shared))) if shared else None
+    ) or _raw_experiment_mapping(experiment).get("shared_model_config")
+    base_sha = sha256_file(Path(str(base))) if base else None
+    shared_sha = sha256_file(Path(str(shared))) if shared else None
 
     paths = dict(method_config_paths or {})
     if not paths:
@@ -198,7 +202,7 @@ def _freeze_config_identities(
     for mid in COMPARISON_METHOD_IDS:
         rel = paths.get(mid)
         if rel:
-            method_hashes[mid] = sha256_file(_resolve_path(rel))
+            method_hashes[mid] = sha256_file(Path(rel))
 
     merged_hashes: dict[str, str | None] = {mid: None for mid in COMPARISON_METHOD_IDS}
     if resolved:
@@ -206,7 +210,7 @@ def _freeze_config_identities(
             try:
                 entry = dict(get_method_entry(resolved, mid, require_enabled=False))
                 if paths.get(mid):
-                    entry["config"] = str(_resolve_path(paths[mid]))
+                    entry["config"] = str(Path(paths[mid]))
                 merged_hashes[mid] = merged_method_config_sha256(
                     build_method_config(resolved, entry)
                 )
@@ -266,11 +270,44 @@ def _index_block(
     return block
 
 
+def _freeze_path_provenance_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Add machine-local freeze diagnostics without making them authoritative."""
+    frozen = dict(entry)
+    canonical = frozen.get("canonical_path") or frozen.get(
+        "canonical_relative_path"
+    )
+    if canonical is not None:
+        frozen["canonical_path"] = canonical
+    resolved = frozen.get("resolved_path") or frozen.get("resolved_prompt_dir")
+    if resolved is not None:
+        frozen["resolved_path_at_freeze"] = str(resolved)
+        frozen["resolved_path_authoritative"] = False
+    return frozen
+
+
+def _freeze_experiment_path_provenance(
+    experiment: dict[str, Any],
+) -> dict[str, Any]:
+    provenance: dict[str, Any] = {}
+    for label, entry in dict(experiment.get("path_provenance") or {}).items():
+        if label == "method_configs" and isinstance(entry, dict):
+            provenance[label] = {
+                method_id: _freeze_path_provenance_entry(method_entry)
+                for method_id, method_entry in entry.items()
+                if isinstance(method_entry, dict)
+            }
+        elif isinstance(entry, dict):
+            provenance[label] = _freeze_path_provenance_entry(entry)
+        else:
+            provenance[label] = entry
+    return provenance
+
+
 def build_freeze_manifest_payload(
     *,
     experiment_manifest_path: str | Path,
     experiment_raw: dict[str, Any],
-    selected_dev_run: str | Path,
+    selected_dev_run: str | Path | ResolvedPathReference,
     producer_declared_checksum: str | None = None,
     consumer_computed_hash: str | None = None,
     input_cases_sha256: str | None = None,
@@ -284,15 +321,27 @@ def build_freeze_manifest_payload(
     include_legacy_compat_fields: bool = False,
 ) -> dict[str, Any]:
     experiment_manifest_path = Path(experiment_manifest_path)
-    selected = Path(selected_dev_run)
+    if isinstance(selected_dev_run, ResolvedPathReference):
+        selected_ref = selected_dev_run
+    else:
+        selected_ref = resolve_path_reference(
+            selected_dev_run,
+            context=PathContext(
+                repository_root=Path(__file__).resolve().parents[3],
+                experiment_manifest_path=experiment_manifest_path,
+            ),
+            policy="repository_relative",
+            must_exist=False,
+            expected_kind="file",
+        )
     try:
         resolved_experiment = load_experiment_manifest(experiment_manifest_path)
     except (FileNotFoundError, ValueError):
         resolved_experiment = experiment_raw
     raw_experiment = _raw_experiment_mapping(resolved_experiment)
-    shared = resolved_experiment.get("shared_model_config") or raw_experiment.get(
+    shared = resolved_experiment.get("shared_model_config_resolved") or resolved_experiment.get(
         "shared_model_config"
-    )
+    ) or raw_experiment.get("shared_model_config")
     base_sha, shared_sha, method_hashes, merged_hashes = _freeze_config_identities(
         experiment_manifest_path=experiment_manifest_path,
         experiment=experiment_raw,
@@ -350,8 +399,16 @@ def build_freeze_manifest_payload(
     payload: dict[str, Any] = {
         "freeze_id": "controlled_comparison_v1",
         "freeze_status": "frozen",
-        "selected_dev_run_evidence": str(selected).replace("\\", "/"),
-        "selected_dev_run_evidence_sha256": sha256_file(_resolve_path(selected)),
+        "selected_dev_run_evidence": {
+            "declared_path": selected_ref.declared_path.replace("\\", "/"),
+            "canonical_path": selected_ref.canonical_path,
+            "path_policy": selected_ref.path_policy,
+            "sha256": sha256_file(selected_ref.resolved_path),
+        },
+        "selected_dev_run_evidence_resolved_at_freeze": str(
+            selected_ref.resolved_path
+        ),
+        "selected_dev_run_evidence_resolved_authoritative": False,
         "selection_criterion": (
             "Safety-Gated + Critical Failure Rate + Risk/Action F1 + evidence support + latency"
         ),
@@ -369,21 +426,27 @@ def build_freeze_manifest_payload(
         ),
         "ekell_prompt_bundle": prompt_bundle,
         "path_provenance": {
-            **dict(resolved_experiment.get("path_provenance") or {}),
+            **_freeze_experiment_path_provenance(resolved_experiment),
             "selected_dev_evidence": {
-                "declared_path": str(selected).replace("\\", "/"),
-                "resolved_path": str(_resolve_path(selected)),
-                "path_policy": (
-                    "absolute" if selected.is_absolute() else "repository_relative"
-                ),
+                "declared_path": selected_ref.declared_path.replace("\\", "/"),
+                "canonical_path": selected_ref.canonical_path,
+                "path_policy": selected_ref.path_policy,
+                "resolved_path_at_freeze": str(selected_ref.resolved_path),
+                "resolved_path_authoritative": False,
             },
             "prompt_dir": (
                 {
                     "declared_path": prompt_bundle.get("declared_prompt_dir"),
-                    "canonical_relative_path": prompt_bundle.get(
-                        "canonical_prompt_dir"
+                    "canonical_path": prompt_bundle.get("canonical_prompt_dir"),
+                    "path_policy": (
+                        "absolute_external"
+                        if prompt_bundle.get("path_policy") == "absolute"
+                        else prompt_bundle.get("path_policy")
                     ),
-                    "path_policy": prompt_bundle.get("path_policy"),
+                    "resolved_path_at_freeze": prompt_bundle.get(
+                        "resolved_prompt_dir"
+                    ),
+                    "resolved_path_authoritative": False,
                 }
                 if prompt_bundle
                 else None
@@ -556,6 +619,7 @@ def validate_freeze_manifest(
     expected_indexes: dict[str, Any] | None = None,
     loaded_index_manifests: dict[str, Any] | None = None,
     method_config_paths: dict[str, str] | None = None,
+    repository_root: str | Path | None = None,
 ) -> dict[str, Any]:
     freeze = freeze_path if isinstance(freeze_path, dict) else read_json(freeze_path)
     if not isinstance(freeze, dict):
@@ -583,6 +647,10 @@ def validate_freeze_manifest(
             raise FormalConfigError("freeze_manifest missing runner_bundle block.")
         for field in REQUIRED_COMPLETE_FIELDS:
             if field not in freeze or freeze.get(field) in (None, ""):
+                if field == "selected_dev_run_evidence":
+                    raise FormalConfigError(
+                        "legacy_selected_dev_evidence_identity_requires_regeneration"
+                    )
                 if field == "ekell_prompt_bundle" and freeze.get(
                     "prompt_tree_sha256"
                 ):
@@ -597,20 +665,110 @@ def validate_freeze_manifest(
         migration_warning = "legacy_freeze_requires_regeneration"
 
     evidence = freeze.get("selected_dev_run_evidence")
-    if not evidence or _is_placeholder(evidence):
+    if not evidence:
+        if require_complete:
+            raise FormalConfigError(
+                "legacy_selected_dev_evidence_identity_requires_regeneration"
+            )
         raise FormalConfigError("freeze_manifest requires selected_dev_run_evidence.")
-    evidence_path = _resolve_path(str(evidence))
-    _require_nonempty_file(evidence_path, label="selected_dev_run_evidence")
-    evidence_sha = freeze.get("selected_dev_run_evidence_sha256")
-    if evidence_sha is not None or require_complete:
+    if isinstance(evidence, str):
+        if require_complete:
+            raise FormalConfigError(
+                "legacy_selected_dev_evidence_identity_requires_regeneration"
+            )
+        migration_warning = (
+            migration_warning
+            or "legacy_selected_dev_evidence_identity_requires_regeneration"
+        )
+        evidence_path = _resolve_path(evidence)
+        _require_nonempty_file(evidence_path, label="selected_dev_run_evidence")
+    elif isinstance(evidence, dict):
+        required_evidence_fields = {
+            "declared_path",
+            "canonical_path",
+            "path_policy",
+            "sha256",
+        }
+        if require_complete and not required_evidence_fields.issubset(evidence):
+            raise FormalConfigError(
+                "legacy_selected_dev_evidence_identity_requires_regeneration"
+            )
+        try:
+            evidence_declared = require_exact_nonempty_string(
+                evidence.get("declared_path"),
+                field="selected_dev_run_evidence.declared_path",
+            )
+            evidence_canonical = require_exact_nonempty_string(
+                evidence.get("canonical_path"),
+                field="selected_dev_run_evidence.canonical_path",
+            )
+            evidence_policy = require_exact_nonempty_string(
+                evidence.get("path_policy"),
+                field="selected_dev_run_evidence.path_policy",
+            )
+        except ValueError as exc:
+            raise FormalConfigError(str(exc)) from exc
+        if require_complete:
+            if evidence_policy == "absolute_external":
+                raise FormalConfigError(
+                    "selected_dev_evidence_external_path_not_portable"
+                )
+            if evidence_policy != "repository_relative":
+                raise FormalConfigError(
+                    "selected_dev_evidence_path_policy_must_be_repository_relative"
+                )
+        try:
+            if evidence_policy == "absolute_external":
+                evidence_ref = resolve_path_reference(
+                    evidence_canonical,
+                    context=PathContext(
+                        repository_root=Path(
+                            repository_root or Path(__file__).resolve().parents[3]
+                        ),
+                        experiment_manifest_path=Path(experiment_manifest_path),
+                    ),
+                    policy="absolute_external",
+                    expected_kind="file",
+                )
+            elif evidence_policy in {"repository_relative", "experiment_relative"}:
+                if Path(evidence_canonical).is_absolute():
+                    raise FormalConfigError(
+                        "selected_dev_evidence_canonical_path_must_be_relative"
+                    )
+                evidence_ref = resolve_path_reference(
+                    evidence_canonical,
+                    context=PathContext(
+                        repository_root=Path(
+                            repository_root or Path(__file__).resolve().parents[3]
+                        ),
+                        experiment_manifest_path=Path(experiment_manifest_path),
+                    ),
+                    policy=evidence_policy,  # type: ignore[arg-type]
+                    expected_kind="file",
+                    allow_external_absolute=False,
+                )
+            else:
+                raise FormalConfigError(
+                    f"selected_dev_run_evidence.path_policy invalid: {evidence_policy!r}"
+                )
+        except (FileNotFoundError, TypeError, ValueError) as exc:
+            if isinstance(exc, FormalConfigError):
+                raise
+            raise FormalConfigError(str(exc)) from exc
+        if _is_placeholder(evidence_declared) or _is_placeholder(evidence_canonical):
+            raise FormalConfigError("selected_dev_run_evidence path must not be a placeholder")
+        evidence_path = evidence_ref.resolved_path
+        _require_nonempty_file(evidence_path, label="selected_dev_run_evidence")
         frozen_evidence_sha = _require_sha256_value(
-            evidence_sha,
-            label="selected_dev_run_evidence_sha256",
+            evidence.get("sha256"),
+            label="selected_dev_run_evidence.sha256",
         )
         if frozen_evidence_sha != sha256_file(evidence_path):
-            raise FormalConfigError(
-                "freeze_manifest selected_dev_run_evidence_sha256 mismatch."
-            )
+            raise FormalConfigError("selected_dev_run_evidence.sha256 mismatch.")
+    else:
+        raise FormalConfigError(
+            "legacy_selected_dev_evidence_identity_requires_regeneration"
+        )
 
     try:
         current_experiment = load_experiment_manifest(experiment_manifest_path)

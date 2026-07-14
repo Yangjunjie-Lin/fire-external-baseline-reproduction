@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from external_baselines.common.freeze_manifest import (
     validate_freeze_manifest,
     validate_frozen_runtime_inputs,
 )
+from external_baselines.common.path_resolution import PathContext, resolve_path_reference
 from external_baselines.method_registry import comparison_suite_methods
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -297,7 +299,12 @@ def test_freeze_validates_all_method_config_hashes(tmp_path: Path) -> None:
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=exp,
         experiment_raw={"shared_model_config": str(shared)},
-        selected_dev_run=evidence,
+        selected_dev_run=resolve_path_reference(
+            evidence.name,
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            expected_kind="file",
+        ),
         method_config_paths=methods,
     )
     assert set(payload["method_config_sha256"]) == set(comparison_suite_methods())
@@ -710,12 +717,13 @@ def _run_create_freeze_with_patches(
     monkeypatch.setattr(cfm, "validate_freeze_manifest", fake_validate_freeze)
     monkeypatch.setattr(cfm, "validate_dense_index_integrity_for_freeze", fake_validate_dense_index)
     monkeypatch.setattr(cfm.VectorIndex, "validate_directory_for_freeze", fake_validate_ekell_index)
+    monkeypatch.setattr(cfm, "ROOT", tmp_path)
     cfm.main(
         [
             "--experiment-manifest",
             str(experiment_manifest),
             "--selected-dev-run",
-            str(evidence),
+            evidence.name,
             "--bundle",
             str(bundle_path),
             "--output",
@@ -955,14 +963,22 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
     evidence.write_text('{"selected": true}\n', encoding="utf-8")
     experiment = tmp_path / "experiment.yaml"
     raw = {
-        "shared_model_config": str(shared),
-        "methods": [{"method_id": mid, "config": path} for mid, path in methods.items()],
+        "shared_model_config": shared.name,
+        "methods": [
+            {"method_id": mid, "config": Path(path).name}
+            for mid, path in methods.items()
+        ],
     }
     experiment.write_text(yaml.safe_dump(raw), encoding="utf-8")
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=experiment,
         experiment_raw=raw,
-        selected_dev_run=evidence,
+        selected_dev_run=resolve_path_reference(
+            evidence.name,
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            expected_kind="file",
+        ),
         producer_declared_checksum=None,
         consumer_computed_hash="c" * 64,
         input_cases_sha256="9" * 64,
@@ -1023,6 +1039,190 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
     return experiment, payload, methods
 
 
+def _validate_complete_payload(
+    experiment: Path,
+    payload: dict,
+    methods: dict[str, str] | None,
+    *,
+    repository_root: Path,
+) -> dict:
+    return validate_freeze_manifest(
+        payload,
+        experiment_manifest_path=experiment,
+        experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+        require_complete=True,
+        expected_runner_bundle_checksum="c" * 64,
+        expected_corpus_checksum="a" * 64,
+        expected_prediction_schema_checksum="e" * 64,
+        loaded_index_manifests=payload["indexes"],
+        method_config_paths=methods,
+        repository_root=repository_root,
+    )
+
+
+def test_complete_freeze_records_portable_selected_dev_identity(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    evidence = payload["selected_dev_run_evidence"]
+
+    assert evidence == {
+        "declared_path": "selected.json",
+        "canonical_path": "selected.json",
+        "path_policy": "repository_relative",
+        "sha256": sha256_file(tmp_path / "selected.json"),
+    }
+    assert _validate_complete_payload(
+        experiment,
+        payload,
+        methods,
+        repository_root=tmp_path,
+    )["ok"] is True
+
+
+def test_complete_freeze_does_not_authoritatively_store_absolute_selected_dev_path(
+    tmp_path: Path,
+) -> None:
+    _experiment, payload, _methods = _complete_freeze_payload(tmp_path)
+    evidence = payload["selected_dev_run_evidence"]
+
+    assert str(tmp_path) not in json.dumps(evidence)
+    assert payload["selected_dev_run_evidence_resolved_at_freeze"] == str(
+        (tmp_path / "selected.json").resolve()
+    )
+    assert payload["selected_dev_run_evidence_resolved_authoritative"] is False
+    provenance = payload["path_provenance"]["selected_dev_evidence"]
+    assert provenance["resolved_path_authoritative"] is False
+
+
+def test_formal_selected_dev_identity_survives_repository_relocation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.common.formal_config_validator as formal_validator
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    (repo_a / "configs" / "prompts").mkdir(parents=True)
+    shutil.copy2(ROOT / "configs" / "default.yaml", repo_a / "configs" / "default.yaml")
+    shutil.copytree(
+        ROOT / "configs" / "prompts" / "paper_fidelity",
+        repo_a / "configs" / "prompts" / "paper_fidelity",
+    )
+    monkeypatch.setattr(formal_validator, "ROOT_REL", repo_a)
+    experiment_a, payload, _methods = _complete_freeze_payload(repo_a)
+    (repo_a / "freeze.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    shutil.copytree(repo_a, repo_b)
+    shutil.rmtree(repo_a)
+    monkeypatch.setattr(formal_validator, "ROOT_REL", repo_b)
+
+    result = validate_freeze_manifest(
+        repo_b / "freeze.json",
+        experiment_manifest_path=repo_b / experiment_a.name,
+        experiment_raw=yaml.safe_load(
+            (repo_b / experiment_a.name).read_text(encoding="utf-8")
+        ),
+        require_complete=True,
+        expected_runner_bundle_checksum="c" * 64,
+        expected_corpus_checksum="a" * 64,
+        expected_prediction_schema_checksum="e" * 64,
+        loaded_index_manifests=payload["indexes"],
+        repository_root=repo_b,
+    )
+
+    assert result["ok"] is True
+
+
+def test_formal_rejects_selected_dev_content_changed_same_relative_path(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    (tmp_path / "selected.json").write_text('{"selected": false}\n', encoding="utf-8")
+
+    with pytest.raises(FormalConfigError, match="selected_dev_run_evidence.sha256 mismatch"):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_complete_freeze_rejects_external_selected_dev_path(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    experiment, payload, methods = _complete_freeze_payload(repository)
+    external = tmp_path / "external-selected.json"
+    external.write_text('{"selected": true}\n', encoding="utf-8")
+    payload["selected_dev_run_evidence"] = {
+        "declared_path": str(external),
+        "canonical_path": external.resolve().as_posix(),
+        "path_policy": "absolute_external",
+        "sha256": sha256_file(external),
+    }
+
+    with pytest.raises(
+        FormalConfigError,
+        match="selected_dev_evidence_external_path_not_portable",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=repository,
+        )
+
+
+def test_complete_freeze_requires_repository_relative_selected_dev_policy(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["selected_dev_run_evidence"]["path_policy"] = "experiment_relative"
+
+    with pytest.raises(
+        FormalConfigError,
+        match="selected_dev_evidence_path_policy_must_be_repository_relative",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_legacy_string_selected_dev_evidence_requires_regeneration(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["selected_dev_run_evidence"] = "selected.json"
+
+    with pytest.raises(
+        FormalConfigError,
+        match="legacy_selected_dev_evidence_identity_requires_regeneration",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_selected_dev_path_cannot_escape_repository_root(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["selected_dev_run_evidence"]["canonical_path"] = "../selected.json"
+
+    with pytest.raises(FormalConfigError, match="escapes_repository_relative_root"):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
 @pytest.mark.parametrize(
     ("block", "field", "match"),
     [
@@ -1068,6 +1268,7 @@ def test_complete_freeze_requires_index_identity_fields(
             expected_prediction_schema_checksum="e" * 64,
             loaded_index_manifests=payload["indexes"],
             method_config_paths=methods,
+            repository_root=tmp_path,
         )
 
 
@@ -1086,6 +1287,7 @@ def test_complete_freeze_rejects_dense_hybrid_checksum_mismatch(tmp_path: Path) 
             expected_prediction_schema_checksum="e" * 64,
             loaded_index_manifests=payload["indexes"],
             method_config_paths=methods,
+            repository_root=tmp_path,
         )
 
 
@@ -1104,6 +1306,7 @@ def test_complete_freeze_rejects_dense_hybrid_manifest_sha_mismatch(tmp_path: Pa
             expected_prediction_schema_checksum="e" * 64,
             loaded_index_manifests=payload["indexes"],
             method_config_paths=methods,
+            repository_root=tmp_path,
         )
 
 
@@ -1182,6 +1385,7 @@ def test_complete_freeze_requires_real_embedding_flag_values(
             expected_corpus_checksum="a" * 64,
             expected_prediction_schema_checksum="e" * 64,
             method_config_paths=methods,
+            repository_root=tmp_path,
         )
 
 
@@ -1397,7 +1601,12 @@ def _custom_prompt_freeze(tmp_path: Path) -> tuple[Path, dict, Path, dict[str, s
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=experiment,
         experiment_raw=raw,
-        selected_dev_run=evidence,
+        selected_dev_run=resolve_path_reference(
+            evidence.name,
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            expected_kind="file",
+        ),
         method_config_paths=methods,
         embedding={
             "backend": "text2vec",
@@ -1432,6 +1641,7 @@ def test_complete_freeze_accepts_custom_prompt_dir(tmp_path: Path) -> None:
         experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
         require_complete=False,
         method_config_paths=methods,
+        repository_root=tmp_path,
     )
 
 

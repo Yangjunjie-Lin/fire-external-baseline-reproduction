@@ -41,6 +41,19 @@ and are independent of CWD. The complete lifecycle is covered locally with an
 offline fake embedding backend; this is not evidence of a real Formal run or a
 remote GitHub Actions success.
 
+Experiment-manifest resources now resolve once in the loader, including the
+base, shared, method, Runner Bundle, and freeze-manifest paths. Formal validation
+and preflight use that resolved contract without repository-root fallback, so
+manifest-relative behavior is stable across CWD changes. Resolved absolute
+paths are diagnostic rather than authoritative. Selected DEV evidence uses a
+portable canonical path plus SHA-256; complete freezes with the legacy string
+identity must be regenerated. The official builder runs full experiment-level
+`index_build_candidate` validation before embedding initialization or index
+writes. Strict FireKG validation allows exact strings or protocol-approved
+integers for IDs (not booleans or floats), while evidence text, relation labels,
+citations, URLs, and source paths require exact non-empty strings without
+numeric coercion.
+
 Formal pre-checks (read-only against main project):
 
 ```bash

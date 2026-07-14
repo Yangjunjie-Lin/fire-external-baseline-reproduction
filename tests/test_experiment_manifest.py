@@ -323,3 +323,89 @@ def test_run_interop_rejects_multi_config():
         assert "Multiple --config" in str(ei.value)
     finally:
         sys.argv = old
+
+
+def test_manifest_relative_resources_publish_complete_resolved_path_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+
+    monkeypatch.setattr(experiment_manifest_module, "REPOSITORY_ROOT", tmp_path)
+    base = tmp_path / "base.yaml"
+    shared = tmp_path / "shared.yaml"
+    method = tmp_path / "method.yaml"
+    bundle = tmp_path / "bundle"
+    freeze = tmp_path / "freeze.json"
+    base.write_text("{}\n", encoding="utf-8")
+    shared.write_text("llm: {}\n", encoding="utf-8")
+    method.write_text("method_id: direct_llm\n", encoding="utf-8")
+    bundle.mkdir()
+    freeze.write_text("{}\n", encoding="utf-8")
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "experiment_id: resolved-path-contract",
+                "base_config: base.yaml",
+                "shared_model_config: shared.yaml",
+                "bundle: bundle",
+                "freeze_manifest: freeze.json",
+                "methods:",
+                "  - method_id: direct_llm",
+                "    config: method.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_experiment_manifest(manifest_path)
+
+    manifest_provenance = manifest["path_provenance"]["experiment_manifest"]
+    assert manifest_provenance["path_policy"] == "repository_relative"
+    assert manifest_provenance["canonical_path"] == "experiment.yaml"
+    assert manifest_provenance["resolved_path_authoritative"] is False
+    for prefix, expected in (
+        ("base_config", base),
+        ("shared_model_config", shared),
+        ("bundle", bundle),
+        ("freeze_manifest", freeze),
+    ):
+        assert manifest[f"{prefix}_resolved"] == str(expected.resolve())
+        assert manifest[f"{prefix}_path_policy"] == "experiment_relative"
+        assert manifest[f"{prefix}_canonical_path"] == expected.name
+    entry = manifest["methods"][0]
+    assert entry["config"] == str(method.resolve())
+    assert entry["config_path_policy"] == "experiment_relative"
+    assert entry["config_canonical_path"] == "method.yaml"
+
+
+def test_manifest_relative_path_wins_over_repository_candidate(tmp_path: Path) -> None:
+    relative = "configs/default.yaml"
+    local = tmp_path / relative
+    local.parent.mkdir()
+    local.write_text("project: {name: manifest-local}\n", encoding="utf-8")
+    shared = tmp_path / "shared.yaml"
+    shared.write_text("llm: {}\n", encoding="utf-8")
+    method = tmp_path / "method.yaml"
+    method.write_text("method_id: direct_llm\n", encoding="utf-8")
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                f"base_config: {relative}",
+                "shared_model_config: shared.yaml",
+                "methods:",
+                "  - method_id: direct_llm",
+                "    config: method.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_experiment_manifest(manifest_path)
+
+    assert manifest["base_config_resolved"] == str(local.resolve())
+    assert manifest["base_config_path_policy"] == "experiment_relative"
+    provenance = manifest["path_provenance"]["base_config"]
+    assert provenance["alternate_repository_candidate_exists"] is True

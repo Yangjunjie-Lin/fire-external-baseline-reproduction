@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from external_baselines.common.formal_config_validator import (
     FormalConfigError,
@@ -23,8 +24,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_strict_manifest(tmp_path: Path, monkeypatch, *, mutate=None) -> Path:
-    import yaml
-
     import external_baselines.common.freeze_manifest as freeze_manifest
 
     monkeypatch.setattr(freeze_manifest, "validate_freeze_manifest", lambda *_args, **_kwargs: None)
@@ -172,6 +171,171 @@ def test_formal_manifest_accepts_explicit_identity_strings(tmp_path, monkeypatch
     path = _write_strict_manifest(tmp_path, monkeypatch)
     result = _validate_strict_manifest(path)
     assert result["valid"] is True
+
+
+def _write_index_build_candidate_fixture(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    from tests.test_comparison_index_builder import _write_experiment
+    from tests.test_decision_comparison_suite import _make_runner_bundle
+
+    bundle = _make_runner_bundle(tmp_path)
+    return _write_experiment(tmp_path, bundle, build_indexes=False)
+
+
+def _mutate_manifest(path: Path, mutate) -> None:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def test_index_build_candidate_is_valid_validation_stage(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+
+    result = validate_experiment_manifest(
+        manifest,
+        validation_stage="index_build_candidate",
+        method_set="comparison_suite",
+    )
+
+    assert result["valid"] is True
+    assert result["validation_stage"] == "index_build_candidate"
+
+
+def test_formal_manifest_relative_resources_use_loader_resolved_paths(
+    tmp_path: Path,
+) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+
+    result = validate_experiment_manifest(
+        manifest,
+        validation_stage="index_build_candidate",
+        method_set="comparison_suite",
+    )
+
+    resources = result["resource_paths"]
+    assert resources["base_config"]["path_policy"] == "experiment_relative"
+    assert resources["shared_model_config"]["path_policy"] == "experiment_relative"
+    assert resources["runner_bundle"]["path_policy"] == "experiment_relative"
+    assert all(
+        item["path_policy"] == "experiment_relative"
+        for item in resources["method_configs"].values()
+    )
+
+
+def test_index_build_candidate_requires_provisional_status(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    _mutate_manifest(manifest, lambda payload: payload.__setitem__("freeze_status", "frozen"))
+
+    with pytest.raises(FormalConfigError, match="requires freeze_status=provisional"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
+
+
+def test_index_build_candidate_does_not_require_existing_indexes(tmp_path: Path) -> None:
+    manifest, paths = _write_index_build_candidate_fixture(tmp_path)
+
+    validate_experiment_manifest(
+        manifest,
+        validation_stage="index_build_candidate",
+        method_set="comparison_suite",
+    )
+
+    assert not paths["dense_index"].exists()
+    assert not paths["ekell_index"].exists()
+
+
+def test_index_build_candidate_does_not_require_freeze_manifest(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    payload = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert "freeze_manifest" not in payload
+
+    result = validate_experiment_manifest(
+        manifest,
+        validation_stage="index_build_candidate",
+        method_set="comparison_suite",
+    )
+
+    assert result["valid"] is True
+
+
+def test_index_build_candidate_requires_exact_comparison_method_set(
+    tmp_path: Path,
+) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    _mutate_manifest(
+        manifest,
+        lambda payload: payload["comparison_suite_methods"].pop(),
+    )
+
+    with pytest.raises(FormalConfigError, match="comparison_suite_methods"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
+
+
+def test_index_build_candidate_requires_all_safety_gates(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    _mutate_manifest(
+        manifest,
+        lambda payload: payload.__setitem__("fail_on_schema_error", False),
+    )
+
+    with pytest.raises(FormalConfigError, match="fail_on_schema_error"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
+
+
+def test_index_build_candidate_rejects_wrong_run_mode(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    _mutate_manifest(manifest, lambda payload: payload.__setitem__("run_mode", "smoke"))
+
+    with pytest.raises(FormalConfigError, match="run_mode must be 'formal'"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
+
+
+def test_index_build_candidate_rejects_wrong_schema_version(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+    _mutate_manifest(
+        manifest,
+        lambda payload: payload.__setitem__("schema_version", "firebench-interop-v2"),
+    )
+
+    with pytest.raises(FormalConfigError, match="schema_version must be exactly"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
+
+
+def test_index_build_candidate_rejects_disabled_required_method(tmp_path: Path) -> None:
+    manifest, _paths = _write_index_build_candidate_fixture(tmp_path)
+
+    def disable_dense(payload) -> None:
+        next(
+            entry
+            for entry in payload["methods"]
+            if entry["method_id"] == "dense_rag"
+        )["enabled"] = False
+
+    _mutate_manifest(manifest, disable_dense)
+    with pytest.raises(FormalConfigError, match="disabled: dense_rag"):
+        validate_experiment_manifest(
+            manifest,
+            validation_stage="index_build_candidate",
+            method_set="comparison_suite",
+        )
 
 
 def _controlled_ekell_config(**ekell_overrides):

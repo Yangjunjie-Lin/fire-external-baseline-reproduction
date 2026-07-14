@@ -4,6 +4,21 @@
 >
 > `.example` files are templates only. Copy to non-`.example` paths before formal runs.
 
+Experiment-manifest resources are resolved once by the manifest loader. Formal
+validation and preflight use those resolved paths without reinterpreting raw
+declarations. Manifest-relative, repository-relative, and Bundle-relative
+resources use their explicit roots, never the process current working
+directory. Selected DEV evidence is frozen as a portable canonical path plus
+SHA-256; resolved absolute paths are diagnostic only. Complete freezes with the
+legacy string-form selected DEV evidence path must be regenerated.
+
+The official index builder completes full experiment-level
+`index_build_candidate` validation before it loads embedding models or writes
+persisted indexes. Strict FireKG identifiers accept exact non-empty strings and
+protocol-approved integers, excluding booleans and floats. Evidence text,
+relation labels, citations, URLs, and source paths require exact non-empty
+strings and are never accepted through numeric string coercion.
+
 ## A. Five-method comparison suite (recommended system contrast)
 
 **Artifact layouts (do not mix):**

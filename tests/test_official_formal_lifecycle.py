@@ -22,7 +22,7 @@ from external_baselines.common.formal_config_validator import (
 from external_baselines.interop.bundle import load_runner_bundle
 from scripts import build_comparison_indexes as builder
 from scripts import create_freeze_manifest
-from tests.test_comparison_index_builder import _invoke, _write_experiment
+from tests.test_comparison_index_builder import _invoke, _mutate_yaml, _write_experiment
 from tests.test_decision_comparison_suite import _make_runner_bundle
 from tests.test_dense_real_index import FakeEmbeddingModel
 
@@ -70,12 +70,38 @@ def _install_fake_embedding_backend(monkeypatch) -> None:
 
 
 def _complete_lifecycle(tmp_path: Path, monkeypatch) -> dict[str, Any]:
+    import external_baselines.common.decision_suite_preflight as preflight_module
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+    import external_baselines.common.formal_config_validator as formal_validator
+
     bundle_path = _make_runner_bundle(tmp_path)
     manifest_path, paths = _write_experiment(
         tmp_path,
         bundle_path,
         build_indexes=False,
     )
+    dense_relative = paths["dense_index"].relative_to(tmp_path).as_posix()
+    ekell_relative = paths["ekell_index"].relative_to(tmp_path).as_posix()
+    prompt_relative = (tmp_path / "prompts").relative_to(tmp_path).as_posix()
+    _mutate_yaml(paths["dense_rag"], "dense_rag", "index_path", dense_relative)
+    _mutate_yaml(paths["hybrid_rag"], "dense_rag", "index_path", dense_relative)
+    _mutate_yaml(
+        paths["ekell_style_controlled_shared_llm"],
+        "ekell_vector",
+        "index_path",
+        ekell_relative,
+    )
+    _mutate_yaml(
+        paths["ekell_style_controlled_shared_llm"],
+        "ekell_style",
+        "prompt_dir",
+        prompt_relative,
+    )
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    monkeypatch.setattr(create_freeze_manifest, "ROOT", tmp_path)
+    monkeypatch.setattr(experiment_manifest_module, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(formal_validator, "ROOT_REL", tmp_path)
+    monkeypatch.setattr(preflight_module, "ROOT_REL", tmp_path)
     _install_fake_embedding_backend(monkeypatch)
 
     build_code, build_report = _run_builder(
@@ -97,7 +123,7 @@ def _complete_lifecycle(tmp_path: Path, monkeypatch) -> dict[str, Any]:
             "--experiment-manifest",
             str(manifest_path),
             "--selected-dev-run",
-            str(selected_dev),
+            selected_dev.name,
             "--bundle",
             str(bundle_path),
             "--output",
@@ -106,10 +132,40 @@ def _complete_lifecycle(tmp_path: Path, monkeypatch) -> dict[str, Any]:
     )
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     assert freeze["ekell_prompt_bundle"]["required_prompt_files"]
+    provenance = freeze["path_provenance"]
+    expected_provenance = {
+        "experiment_manifest",
+        "base_config",
+        "shared_model_config",
+        "method_configs",
+        "runner_bundle",
+        "selected_dev_evidence",
+        "prompt_dir",
+        "dense_index",
+        "ekell_index",
+    }
+    assert expected_provenance <= provenance.keys()
+    for label in expected_provenance - {"method_configs"}:
+        entry = provenance[label]
+        assert type(entry.get("declared_path")) is str
+        assert type(entry.get("canonical_path")) is str
+        assert type(entry.get("path_policy")) is str
+        assert type(entry.get("resolved_path_at_freeze")) is str
+        assert entry["resolved_path_authoritative"] is False
+        assert entry["path_policy"] in {"experiment_relative", "repository_relative"}
+        assert not Path(entry["canonical_path"]).is_absolute()
+    for entry in provenance["method_configs"].values():
+        assert type(entry.get("declared_path")) is str
+        assert type(entry.get("canonical_path")) is str
+        assert type(entry.get("path_policy")) is str
+        assert type(entry.get("resolved_path_at_freeze")) is str
+        assert entry["resolved_path_authoritative"] is False
+        assert entry["path_policy"] in {"experiment_relative", "repository_relative"}
+        assert not Path(entry["canonical_path"]).is_absolute()
 
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     raw["freeze_status"] = "frozen"
-    raw["freeze_manifest"] = str(freeze_path)
+    raw["freeze_manifest"] = freeze_path.name
     manifest_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     formal_result = validate_experiment_manifest(
         manifest_path,
@@ -133,8 +189,28 @@ def _complete_lifecycle(tmp_path: Path, monkeypatch) -> dict[str, Any]:
         execution_stage="formal",
         experiment_manifest=manifest_path,
     )
-    assert preflight["ok"] is True
+    assert preflight["ok"] is True, {
+        "methods": {
+            method_id: {
+                "ok": report.get("ok"),
+                "config_valid": report.get("config_valid"),
+                "resources_valid": report.get("resources_valid"),
+                "errors": report.get("errors"),
+            }
+            for method_id, report in (preflight.get("methods") or {}).items()
+            if not report.get("ok")
+        },
+        "shared_errors": preflight.get("shared_errors"),
+        "generation_ok": (preflight.get("shared_generation_identity") or {}).get("ok"),
+        "generation_mismatches": (
+            preflight.get("shared_generation_identity") or {}
+        ).get("mismatches"),
+        "formal_runtime_errors": (
+            preflight.get("formal_runtime_validation") or {}
+        ).get("errors"),
+    }
     return {
+        "repository_root": tmp_path,
         "bundle": bundle_path,
         "manifest": manifest_path,
         "freeze": freeze_path,
@@ -146,7 +222,7 @@ def _complete_lifecycle(tmp_path: Path, monkeypatch) -> dict[str, Any]:
     }
 
 
-def test_official_lifecycle_build_validate_freeze_finalize_preflight(
+def test_official_manifest_relative_lifecycle_build_validate_freeze_finalize_preflight(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -178,6 +254,8 @@ def test_official_lifecycle_rejects_modified_prompt_after_freeze(
             "prompt_dir"
         ]
     )
+    if not prompt_dir.is_absolute():
+        prompt_dir = result["repository_root"] / prompt_dir
     (prompt_dir / "stepwise_projection.txt").write_text("modified\n", encoding="utf-8")
     with pytest.raises(FormalConfigError, match="prompt"):
         validate_experiment_manifest(
@@ -215,7 +293,7 @@ def test_official_lifecycle_rejects_modified_base_config_after_freeze(
     monkeypatch,
 ) -> None:
     result = _complete_lifecycle(tmp_path, monkeypatch)
-    base = Path(yaml.safe_load(result["manifest"].read_text(encoding="utf-8"))["base_config"])
+    base = Path(load_experiment_manifest(result["manifest"])["base_config_resolved"])
     base.write_text("retrieval: {top_k: 99}\n", encoding="utf-8")
     with pytest.raises(FormalConfigError, match="base_config_sha256"):
         validate_experiment_manifest(

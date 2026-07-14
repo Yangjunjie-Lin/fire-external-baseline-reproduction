@@ -19,6 +19,7 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
 )
 from external_baselines.common.formal_config_validator import (  # noqa: E402
     _is_placeholder,
+    validate_experiment_manifest,
     validate_method_config,
 )
 from external_baselines.common.io import write_json  # noqa: E402
@@ -151,6 +152,11 @@ def main(argv: list[str] | None = None) -> None:
         "validate_only": args.validate_only is True,
         "method_set": args.method_set,
         "bundle": {},
+        "experiment_validation": {
+            "stage": "index_build_candidate",
+            "ok": False,
+            "errors": [],
+        },
         "indexes": {},
         "errors": [],
         "warnings": [],
@@ -163,14 +169,18 @@ def main(argv: list[str] | None = None) -> None:
         _finalize_report(report, output_path)
         return
 
-    bundle_declared = args.bundle or experiment.get("bundle")
+    bundle_declared = args.bundle or experiment.get("bundle_declared")
     if not bundle_declared or _is_placeholder(bundle_declared):
         _record_error(report, None, "bundle_placeholder_or_missing")
         _finalize_report(report, output_path)
         return
     try:
         bundle_value = require_exact_nonempty_string(bundle_declared, field="bundle")
-        bundle_path = _resolved_repository_path(bundle_value)
+        bundle_path = (
+            _resolved_repository_path(bundle_value)
+            if args.bundle
+            else Path(str(experiment.get("bundle_resolved") or ""))
+        )
         bundle = load_runner_bundle(bundle_path, formal=True)
     except Exception as exc:  # noqa: BLE001
         _record_error(report, None, f"runner_bundle_load_failed:{exc}")
@@ -197,6 +207,34 @@ def main(argv: list[str] | None = None) -> None:
             report,
             None,
             "runner_bundle_file_checksum_validation_failed",
+        )
+        _finalize_report(report, output_path)
+        return
+
+    try:
+        validation = validate_experiment_manifest(
+            experiment_path,
+            validation_stage="index_build_candidate",
+            method_set=args.method_set,
+            runtime_bundle_path=bundle_path,
+        )
+        report["experiment_validation"] = {
+            "stage": "index_build_candidate",
+            "ok": True,
+            "errors": [],
+            "resource_paths": validation.get("resource_paths") or {},
+        }
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        report["experiment_validation"] = {
+            "stage": "index_build_candidate",
+            "ok": False,
+            "errors": [message],
+        }
+        _record_error(
+            report,
+            None,
+            f"experiment_index_build_candidate_validation_failed:{message}",
         )
         _finalize_report(report, output_path)
         return

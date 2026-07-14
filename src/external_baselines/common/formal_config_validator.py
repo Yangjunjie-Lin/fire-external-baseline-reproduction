@@ -19,6 +19,10 @@ from external_baselines.common.experiment_manifest import (
     load_experiment_manifest,
 )
 from external_baselines.common.io import read_yaml
+from external_baselines.common.path_resolution import (
+    PathContext,
+    resolve_path_reference,
+)
 from external_baselines.common.strict_config_types import (
     MISSING,
     exact_bool,
@@ -73,7 +77,9 @@ FORMAL_EKELL_METHODS = frozenset(
 FORMAL_METHOD_IDS = frozenset(main_table_methods()) | frozenset(paper_fidelity_methods())
 COMPARISON_FORMAL_METHOD_IDS = frozenset(comparison_suite_methods())
 COMPARISON_SUITE_EXACT = list(comparison_suite_methods())
-VALIDATION_STAGES = frozenset({"template", "dry_run", "freeze_candidate", "formal"})
+VALIDATION_STAGES = frozenset(
+    {"template", "dry_run", "index_build_candidate", "freeze_candidate", "formal"}
+)
 
 SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", ""})
 SMOKE_EMBEDDING_BACKENDS = frozenset(
@@ -105,6 +111,10 @@ def _requires_paper_facing_strictness(stage: str) -> bool:
 
 def _requires_existing_freeze(stage: str) -> bool:
     return stage == "formal"
+
+
+def _requires_existing_indexes(stage: str) -> bool:
+    return stage in {"freeze_candidate", "formal"}
 
 
 def _is_example_path(path: str) -> bool:
@@ -753,6 +763,37 @@ def _assert_config_path(
         errors.append(f"{label} file not found: {path_str}")
 
 
+def _assert_resolved_config_path(
+    *,
+    declared_path: str,
+    resolved_path: str | Path,
+    path_policy: str,
+    label: str,
+    allow_placeholders: bool,
+    errors: list[str],
+) -> None:
+    """Validate a loader-resolved config without interpreting its declaration again."""
+    if type(declared_path) is not str or not declared_path.strip():
+        errors.append(f"{label} declared path is required and must be an exact string.")
+        return
+    if path_policy not in {
+        "experiment_relative",
+        "repository_relative",
+        "absolute_external",
+    }:
+        errors.append(f"{label} has invalid resolved path policy: {path_policy!r}")
+        return
+    if _is_example_path(declared_path) and not allow_placeholders:
+        errors.append(f"{label} must not use .example path for formal runs: {declared_path}")
+        return
+    if type(resolved_path) not in {str, Path} or not str(resolved_path).strip():
+        errors.append(f"{label} resolved path is required.")
+        return
+    resolved = Path(resolved_path)
+    if not allow_placeholders and (not resolved.is_file() or resolved.is_symlink()):
+        errors.append(f"{label} file not found: {declared_path}")
+
+
 def validate_method_config(
     config: dict[str, Any],
     *,
@@ -872,7 +913,8 @@ def validate_experiment_manifest(
         manifest = load_experiment_manifest(path)
     except ValueError as exc:
         raise FormalConfigError(str(exc)) from exc
-    raw = manifest.get("raw") or read_yaml(path)
+    manifest_path = Path(manifest["manifest_path"])
+    raw = manifest.get("raw") or read_yaml(manifest_path)
     if not isinstance(raw, dict):
         raise FormalConfigError(f"Experiment manifest must be a mapping: {path}")
 
@@ -882,13 +924,15 @@ def validate_experiment_manifest(
 
     manifest_for_merge = dict(manifest)
     if allow_placeholders:
-        manifest_for_merge["shared_model_config"] = _apply_template_fallback_path(
-            str(manifest.get("shared_model_config") or ""),
+        shared_fallback = _apply_template_fallback_path(
+            str(manifest.get("shared_model_config_resolved") or ""),
             allow_placeholders=True,
         )
+        manifest_for_merge["shared_model_config"] = shared_fallback
+        manifest_for_merge["shared_model_config_resolved"] = shared_fallback
 
     errors: list[str] = []
-    if stage != "template" and _is_example_path(str(path)):
+    if stage != "template" and _is_example_path(str(manifest_path)):
         errors.append(
             f"{stage} validation rejects .example manifest paths; "
             "copy the template to a non-.example file first."
@@ -978,73 +1022,122 @@ def validate_experiment_manifest(
     elif stage == "dry_run":
         if freeze_status not in {"provisional", "frozen"}:
             errors.append(f"dry_run validation requires freeze_status provisional|frozen (got {freeze_status!r}).")
-    elif stage == "freeze_candidate":
+    elif stage in {"index_build_candidate", "freeze_candidate"}:
         if freeze_status != "provisional":
             errors.append(
-                "freeze_candidate validation requires freeze_status=provisional "
+                f"{stage} validation requires freeze_status=provisional "
                 f"(got {freeze_status!r})."
             )
     else:  # formal
         if freeze_status != "frozen":
             errors.append(f"formal validation requires freeze_status=frozen (got {freeze_status!r}).")
-        freeze_path = raw.get("freeze_manifest")
-        if not freeze_path or _is_placeholder(freeze_path):
+        freeze_declared = manifest.get("freeze_manifest_declared")
+        freeze_resolved = manifest.get("freeze_manifest_resolved")
+        freeze_policy = manifest.get("freeze_manifest_path_policy")
+        if not freeze_declared or _is_placeholder(freeze_declared):
             errors.append("formal validation requires freeze_manifest path.")
         else:
-            freeze_path = _validate_exact_nonempty_string(
-                freeze_path,
+            freeze_declared = _validate_exact_nonempty_string(
+                freeze_declared,
                 field="freeze_manifest",
                 allow_placeholders=allow_placeholders,
             )
-            freeze_file = _resolve_repo_path(freeze_path)
-            if not freeze_file.is_file():
-                errors.append(f"freeze_manifest file not found: {freeze_path}")
+            if freeze_policy not in {
+                "experiment_relative",
+                "repository_relative",
+                "absolute_external",
+            }:
+                errors.append(
+                    f"freeze_manifest has invalid resolved path policy: {freeze_policy!r}"
+                )
+            freeze_file = Path(str(freeze_resolved or ""))
+            if not freeze_file.is_file() or freeze_file.is_symlink():
+                errors.append(f"freeze_manifest file not found: {freeze_declared}")
             else:
                 try:
                     from external_baselines.common.freeze_manifest import validate_freeze_manifest
 
                     validate_freeze_manifest(
                         freeze_file,
-                        experiment_manifest_path=path,
+                        experiment_manifest_path=manifest_path,
                         experiment_raw=raw,
                         require_complete=(method_set_name == "comparison_suite"),
+                        repository_root=ROOT_REL,
                     )
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"freeze_manifest validation failed: {exc}")
 
     if strict_stage and method_set_name == "comparison_suite":
-        bundle_candidate = str(runtime_bundle_path) if runtime_bundle_path is not None else raw.get("bundle")
+        bundle_declared = manifest.get("bundle_declared")
+        bundle_resolved = manifest.get("bundle_resolved")
+        bundle_policy = manifest.get("bundle_path_policy")
         try:
-            bundle_path = _validate_exact_nonempty_string(
-                bundle_candidate,
+            _validate_exact_nonempty_string(
+                bundle_declared,
                 field="bundle",
                 allow_placeholders=allow_placeholders,
             )
         except FormalConfigError as exc:
             errors.append(str(exc))
         else:
-            if _is_placeholder(bundle_path):
+            if _is_placeholder(bundle_declared):
                 errors.append("Formal comparison suite requires non-placeholder Runner Bundle path.")
+            elif bundle_policy not in {
+                "experiment_relative",
+                "repository_relative",
+                "absolute_external",
+            }:
+                errors.append(f"bundle has invalid resolved path policy: {bundle_policy!r}")
             else:
+                effective_bundle = Path(str(bundle_resolved or ""))
                 try:
+                    if runtime_bundle_path is not None:
+                        runtime_ref = resolve_path_reference(
+                            runtime_bundle_path,
+                            context=PathContext(repository_root=ROOT_REL),
+                            policy=(
+                                "absolute_external"
+                                if Path(runtime_bundle_path).is_absolute()
+                                else "repository_relative"
+                            ),
+                            must_exist=False,
+                        )
+                        if runtime_ref.resolved_path != effective_bundle:
+                            raise FormalConfigError(
+                                "runtime_bundle_path_mismatch_with_manifest"
+                            )
+                        effective_bundle = runtime_ref.resolved_path
                     from external_baselines.interop.bundle import (
                         load_runner_bundle,
                         validate_formal_bundle_aggregate_checksum,
                     )
 
                     validate_formal_bundle_aggregate_checksum(
-                        load_runner_bundle(bundle_path, formal=True)
+                        load_runner_bundle(effective_bundle, formal=True)
                     )
+                    if stage == "index_build_candidate":
+                        from external_baselines.ekell_style.kg_loader import load_kg_strict
+
+                        loaded_bundle = load_runner_bundle(effective_bundle, formal=True)
+                        load_kg_strict(
+                            Path(
+                                _validate_exact_nonempty_string(
+                                    loaded_bundle.get("corpus_dir"),
+                                    field="bundle.corpus_dir",
+                                )
+                            )
+                        )
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Formal Runner Bundle authority validation failed: {exc}")
 
+    shared_declared = manifest.get("shared_model_config_declared")
     shared = (
         _validate_exact_nonempty_string(
-            raw.get("shared_model_config"),
+            shared_declared,
             field="shared_model_config",
             allow_placeholders=allow_placeholders,
         )
-        if raw.get("shared_model_config") is not None
+        if shared_declared is not None
         else ""
     )
     if not shared:
@@ -1052,8 +1145,10 @@ def validate_experiment_manifest(
     elif "smoke" in shared.lower() or "heuristic" in shared.lower():
         errors.append("shared_model_config must not reference smoke/heuristic configs.")
     else:
-        _assert_config_path(
-            shared,
+        _assert_resolved_config_path(
+            declared_path=shared,
+            resolved_path=manifest.get("shared_model_config_resolved") or "",
+            path_policy=str(manifest.get("shared_model_config_path_policy") or ""),
             label="shared_model_config",
             allow_placeholders=allow_placeholders,
             errors=errors,
@@ -1141,6 +1236,11 @@ def validate_experiment_manifest(
     seen_ids: set[str] = set()
     entries_by_id: dict[str, dict[str, Any]] = {}
     merged_by_id: dict[str, dict[str, Any]] = {}
+    resolved_entries_by_id = {
+        entry["method_id"]: entry
+        for entry in (manifest.get("methods") or [])
+        if isinstance(entry, dict) and entry.get("method_id")
+    }
     for entry in methods:
         if isinstance(entry, str):
             entry = {"method_id": entry}
@@ -1179,6 +1279,7 @@ def validate_experiment_manifest(
         if method_set_name == "comparison_suite" and mid in COMPARISON_FORMAL_METHOD_IDS:
             should_validate = True
         if should_validate:
+            resolved_entry = resolved_entries_by_id.get(mid) or {}
             cfg_raw = entry["config"] if "config" in entry else entry.get("method_config")
             cfg_path = (
                 _validate_exact_nonempty_string(
@@ -1192,16 +1293,19 @@ def validate_experiment_manifest(
             if not cfg_path:
                 errors.append(f"Formal method {mid} missing config path.")
             else:
-                _assert_config_path(
-                    cfg_path,
+                _assert_resolved_config_path(
+                    declared_path=str(resolved_entry.get("config_declared") or cfg_path),
+                    resolved_path=resolved_entry.get("config") or "",
+                    path_policy=str(resolved_entry.get("config_path_policy") or ""),
                     label=f"{mid} config",
                     allow_placeholders=allow_placeholders,
                     errors=errors,
                 )
             try:
-                entry_for_merge = dict(entry)
+                entry_for_merge = dict(resolved_entry or entry)
                 entry_for_merge["config"] = _apply_template_fallback_path(
-                    cfg_path, allow_placeholders=allow_placeholders
+                    str(resolved_entry.get("config") or cfg_path),
+                    allow_placeholders=allow_placeholders,
                 )
                 merged = build_method_config(manifest_for_merge, entry_for_merge)
                 merged["paper_final"] = True
@@ -1245,6 +1349,23 @@ def validate_experiment_manifest(
                     "Non-comparison method entry must be disabled during Formal "
                     f"comparison suite validation: {mid}."
                 )
+        if stage == "index_build_candidate":
+            try:
+                from external_baselines.ekell_style.prompt_identity import (
+                    validate_and_hash_prompt_bundle,
+                )
+
+                ekell_config = merged_by_id["ekell_style_controlled_shared_llm"]
+                prompt_dir = _validate_exact_nonempty_string(
+                    (ekell_config.get("ekell_style") or {}).get("prompt_dir"),
+                    field="ekell_style.prompt_dir",
+                )
+                validate_and_hash_prompt_bundle(
+                    prompt_dir,
+                    path_context=PathContext(repository_root=ROOT_REL),
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"index_build_candidate prompt bundle invalid: {exc}")
         try:
             resolved_entries = enabled_methods(manifest, method_set="comparison_suite")
             resolved_ids = [entry["method_id"] for entry in resolved_entries]
@@ -1285,12 +1406,13 @@ def validate_experiment_manifest(
         raise FormalConfigError("Formal manifest validation failed:\n- " + "\n- ".join(errors))
 
     return {
-        "path": str(path),
+        "path": str(manifest_path),
         "experiment_id": raw.get("experiment_id"),
         "valid": True,
         "allow_placeholders": allow_placeholders,
         "validation_stage": stage,
         "method_set": method_set_name,
         "runtime_bundle_path": str(runtime_bundle_path) if runtime_bundle_path else None,
+        "resource_paths": manifest.get("path_provenance") or {},
         "mode": stage,
     }

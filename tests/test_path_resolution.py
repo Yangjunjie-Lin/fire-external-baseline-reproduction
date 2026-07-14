@@ -7,7 +7,11 @@ import pytest
 import yaml
 
 from external_baselines.common.experiment_manifest import load_experiment_manifest
-from external_baselines.common.path_resolution import PathContext, resolve_declared_path
+from external_baselines.common.path_resolution import (
+    PathContext,
+    resolve_declared_path,
+    resolve_path_reference,
+)
 
 
 def test_relative_path_does_not_depend_on_cwd(tmp_path: Path, monkeypatch) -> None:
@@ -134,6 +138,73 @@ def test_bundle_relative_path_cannot_escape(tmp_path: Path) -> None:
         )
 
 
+def test_resolved_path_reference_records_portable_repository_identity(
+    tmp_path: Path,
+) -> None:
+    resource = tmp_path / "configs" / "resource.yaml"
+    resource.parent.mkdir()
+    resource.write_text("{}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        "configs/resource.yaml",
+        context=PathContext(repository_root=tmp_path),
+        policy="repository_relative",
+        expected_kind="file",
+    )
+
+    assert reference.declared_path == "configs/resource.yaml"
+    assert reference.resolved_path == resource.resolve()
+    assert reference.path_policy == "repository_relative"
+    assert reference.canonical_path == "configs/resource.yaml"
+    assert reference.authoritative_path == "configs/resource.yaml"
+    assert reference.external is False
+    assert reference.to_dict()["resolved_path_authoritative"] is False
+
+
+def test_resolved_path_reference_marks_allowed_absolute_as_external(
+    tmp_path: Path,
+) -> None:
+    resource = tmp_path / "resource.yaml"
+    resource.write_text("{}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        resource,
+        context=PathContext(repository_root=tmp_path),
+        policy="repository_relative",
+        expected_kind="file",
+        allow_external_absolute=True,
+    )
+
+    assert reference.path_policy == "absolute_external"
+    assert reference.external is True
+    assert reference.canonical_path == resource.resolve().as_posix()
+
+
+def test_resolved_path_reference_rejects_absolute_when_external_is_disabled(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="absolute_path_not_allowed"):
+        resolve_path_reference(
+            tmp_path / "resource.yaml",
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            must_exist=False,
+            allow_external_absolute=False,
+        )
+
+
+def test_resolved_path_reference_rejects_absolute_external_by_default(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="absolute_path_not_allowed"):
+        resolve_path_reference(
+            tmp_path / "resource.yaml",
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            must_exist=False,
+        )
+
+
 def test_base_config_resolution_is_deterministic(tmp_path: Path, monkeypatch) -> None:
     experiment_root = tmp_path / "experiment"
     experiment_root.mkdir()
@@ -162,3 +233,22 @@ def test_base_config_resolution_is_deterministic(tmp_path: Path, monkeypatch) ->
         (experiment_root / "base.yaml").resolve()
     )
     assert first["methods"][0]["config"] == second["methods"][0]["config"]
+
+
+def test_manifest_relative_input_is_repository_relative_and_cwd_independent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    relative_manifest = Path(
+        "configs/experiments/controlled_main_table_v1.yaml.example"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    manifest = load_experiment_manifest(relative_manifest)
+
+    repository = Path(__file__).resolve().parents[1]
+    assert manifest["manifest_path"] == str((repository / relative_manifest).resolve())
+    provenance = manifest["path_provenance"]["experiment_manifest"]
+    assert provenance["declared_path"] == str(relative_manifest)
+    assert provenance["path_policy"] == "repository_relative"
+    assert provenance["canonical_path"] == relative_manifest.as_posix()

@@ -97,7 +97,7 @@ def triple_parts(row: dict[str, Any]) -> tuple[str, str, str]:
 def triple_id(row: dict[str, Any], index: int | None = None) -> str:
     value = _first(row, ["triple_id", "id", "edge_id", "relation_id"], "")
     if value:
-        return str(value)
+        return f"{value}"
     h, r, t = triple_parts(row)
     if h or t:
         return f"{h}|{r}|{t}"
@@ -113,7 +113,7 @@ def triple_to_text(row: dict[str, Any]) -> str:
 
 def evidence_chunk_id(row: dict[str, Any], index: int | None = None) -> str:
     value = _first(row, ["chunk_id", "id", "evidence_id", "doc_id"], "")
-    return str(value) if value else f"chunk_{index}" if index is not None else "chunk_unknown"
+    return f"{value}" if value else f"chunk_{index}" if index is not None else "chunk_unknown"
 
 
 def evidence_text(row: dict[str, Any]) -> str:
@@ -190,68 +190,215 @@ def read_jsonl_object_records_strict(
     return rows
 
 
-def _nonempty_field(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+def _exact_nonempty_text_field(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    label: str,
+) -> str:
     for key in keys:
-        value = row.get(key)
+        if key not in row or row[key] is None:
+            continue
+        value = row[key]
+        if type(value) is not str:
+            raise ValueError(f"{label}_must_be_string")
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(f"{label}_must_be_nonempty_string")
+        if value != stripped:
+            raise ValueError(f"{label}_must_not_have_surrounding_whitespace")
+        return value
+    return ""
+
+
+def _entity_identifier_field(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    label: str,
+) -> str:
+    for key in keys:
+        if key not in row or row[key] is None:
+            continue
+        value = row[key]
         if type(value) is str and value.strip():
             return value.strip()
-        if value is not None and type(value) in (int, float):
-            return str(value)
+        if type(value) is int:
+            return f"{value}"
+        raise ValueError(f"{label}_invalid_type")
     return ""
+
+
+def _strict_field(prefix: str, reader, *args, **kwargs) -> str:
+    try:
+        return reader(*args, **kwargs)
+    except ValueError as exc:
+        raise ValueError(f"{prefix}:{exc}") from exc
+
+
+def _validate_optional_text_fields(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    prefix: str,
+) -> None:
+    for key in keys:
+        if key not in row or row[key] is None:
+            continue
+        _strict_field(
+            prefix,
+            _exact_nonempty_text_field,
+            row,
+            (key,),
+            label=key,
+        )
 
 
 def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> None:
     value = row.value
     prefix = f"kg_schema_invalid:{filename}:line_{row.line_no}"
     if kind == "entities":
-        if not _nonempty_field(
+        identifier = _strict_field(
+            prefix,
+            _entity_identifier_field,
             value,
-            ("entity_id", "id", "uid", "node_id", "name", "label", "entity"),
-        ):
+            ("entity_id", "id", "uid", "node_id"),
+            label="entity_identifier",
+        )
+        name = _strict_field(
+            prefix,
+            _exact_nonempty_text_field,
+            value,
+            ("name", "label", "entity", "text", "entity_name", "title"),
+            label="entity_name",
+        )
+        if not identifier and not name:
             raise ValueError(f"{prefix}:entity_id_or_name_missing")
+        _validate_optional_text_fields(
+            value,
+            ("type", "entity_type", "category", "label_type"),
+            prefix=prefix,
+        )
         return
     if kind == "relations":
-        relation_identity = _nonempty_field(
+        relation_identifier = _strict_field(
+            prefix,
+            _entity_identifier_field,
             value,
-            ("relation_id", "id", "name", "label", "relation", "predicate", "type"),
+            ("relation_id", "id"),
+            label="relation_identifier",
         )
-        head = _nonempty_field(value, ("head", "source", "subject", "from", "h", "src"))
-        relation = _nonempty_field(
+        relation_name = _strict_field(
+            prefix,
+            _exact_nonempty_text_field,
             value,
-            ("relation", "predicate", "type", "label", "r", "edge", "relation_type"),
+            ("name", "label", "relation", "predicate", "type", "r", "edge", "relation_type"),
+            label="relation_label",
         )
-        tail = _nonempty_field(value, ("tail", "target", "object", "to", "t", "dst"))
-        if not relation_identity and not (head and relation and tail):
+        triple_shaped = any(
+            key in value
+            for key in (
+                "head",
+                "source",
+                "subject",
+                "from",
+                "h",
+                "src",
+                "tail",
+                "target",
+                "object",
+                "to",
+                "t",
+                "dst",
+            )
+        )
+        if triple_shaped:
+            head = _strict_field(
+                prefix,
+                _entity_identifier_field,
+                value,
+                ("head", "source", "subject", "from", "h", "src"),
+                label="relation_head_identifier",
+            )
+            tail = _strict_field(
+                prefix,
+                _entity_identifier_field,
+                value,
+                ("tail", "target", "object", "to", "t", "dst"),
+                label="relation_tail_identifier",
+            )
+            if not head or not relation_name or not tail:
+                raise ValueError(f"{prefix}:relation_identity_missing")
+        elif not relation_identifier and not relation_name:
             raise ValueError(f"{prefix}:relation_identity_missing")
+        _validate_optional_text_fields(
+            value,
+            ("source_id", "citation", "url", "source_url", "file", "path"),
+            prefix=prefix,
+        )
         return
     if kind == "triples":
         fields = {
-            "head": _nonempty_field(
+            "head": _strict_field(
+                prefix,
+                _entity_identifier_field,
                 value,
                 ("head", "source", "subject", "from", "h", "head_entity", "src"),
+                label="triple_head_identifier",
             ),
-            "relation": _nonempty_field(
+            "relation": _strict_field(
+                prefix,
+                _exact_nonempty_text_field,
                 value,
                 ("relation", "predicate", "type", "label", "r", "edge", "relation_type"),
+                label="triple_relation",
             ),
-            "tail": _nonempty_field(
+            "tail": _strict_field(
+                prefix,
+                _entity_identifier_field,
                 value,
                 ("tail", "target", "object", "to", "t", "tail_entity", "dst"),
+                label="triple_tail_identifier",
             ),
         }
         for field, resolved in fields.items():
             if not resolved:
                 raise ValueError(f"{prefix}:triple_{field}_missing")
+        _strict_field(
+            prefix,
+            _entity_identifier_field,
+            value,
+            ("triple_id", "id", "edge_id"),
+            label="triple_identifier",
+        )
+        _validate_optional_text_fields(
+            value,
+            ("source_id", "citation", "url", "source_url", "file", "path"),
+            prefix=prefix,
+        )
         return
     if kind == "evidence_chunks":
-        if not _nonempty_field(value, ("chunk_id", "id", "evidence_id", "doc_id")):
+        chunk_id = _strict_field(
+            prefix,
+            _entity_identifier_field,
+            value,
+            ("chunk_id", "id", "evidence_id", "doc_id"),
+            label="evidence_chunk_identifier",
+        )
+        if not chunk_id:
             raise ValueError(f"{prefix}:evidence_chunk_id_missing")
-        if not _nonempty_field(
+        text = _strict_field(
+            prefix,
+            _exact_nonempty_text_field,
             value,
             ("text", "content", "chunk", "body", "page_content", "document"),
-        ):
+            label="evidence_text",
+        )
+        if not text:
             raise ValueError(f"{prefix}:evidence_text_missing")
-        if not _nonempty_field(
+        source = _strict_field(
+            prefix,
+            _exact_nonempty_text_field,
             value,
             (
                 "source_id",
@@ -263,8 +410,80 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
                 "file",
                 "path",
             ),
-        ):
+            label="evidence_source_or_citation",
+        )
+        if not source:
             raise ValueError(f"{prefix}:evidence_source_or_citation_missing")
+
+
+def _strict_identity(kind: str, value: dict[str, Any]) -> str:
+    if kind == "entities":
+        return _entity_identifier_field(
+            value,
+            ("entity_id", "id", "uid", "node_id"),
+            label="entity_identifier",
+        ) or _exact_nonempty_text_field(
+            value,
+            ("name", "label", "entity", "text", "entity_name", "title"),
+            label="entity_name",
+        )
+    if kind == "evidence_chunks":
+        return _entity_identifier_field(
+            value,
+            ("chunk_id", "id", "evidence_id", "doc_id"),
+            label="evidence_chunk_identifier",
+        )
+    if kind == "relations":
+        explicit = _entity_identifier_field(
+            value,
+            ("relation_id", "id"),
+            label="relation_identifier",
+        )
+        if explicit:
+            return explicit
+    if kind == "triples":
+        explicit = _entity_identifier_field(
+            value,
+            ("triple_id", "id", "edge_id"),
+            label="triple_identifier",
+        )
+        if explicit:
+            return explicit
+    if kind in {"relations", "triples"}:
+        head = _entity_identifier_field(
+            value,
+            ("head", "source", "subject", "from", "h", "head_entity", "src"),
+            label="triple_head_identifier",
+        )
+        relation = _exact_nonempty_text_field(
+            value,
+            ("relation", "predicate", "type", "label", "r", "edge", "relation_type", "name"),
+            label="triple_relation",
+        )
+        tail = _entity_identifier_field(
+            value,
+            ("tail", "target", "object", "to", "t", "tail_entity", "dst"),
+            label="triple_tail_identifier",
+        )
+        if head or tail:
+            return f"{head}|{relation}|{tail}"
+        return relation
+    return ""
+
+
+def _reject_duplicate_identities(kind: str, rows: list[JsonlObjectRow]) -> None:
+    error_names = {
+        "entities": "kg_duplicate_entity_id",
+        "relations": "kg_duplicate_relation_id",
+        "triples": "kg_duplicate_triple",
+        "evidence_chunks": "kg_duplicate_evidence_chunk_id",
+    }
+    seen: set[str] = set()
+    for row in rows:
+        identity = _strict_identity(kind, row.value)
+        if identity in seen:
+            raise ValueError(f"{error_names[kind]}:{identity}")
+        seen.add(identity)
 
 
 def load_kg_strict(
@@ -297,6 +516,7 @@ def load_kg_strict(
         rows = read_jsonl_object_records_strict(path, require_nonempty=required)
         for row in rows:
             _validate_strict_row(kind, row, filename=filename)
+        _reject_duplicate_identities(kind, rows)
         data[kind] = [row.value for row in rows]
     return FireKG(
         entities=data["entities"],

@@ -14,7 +14,12 @@ from typing import Any
 
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.io import load_config, read_json, read_yaml
-from external_baselines.common.path_resolution import PathContext, resolve_declared_path
+from external_baselines.common.path_resolution import (
+    PathContext,
+    ResolvedPathReference,
+    resolve_declared_path,
+    resolve_path_reference,
+)
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
 from external_baselines.method_registry import (
     canonicalize_method_id,
@@ -125,7 +130,7 @@ def _resolve_experiment_resource(
     declared: str,
     *,
     manifest_path: Path,
-) -> tuple[str, str]:
+) -> tuple[ResolvedPathReference, bool]:
     """Prefer manifest-relative resources, then deterministic repository-relative ones."""
     candidate = Path(declared)
     context = PathContext(
@@ -133,26 +138,53 @@ def _resolve_experiment_resource(
         experiment_manifest_path=manifest_path,
     )
     if candidate.is_absolute():
-        return str(candidate.resolve(strict=False)), "absolute"
-    experiment_candidate = resolve_declared_path(
+        return (
+            resolve_path_reference(
+                declared,
+                context=context,
+                policy="absolute_external",
+                must_exist=False,
+            ),
+            False,
+        )
+    experiment_candidate = resolve_path_reference(
         declared,
         context=context,
         policy="experiment_relative",
         must_exist=False,
     )
-    if experiment_candidate.exists():
-        return str(experiment_candidate), "experiment_relative"
-    repository_candidate = resolve_declared_path(
+    repository_candidate = resolve_path_reference(
         declared,
         context=context,
         policy="repository_relative",
         must_exist=False,
     )
-    return str(repository_candidate), "repository_relative"
+    alternate_exists = repository_candidate.resolved_path.exists()
+    if experiment_candidate.resolved_path.exists():
+        return experiment_candidate, alternate_exists
+    return repository_candidate, False
+
+
+def _resource_fields(prefix: str, reference: ResolvedPathReference | None) -> dict[str, Any]:
+    if reference is None:
+        return {
+            f"{prefix}_declared": None,
+            f"{prefix}_resolved": None,
+            f"{prefix}_path_policy": None,
+            f"{prefix}_canonical_path": None,
+        }
+    return {
+        f"{prefix}_declared": reference.declared_path,
+        f"{prefix}_resolved": str(reference.resolved_path),
+        f"{prefix}_path_policy": reference.path_policy,
+        f"{prefix}_canonical_path": reference.canonical_path,
+    }
 
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    if not path.is_absolute():
+    declared_manifest_path = str(path)
+    path = Path(declared_manifest_path)
+    manifest_input_is_absolute = path.is_absolute()
+    if not manifest_input_is_absolute:
         path = resolve_declared_path(
             path,
             context=PathContext(repository_root=REPOSITORY_ROOT),
@@ -172,14 +204,26 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"Experiment manifest must be a mapping: {path}")
 
     shared_model_declared = _manifest_string(raw, "shared_model_config")
-    shared_model, shared_policy = _resolve_experiment_resource(
+    shared_model_ref, shared_alternate = _resolve_experiment_resource(
         shared_model_declared,
         manifest_path=path,
     )
     base_declared = _optional_manifest_string(raw, "base_config") or "configs/default.yaml"
-    base_config, base_policy = _resolve_experiment_resource(
+    base_config_ref, base_alternate = _resolve_experiment_resource(
         base_declared,
         manifest_path=path,
+    )
+    bundle_declared = _optional_manifest_string(raw, "bundle")
+    bundle_ref, bundle_alternate = (
+        _resolve_experiment_resource(bundle_declared, manifest_path=path)
+        if bundle_declared is not None
+        else (None, False)
+    )
+    freeze_declared = _optional_manifest_string(raw, "freeze_manifest")
+    freeze_ref, freeze_alternate = (
+        _resolve_experiment_resource(freeze_declared, manifest_path=path)
+        if freeze_declared is not None
+        else (None, False)
     )
 
     methods = raw.get("methods")
@@ -222,53 +266,99 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
                 field=f"methods[{index}].config",
             )
             method_config_declared = method_config_path
-            method_config_path, method_config_policy = _resolve_experiment_resource(
+            method_config_ref, method_config_alternate = _resolve_experiment_resource(
                 method_config_declared,
                 manifest_path=path,
             )
+            method_config_path = str(method_config_ref.resolved_path)
+            method_config_policy = method_config_ref.path_policy
+            method_config_canonical = method_config_ref.canonical_path
         else:
             method_config_declared = None
             method_config_policy = None
+            method_config_canonical = None
+            method_config_alternate = False
         resolved.append({
             "method_id": method_id,
             "config": method_config_path,
             "config_declared": method_config_declared,
             "config_path_policy": method_config_policy,
+            "config_canonical_path": method_config_canonical,
+            "alternate_repository_candidate_exists": method_config_alternate,
             "paper_table_role": role,
             "enabled": _method_enabled(entry, index=index),
         })
 
+    shared_model = str(shared_model_ref.resolved_path)
+    try:
+        manifest_repository_identity = path.relative_to(REPOSITORY_ROOT).as_posix()
+        manifest_external = False
+    except ValueError:
+        manifest_repository_identity = path.as_posix()
+        manifest_external = True
+    path_provenance = {
+        "experiment_manifest": {
+            "declared_path": declared_manifest_path,
+            "resolved_path": str(path),
+            "resolved_path_authoritative": False,
+            "path_policy": (
+                "absolute_external" if manifest_external else "repository_relative"
+            ),
+            "canonical_path": manifest_repository_identity,
+            "authoritative_path": manifest_repository_identity,
+            "external": manifest_external,
+        },
+        "base_config": {
+            **base_config_ref.to_dict(),
+            "alternate_repository_candidate_exists": base_alternate,
+        },
+        "shared_model_config": {
+            **shared_model_ref.to_dict(),
+            "alternate_repository_candidate_exists": shared_alternate,
+        },
+        "method_configs": {
+            entry["method_id"]: {
+                "declared_path": entry.get("config_declared"),
+                "resolved_path": entry.get("config"),
+                "resolved_path_authoritative": False,
+                "path_policy": entry.get("config_path_policy"),
+                "canonical_path": entry.get("config_canonical_path"),
+                "authoritative_path": entry.get("config_canonical_path"),
+                "external": entry.get("config_path_policy") == "absolute_external",
+                "alternate_repository_candidate_exists": entry.get(
+                    "alternate_repository_candidate_exists", False
+                ),
+            }
+            for entry in resolved
+            if entry.get("config")
+        },
+        "runner_bundle": (
+            {
+                **bundle_ref.to_dict(),
+                "alternate_repository_candidate_exists": bundle_alternate,
+            }
+            if bundle_ref
+            else None
+        ),
+        "freeze_manifest": (
+            {
+                **freeze_ref.to_dict(),
+                "alternate_repository_candidate_exists": freeze_alternate,
+            }
+            if freeze_ref
+            else None
+        ),
+    }
     return {
         "manifest_path": str(path),
         "experiment_id": _optional_manifest_string(raw, "experiment_id") or path.stem,
         "schema_version": _optional_manifest_string(raw, "schema_version") or "firebench-interop-v1",
         "track": _optional_manifest_string(raw, "track") or "A_shared_outcome",
         "shared_model_config": str(shared_model),
-        "shared_model_config_declared": shared_model_declared,
+        **_resource_fields("shared_model_config", shared_model_ref),
         "base_config": base_declared,
-        "base_config_resolved": base_config,
-        "base_config_declared": base_declared,
-        "path_provenance": {
-            "base_config": {
-                "declared_path": base_declared,
-                "resolved_path": base_config,
-                "path_policy": base_policy,
-            },
-            "shared_model_config": {
-                "declared_path": shared_model_declared,
-                "resolved_path": shared_model,
-                "path_policy": shared_policy,
-            },
-            "method_configs": {
-                entry["method_id"]: {
-                    "declared_path": entry.get("config_declared"),
-                    "resolved_path": entry.get("config"),
-                    "path_policy": entry.get("config_path_policy"),
-                }
-                for entry in resolved
-                if entry.get("config")
-            },
-        },
+        **_resource_fields("base_config", base_config_ref),
+        "path_provenance": path_provenance,
         "methods": resolved,
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
         "comparison_suite_methods": list(raw.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS),
@@ -277,8 +367,10 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
             and raw.get("comparison_suite_methods") is not None
         ),
         "supplemental_methods": list(raw.get("supplemental_methods") or SUPPLEMENTAL_METHODS),
-        "bundle": _optional_manifest_string(raw, "bundle"),
-        "freeze_manifest": _optional_manifest_string(raw, "freeze_manifest"),
+        "bundle": bundle_declared,
+        **_resource_fields("bundle", bundle_ref),
+        "freeze_manifest": freeze_declared,
+        **_resource_fields("freeze_manifest", freeze_ref),
         "expected_bundle_checksum": raw.get("expected_bundle_checksum"),
         "output": _optional_manifest_string(raw, "output") or "outputs/firebench_interop_v1_predictions.jsonl",
         "legacy_output": _optional_manifest_string(raw, "legacy_output") or "outputs/baseline_outputs_legacy.jsonl",
@@ -303,7 +395,7 @@ def build_method_config(manifest: dict[str, Any], method_entry: dict[str, Any]) 
         raise TypeError("build_method_config requires method_entry with method_id")
     paths = [
         manifest.get("base_config_resolved") or manifest["base_config"],
-        manifest["shared_model_config"],
+        manifest.get("shared_model_config_resolved") or manifest["shared_model_config"],
     ]
     if method_entry.get("config"):
         paths.append(method_entry["config"])
