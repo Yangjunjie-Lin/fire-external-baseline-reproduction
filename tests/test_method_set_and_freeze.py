@@ -20,7 +20,14 @@ def _patch_formal_resource_checks(monkeypatch) -> None:
     import external_baselines.common.freeze_manifest as freeze_manifest
     import external_baselines.interop.bundle as bundle
 
-    monkeypatch.setattr(bundle, "load_runner_bundle", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(
+        bundle,
+        "load_runner_bundle",
+        lambda *_args, **_kwargs: {
+            "producer_declared_checksum": None,
+            "consumer_computed_bundle_hash": "c" * 64,
+        },
+    )
     monkeypatch.setattr(validator, "validate_method_config", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(validator, "validate_hybrid_config_for_real_run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(freeze_manifest, "validate_freeze_manifest", lambda *_args, **_kwargs: None)
@@ -311,7 +318,10 @@ def test_freeze_candidate_requires_formal_bundle_authority(tmp_path: Path, monke
 
     def fake_load_runner_bundle(_path, *, formal=False):
         calls.append(formal)
-        return {"ok": True}
+        return {
+            "producer_declared_checksum": None,
+            "consumer_computed_bundle_hash": "c" * 64,
+        }
 
     monkeypatch.setattr(bundle, "load_runner_bundle", fake_load_runner_bundle)
     monkeypatch.setattr(validator, "validate_method_config", lambda *_args, **_kwargs: [])

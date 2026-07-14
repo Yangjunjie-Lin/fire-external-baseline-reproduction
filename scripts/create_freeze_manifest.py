@@ -107,17 +107,6 @@ def main(argv: list[str] | None = None) -> None:
     corpus_checksum = None
     schema_checksum = None
     bundle_path = args.bundle or experiment.get("bundle")
-    if not args.draft:
-        try:
-            validate_experiment_manifest(
-                args.experiment_manifest,
-                validation_stage="freeze_candidate",
-                method_set="comparison_suite",
-                runtime_bundle_path=bundle_path,
-            )
-        except FormalConfigError as exc:
-            raise SystemExit(f"Freeze-candidate validation failed: {exc}") from exc
-
     bundle = None
     if bundle_path and not _is_placeholder(bundle_path):
         try:
@@ -141,17 +130,29 @@ def main(argv: list[str] | None = None) -> None:
     elif not args.draft:
         raise SystemExit("Complete freeze requires a non-placeholder Runner Bundle path.")
 
+    if not args.draft:
+        try:
+            validate_experiment_manifest(
+                args.experiment_manifest,
+                validation_stage="freeze_candidate",
+                method_set="comparison_suite",
+                runtime_bundle_path=bundle_path,
+            )
+        except FormalConfigError as exc:
+            raise SystemExit(f"Freeze-candidate validation failed: {exc}") from exc
+
     methods = enabled_methods(experiment, method_set="comparison_suite")
     dense_index_path = None
     ekell_index_path = None
-    embedding: dict = {}
+    embedding_candidates: dict[str, dict] = {}
+    ekell_expected_kg_checksum = None
     for entry in methods:
         cfg = build_method_config(experiment, entry)
         mid = entry["method_id"]
         if mid == "dense_rag":
             dense = cfg.get("dense_rag") or {}
             dense_index_path = dense.get("index_path")
-            embedding = {
+            embedding_candidates[mid] = {
                 "backend": dense.get("backend"),
                 "model_name": dense.get("model_name"),
                 "model_version": dense.get("model_version"),
@@ -161,20 +162,52 @@ def main(argv: list[str] | None = None) -> None:
                     field="dense_rag.normalize_embeddings",
                 ),
             }
+        elif mid == "hybrid_rag":
+            dense = cfg.get("dense_rag") or {}
+            hybrid = cfg.get("hybrid_rag") or {}
+            if dense or hybrid:
+                embedding_candidates[mid] = {
+                    "backend": dense.get("backend") or hybrid.get("dense_method"),
+                    "model_name": dense.get("model_name") or hybrid.get("dense_model_name"),
+                    "model_version": dense.get("model_version")
+                    or hybrid.get("dense_model_version"),
+                    "dimension": dense.get("dimension") or hybrid.get("dimension"),
+                    "normalize_embeddings": _embedding_normalize_value(
+                        dense if "normalize_embeddings" in dense else hybrid,
+                        field="hybrid_rag.normalize_embeddings",
+                    ),
+                }
         elif mid == "ekell_style_controlled_shared_llm":
             vector = cfg.get("ekell_vector") or {}
             ekell_index_path = vector.get("index_path")
-            if not embedding:
-                embedding = {
-                    "backend": vector.get("backend"),
-                    "model_name": vector.get("model_name"),
-                    "model_version": vector.get("model_version"),
-                    "dimension": vector.get("dimension"),
-                    "normalize_embeddings": _embedding_normalize_value(
-                        vector,
-                        field="ekell_vector.normalize_embeddings",
-                    ),
-                }
+            ekell_expected_kg_checksum = cfg.get("kg_checksum")
+            embedding_candidates[mid] = {
+                "backend": vector.get("backend"),
+                "model_name": vector.get("model_name"),
+                "model_version": vector.get("model_version"),
+                "dimension": vector.get("dimension"),
+                "normalize_embeddings": _embedding_normalize_value(
+                    vector,
+                    field="ekell_vector.normalize_embeddings",
+                ),
+            }
+
+    embedding = embedding_candidates.get("dense_rag") or next(
+        iter(embedding_candidates.values()),
+        {},
+    )
+    for mid, candidate in embedding_candidates.items():
+        for field in (
+            "backend",
+            "model_name",
+            "model_version",
+            "dimension",
+            "normalize_embeddings",
+        ):
+            if candidate.get(field) != embedding.get(field):
+                if field == "normalize_embeddings":
+                    raise SystemExit("cross_method_normalize_embeddings_mismatch")
+                raise SystemExit(f"cross_method_embedding_identity_mismatch:{mid}:{field}")
 
     if not args.draft and embedding.get("model_version") and _is_placeholder(embedding.get("model_version")):
         raise SystemExit("embedding.model_version is still a placeholder; refuse non-draft freeze.")
@@ -202,6 +235,7 @@ def main(argv: list[str] | None = None) -> None:
             expected_model_name=embedding.get("model_name"),
             expected_model_version=embedding.get("model_version"),
             expected_dimension=embedding.get("dimension"),
+            expected_kg_checksum=str(ekell_expected_kg_checksum or "") or None,
             expected_corpus_checksum=corpus_checksum,
             expected_normalize_embeddings=embedding.get("normalize_embeddings"),
         )

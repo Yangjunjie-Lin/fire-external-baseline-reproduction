@@ -141,7 +141,7 @@ Freeze order:
 
 1. Finish DEV selection
 2. Save a non-`.example` experiment manifest with real model, method, Bundle, and index identities
-3. Run `create_freeze_manifest.py`; non-draft mode performs `freeze_candidate` validation, Formal Runner Bundle aggregate validation before persisted-index hashing, and strict Dense/E-KELL persisted-index validation before writing the freeze atomically
+3. Run `create_freeze_manifest.py`; non-draft mode loads and validates the Formal Runner Bundle aggregate first, then performs `freeze_candidate` validation and strict Dense/E-KELL persisted-index validation before writing the freeze atomically
 4. Treat `--draft` output as development-only and incomplete
 5. Manually review the complete freeze identity
 6. Mark the experiment manifest `freeze_status: frozen` only after review, then use final Formal validation with a reference to the existing complete freeze file
@@ -197,6 +197,7 @@ Requires:
 - five-method **preflight** passes before any LLM call (external control root + copy under `diagnostics/` in staged run root; includes E-KELL prompt files)
 - **transactional** publish: runtime cleanup → staged package validation (reparsed predictions against frozen Runner Bundle schema + supplemental artifact hash checks) → PREPARE → COMMIT → CLEANUP (backup cleanup failures are control-root warnings only; immutable summary does not pre-declare cleanup success)
 - Formal preflight revalidates the live Dense, Hybrid, and E-KELL persisted indexes before any LLM client build or prediction generation, rejects internally valid replacement indexes whose identity differs from the freeze, and verifies the actual runtime embedding backend plus `normalize_embeddings` policy against both method configuration and persisted index metadata
+- prepared runtime evidence records file-level identity and is compared with preflight before that method's LLM client is initialized; a manifest change after preflight fails with `runtime_index_identity_changed_after_preflight`
 - runtime caches are scoped to one comparison-suite invocation and cannot leak across runs
 - embedding backend injection is invoked only for Dense, Hybrid, and E-KELL
 - run manifests hash predictions, method summaries, decisions, responses, and unmapped-taxonomy artifacts

@@ -91,10 +91,9 @@ python scripts/run_interop_baselines.py \
   --manifest outputs/dry_run/comparison_suite_v1/run_manifest.json
 
 # 5) After DEV selection — complete freeze generation:
-#    create_freeze_manifest.py runs freeze-candidate validation first, then loads
-#    the Runner Bundle with Formal authority, verifies aggregate Bundle identity
-#    before persisted-index hashing, then verifies persisted Dense/E-KELL
-#    index integrity and writes atomically.
+#    create_freeze_manifest.py first loads the Runner Bundle with Formal authority
+#    and verifies aggregate Bundle identity, then runs freeze-candidate validation,
+#    verifies persisted Dense/E-KELL index integrity, and writes atomically.
 python scripts/create_freeze_manifest.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --selected-dev-run outputs/tuning/selected_dev_run.json \
@@ -198,6 +197,8 @@ python scripts/validate_formal_config.py \
 - Formal preflight revalidates the live Dense, Hybrid, and E-KELL persisted indexes before any LLM client build or prediction generation and requires their frozen identities to match exactly. Replacing a frozen index with a different internally valid index is rejected.
 - `normalize_embeddings` is a real build parameter: it is executed during index construction, recorded in manifests, included in canonical index checksums, checked against method configuration, frozen, and rechecked at runtime. Indexes built before this checksum contract must be rebuilt.
 - Persisted embeddings must be finite and nonzero. When `normalize_embeddings=true`, all vectors must satisfy the documented unit-norm tolerance.
+- Runtime evidence records `index_checksum`, `index_manifest_sha256`, `documents_file_checksum`, `embeddings_checksum`, and `normalize_embeddings`; the prepared runtime is checked against preflight before LLM initialization and again before prediction generation.
+- Complete-freeze fail-fast order is Bundle load, aggregate checksum, freeze-candidate validation, index hashing, payload construction, complete validation, and atomic replace.
 - Complete-freeze writes are transactional: any failure removes the temporary output and preserves an existing final freeze file.
 - Formal control/diagnostics directory is outside the immutable run root:
 

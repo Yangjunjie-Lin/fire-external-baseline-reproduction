@@ -343,7 +343,7 @@ def test_dense_strict_validator_rejects_zero_vector(tmp_path: Path) -> None:
     arr[0] = 0.0
     _rewrite_dense_embeddings(index_dir, arr)
 
-    with pytest.raises(DenseIndexError, match="zero_vector"):
+    with pytest.raises(DenseIndexError, match="dense_index_zero_embedding_vector"):
         validate_dense_index_integrity_for_freeze(index_dir)
 
 

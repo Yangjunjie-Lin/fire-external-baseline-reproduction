@@ -184,7 +184,7 @@ def _validate_ekell_embedding_values(
             raise VectorIndexError("ekell_index_embeddings_non_finite")
         norms = np.linalg.norm(block, axis=1)
         if (norms <= 1e-12).any():
-            raise VectorIndexError("ekell_index_embeddings_zero_vector")
+            raise VectorIndexError("ekell_index_zero_embedding_vector")
         if normalize_embeddings and not np.allclose(
             norms,
             1.0,

@@ -64,6 +64,8 @@ from external_baselines.common.method_runtime import (  # noqa: E402
     runtime_is_cached,
 )
 from external_baselines.common.runtime_evidence import (  # noqa: E402
+    RuntimeIndexIdentityError,
+    assert_runtime_index_identity_matches_preflight,
     collect_method_runtime_evidence,
     compute_suite_formal_compliance,
     evidence_to_summary_sections,
@@ -1760,6 +1762,17 @@ def _run_decision_suite_impl(
                             method_config,
                             embedding_backend=injected_embedding,
                         )
+                        pre_llm_evidence = collect_method_runtime_evidence(
+                            method_id=method_id,
+                            config=method_config,
+                            runtime=runtime,
+                        )
+                        if formal:
+                            assert_runtime_index_identity_matches_preflight(
+                                method_id=method_id,
+                                evidence=pre_llm_evidence,
+                                preflight=preflight,
+                            )
                         transport = (
                             llm_transport_factory(method_id, method_config)
                             if llm_transport_factory is not None
@@ -1772,6 +1785,12 @@ def _run_decision_suite_impl(
                             llm=llm,
                             runtime=runtime,
                         )
+                        if formal:
+                            assert_runtime_index_identity_matches_preflight(
+                                method_id=method_id,
+                                evidence=evidence,
+                                preflight=preflight,
+                            )
                         method_evidences[method_id] = evidence
                         accepts_runtime = pipeline_accepts_runtime(pipeline)
                         for scenario in scenarios:
@@ -1954,9 +1973,14 @@ def _run_decision_suite_impl(
                     phase="pre_publish",
                     **integrity_flags,
                 )
+                failure_stage = (
+                    "runtime_index_identity_validation"
+                    if isinstance(exc, RuntimeIndexIdentityError)
+                    else "method_execution"
+                )
                 _raise_formal_failure(
                     message=str(exc),
-                    stage="method_execution",
+                    stage=failure_stage,
                     run_id=run_id,
                     control_root=control_root,
                     suite_summary=suite_summary,

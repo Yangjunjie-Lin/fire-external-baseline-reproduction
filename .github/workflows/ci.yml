@@ -97,7 +97,7 @@ jobs:
             tests/test_formal_enforcement_and_freeze.py \
             tests/test_formal_compliance.py \
             tests/test_method_set_and_freeze.py \
-            -k "normalize_embeddings or frozen_live or replaced_dense or replaced_ekell or non_finite or unit_norm or zero_vector or complete_freeze_requires or aggregate_mismatch_fails_before"
+            -k "normalize_embeddings or frozen_live or replaced_dense or replaced_ekell or non_finite or unit_norm or zero_vector or complete_freeze_requires or aggregate_mismatch_fails_before or runtime_index or after_preflight"
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \

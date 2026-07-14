@@ -808,6 +808,7 @@ def test_formal_ekell_requires_index_path():
                     "model_name": "fake/bge",
                     "model_version": "v1",
                     "dimension": 8,
+                    "normalize_embeddings": True,
                     "reject_smoke": True,
                 }
             }
@@ -827,6 +828,7 @@ def test_formal_ekell_requires_directory_index(tmp_path):
                     "model_name": "fake/bge",
                     "model_version": "v1",
                     "dimension": 8,
+                    "normalize_embeddings": True,
                     "index_path": str(legacy),
                     "reject_smoke": True,
                 }
@@ -1471,6 +1473,199 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
     }
 
 
+def _run_offline_formal_preflight(fixture: dict[str, Any]) -> dict[str, Any]:
+    from external_baselines.common.decision_suite_preflight import preflight_decision_suite
+    from external_baselines.interop.bundle import load_runner_bundle
+    from external_baselines.method_registry import comparison_suite_methods
+    from scripts.run_decision_comparison_suite import _method_config
+
+    bundle = load_runner_bundle(fixture["bundle_dir"], formal=True)
+    base: dict[str, Any] = {
+        "execution_stage": "formal",
+        "unified_decision_output": True,
+        "strict_decision_parse": True,
+        "dev_aliases_enabled": False,
+        "paper_final": True,
+        "normalization": {"infer_structured_safety_fields": False},
+        "paths": {"corpus_dir": str(bundle["corpus_dir"])},
+    }
+    method_ids = comparison_suite_methods()
+    method_configs: dict[str, dict[str, Any]] = {}
+    for method_id in method_ids:
+        config = _method_config(
+            method_id,
+            base=base,
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+        config.setdefault("paths", {})["corpus_dir"] = str(bundle["corpus_dir"])
+        config["unified_decision_output"] = True
+        config["strict_decision_parse"] = True
+        config["execution_stage"] = "formal"
+        config["dev_aliases_enabled"] = False
+        method_configs[method_id] = config
+    return preflight_decision_suite(
+        method_ids=method_ids,
+        method_configs=method_configs,
+        runner_bundle=fixture["bundle_dir"],
+        execution_stage="formal",
+        experiment_manifest=fixture["experiment_manifest"],
+    )
+
+
+def test_unified_formal_preflight_accepts_exact_frozen_live_indexes(tmp_path: Path) -> None:
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+
+    report = _run_offline_formal_preflight(fixture)
+
+    assert report["ok"] is True
+    identity = report["frozen_runtime_identity"]
+    assert identity["ok"] is True
+    assert identity["dense"]["index_checksum_match"] is True
+    assert identity["hybrid_dense_dependency"]["index_manifest_sha256_match"] is True
+    assert identity["ekell"]["kg_checksum_match"] is True
+
+
+def test_unified_formal_preflight_rejects_replaced_dense_index(tmp_path: Path) -> None:
+    import shutil
+
+    from external_baselines.dense_rag.pipeline import build_dense_index
+    from tests.test_dense_real_index import FakeEmbeddingModel
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    evidence = tmp_path / "replacement_dense_evidence.jsonl"
+    evidence.write_text(
+        '{"chunk_id":"replacement","text":"different internally valid evidence"}\n',
+        encoding="utf-8",
+    )
+    replacement = tmp_path / "replacement_dense"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=replacement,
+        embedding_model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+        normalize_embeddings=True,
+    )
+    for name in ("documents.jsonl", "embeddings.npy", "index_manifest.json"):
+        shutil.copy2(replacement / name, fixture["dense_idx"] / name)
+
+    report = _run_offline_formal_preflight(fixture)
+
+    assert report["ok"] is False
+    assert any("indexes.dense" in error for error in report["shared_errors"])
+
+
+def test_unified_formal_preflight_rejects_replaced_ekell_index(tmp_path: Path) -> None:
+    import shutil
+
+    from external_baselines.ekell_style.embedding_backends import create_embedding_backend
+    from external_baselines.ekell_style.kg_loader import FireKG
+    from external_baselines.ekell_style.vector_index import VectorIndex
+    from tests.test_ekell_index_persistence import FakeEmbeddingModel
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    backend = create_embedding_backend(
+        "text2vec",
+        model_name="fake/bge",
+        model_version="v-test",
+        dimension=8,
+        model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+    )
+    kg = FireKG(
+        entities=[{"entity_id": "e2", "name": "alarm"}],
+        relations=[{"relation_id": "r2", "name": "signals"}],
+        triples=[
+            {
+                "head": "alarm",
+                "relation": "signals",
+                "tail": "replacement fire",
+                "source_id": "t2",
+            }
+        ],
+        evidence_chunks=[
+            {
+                "chunk_id": "c2",
+                "text": "different internally valid KG evidence",
+                "source_id": "s2",
+            }
+        ],
+    )
+    replacement = tmp_path / "replacement_ekell"
+    VectorIndex.from_kg(
+        kg,
+        backend,
+        reject_smoke=True,
+        normalize_embeddings=True,
+    ).save_directory(replacement)
+    for name in ("documents.jsonl", "embeddings.npy", "index_manifest.json"):
+        shutil.copy2(replacement / name, fixture["ekell_idx"] / name)
+
+    report = _run_offline_formal_preflight(fixture)
+
+    assert report["ok"] is False
+    assert any("indexes.ekell" in error for error in report["shared_errors"])
+
+
+def test_frozen_live_mismatch_fails_before_llm_and_runtime_initialization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import shutil
+
+    from external_baselines.dense_rag.pipeline import build_dense_index
+    from scripts import run_decision_comparison_suite as suite
+    from tests.test_dense_real_index import FakeEmbeddingModel
+
+    fixture = _build_offline_formal_fixture(tmp_path, n_cases=1)
+    evidence = tmp_path / "preflight_replacement_evidence.jsonl"
+    evidence.write_text(
+        '{"chunk_id":"replacement","text":"valid replacement before formal run"}\n',
+        encoding="utf-8",
+    )
+    replacement = tmp_path / "preflight_replacement_dense"
+    build_dense_index(
+        evidence,
+        model_name="fake/bge",
+        model_version="v-test",
+        backend="text2vec",
+        dim=8,
+        cache_path=replacement,
+        embedding_model=FakeEmbeddingModel(8),
+        reject_smoke=True,
+        normalize_embeddings=True,
+    )
+    for name in ("documents.jsonl", "embeddings.npy", "index_manifest.json"):
+        shutil.copy2(replacement / name, fixture["dense_idx"] / name)
+
+    called = {"llm": False, "runtime": False}
+
+    def _unexpected_llm(*_args, **_kwargs):
+        called["llm"] = True
+        raise AssertionError("LLM initialization must not occur")
+
+    def _unexpected_runtime(*_args, **_kwargs):
+        called["runtime"] = True
+        raise AssertionError("runtime initialization must not occur")
+
+    monkeypatch.setenv("OFFLINE_TEST_API_KEY", "offline-key")
+    monkeypatch.setattr(suite, "build_llm_client", _unexpected_llm)
+    monkeypatch.setattr(suite, "prepare_method_runtime", _unexpected_runtime)
+
+    with pytest.raises(FormalRunFailed):
+        run_decision_suite(
+            runner_bundle=fixture["bundle_dir"],
+            prediction_dir=fixture["pred_dir"],
+            decision_dir=fixture["dec_dir"],
+            execution_stage="formal",
+            experiment_manifest=fixture["experiment_manifest"],
+        )
+    assert called == {"llm": False, "runtime": False}
+
+
 def _passing_formal_method_evidences() -> dict[str, RuntimeEvidence]:
     method_ids = [
         "direct_llm",
@@ -2094,6 +2289,125 @@ def test_index_checksum_differs_from_manifest_file_sha_when_expected(tmp_path):
     assert evidence.index_checksum
     assert evidence.index_manifest_sha256 == manifest_sha
     assert evidence.index_checksum != evidence.index_manifest_sha256
+
+
+def test_runtime_index_identity_matches_preflight_identity(tmp_path: Path) -> None:
+    from external_baselines.common.runtime_evidence import (
+        assert_runtime_index_identity_matches_preflight,
+        collect_dense_runtime_evidence,
+    )
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    manifest = json.loads((index_dir / "index_manifest.json").read_text(encoding="utf-8"))
+
+    class FakeRuntime:
+        index_manifest = {**manifest, "index_dir": str(index_dir)}
+        dense_index = type("I", (), {"index_dir": str(index_dir)})()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    config = {
+        "dense_rag": {
+            "index_path": str(index_dir),
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+        }
+    }
+    evidence = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config=config,
+        runtime=FakeRuntime(),
+    )
+    preflight = {
+        "frozen_runtime_identity": {"ok": True},
+        "methods": {
+            "dense_rag": {
+                "index_identity": {
+                    "index_checksum": evidence.index_checksum,
+                    "index_manifest_sha256": evidence.index_manifest_sha256,
+                    "documents_file_checksum": evidence.index_documents_file_checksum,
+                    "embeddings_checksum": evidence.index_embeddings_checksum,
+                    "normalize_embeddings": evidence.index_normalize_embeddings,
+                }
+            }
+        },
+    }
+
+    assert_runtime_index_identity_matches_preflight(
+        method_id="dense_rag",
+        evidence=evidence,
+        preflight=preflight,
+    )
+
+
+def test_runtime_rejects_index_manifest_changed_after_preflight(tmp_path: Path) -> None:
+    from external_baselines.common.runtime_evidence import (
+        RuntimeIndexIdentityError,
+        assert_runtime_index_identity_matches_preflight,
+        collect_dense_runtime_evidence,
+    )
+
+    index_dir = _build_fake_dense_index(tmp_path)
+    manifest_path = index_dir / "index_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    class FakeRuntime:
+        index_manifest = {**manifest, "index_dir": str(index_dir)}
+        dense_index = type("I", (), {"index_dir": str(index_dir)})()
+        audit = type("A", (), {"index_load_count": 1})()
+        index_built_during_run = False
+
+    config = {
+        "dense_rag": {
+            "index_path": str(index_dir),
+            "backend": "text2vec",
+            "model_name": "fake/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+        }
+    }
+    before = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config=config,
+        runtime=FakeRuntime(),
+    )
+    preflight = {
+        "frozen_runtime_identity": {"ok": True},
+        "methods": {
+            "dense_rag": {
+                "index_identity": {
+                    "index_checksum": before.index_checksum,
+                    "index_manifest_sha256": before.index_manifest_sha256,
+                    "documents_file_checksum": before.index_documents_file_checksum,
+                    "embeddings_checksum": before.index_embeddings_checksum,
+                    "normalize_embeddings": before.index_normalize_embeddings,
+                }
+            }
+        },
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n\n",
+        encoding="utf-8",
+    )
+    after = collect_dense_runtime_evidence(
+        method_id="dense_rag",
+        config=config,
+        runtime=FakeRuntime(),
+    )
+
+    with pytest.raises(
+        RuntimeIndexIdentityError,
+        match="runtime_index_identity_changed_after_preflight:dense_rag:index_manifest_sha256",
+    ):
+        assert_runtime_index_identity_matches_preflight(
+            method_id="dense_rag",
+            evidence=after,
+            preflight=preflight,
+        )
 
 
 def test_dense_manifest_sha_matches_sha256_file(tmp_path):
@@ -3161,6 +3475,22 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
 
     monkeypatch.setenv("LOCAL_CONTRACT_API_KEY", "offline-contract-key")
     monkeypatch.setattr(suite, "validate_decision_suite_execution", lambda **kwargs: None)
+    monkeypatch.setattr(
+        suite,
+        "preflight_decision_suite",
+        lambda **kwargs: {
+            "ok": True,
+            "runner_bundle_integrity": {
+                "ok": True,
+                "input_cases_integrity": True,
+                "prediction_schema_integrity": True,
+                "corpus_integrity": True,
+            },
+            "shared_generation_identity": {"ok": True},
+            "ekell_prompt_bundle_valid": True,
+            "methods": {},
+        },
+    )
     monkeypatch.setattr(suite, "build_llm_client", lambda _c, **kwargs: ContractLLM())
     monkeypatch.setattr(suite, "resolve_pipeline", lambda _mid: _fake_pipeline)
     monkeypatch.setattr(suite, "prepare_method_runtime", lambda *_a, **_k: None)

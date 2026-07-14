@@ -538,6 +538,7 @@ def _run_create_freeze_with_patches(
     producer_checksum: str | None | object = _DEFAULT_CHECKSUM,
     consumer_hash: str | None | object = _DEFAULT_CHECKSUM,
     index_error: Exception | None = None,
+    calls_out: dict | None = None,
 ):
     import scripts.create_freeze_manifest as cfm
 
@@ -549,7 +550,16 @@ def _run_create_freeze_with_patches(
     scenarios.write_text('{"case_id":"FBPUB_000001","input":{"scenario":"smoke"}}\n', encoding="utf-8")
     output = tmp_path / "freeze.json"
     bundle_path = tmp_path / "bundle"
-    calls = {"validation": [], "formal_flags": [], "validated_paths": [], "index_validation": []}
+    calls = calls_out if calls_out is not None else {}
+    calls.update(
+        {
+            "validation": [],
+            "formal_flags": [],
+            "validated_paths": [],
+            "index_validation": [],
+            "events": [],
+        }
+    )
     resolved_consumer_hash = "c" * 64 if consumer_hash is _DEFAULT_CHECKSUM else consumer_hash
     resolved_producer_checksum = (
         resolved_consumer_hash
@@ -568,10 +578,12 @@ def _run_create_freeze_with_patches(
     }
 
     def fake_validate(path, **kwargs):
+        calls["events"].append("freeze_candidate")
         calls["validation"].append({"path": path, **kwargs})
         return {"valid": True}
 
     def fake_load_bundle(path, *, formal=False):
+        calls["events"].append("bundle_load")
         calls["formal_flags"].append(formal)
         return {
             "producer_declared_checksum": resolved_producer_checksum,
@@ -620,6 +632,7 @@ def _run_create_freeze_with_patches(
         return {"ok": True}
 
     def fake_validate_dense_index(index_dir, **_kwargs):
+        calls["events"].append("dense_index")
         calls["index_validation"].append(("dense", Path(index_dir)))
         if index_error is not None:
             raise index_error
@@ -644,6 +657,7 @@ def _run_create_freeze_with_patches(
         }
 
     def fake_validate_ekell_index(index_dir, **_kwargs):
+        calls["events"].append("ekell_index")
         calls["index_validation"].append(("ekell", Path(index_dir)))
         if index_error is not None:
             raise index_error
@@ -698,6 +712,12 @@ def test_complete_freeze_calls_bundle_loader_with_formal_true(tmp_path: Path, mo
     assert calls["validation"][0]["validation_stage"] == "freeze_candidate"
     assert calls["validation"][0]["method_set"] == "comparison_suite"
     assert calls["validation"][0]["runtime_bundle_path"]
+    assert calls["events"][:4] == [
+        "bundle_load",
+        "freeze_candidate",
+        "dense_index",
+        "ekell_index",
+    ]
     assert calls["validated_paths"][0].name == "freeze.json.tmp"
     assert [kind for kind, _path in calls["index_validation"]] == ["dense", "ekell"]
     assert not output.with_name(f"{output.name}.tmp").exists()
@@ -767,6 +787,7 @@ def test_bundle_checksum_failure_occurs_before_index_loading(tmp_path: Path, mon
 
 
 def test_bundle_aggregate_mismatch_fails_before_dense_hashing(tmp_path: Path, monkeypatch) -> None:
+    calls: dict = {}
     with pytest.raises(SystemExit, match="formal_bundle_producer_consumer_checksum_mismatch"):
         _run_create_freeze_with_patches(
             tmp_path,
@@ -774,7 +795,11 @@ def test_bundle_aggregate_mismatch_fails_before_dense_hashing(tmp_path: Path, mo
             producer_checksum="a" * 64,
             consumer_hash="c" * 64,
             index_error=RuntimeError("dense index should not hash"),
+            calls_out=calls,
         )
+    assert calls["validation"] == []
+    assert calls["index_validation"] == []
+    assert calls["events"] == ["bundle_load"]
 
 
 def test_bundle_aggregate_mismatch_fails_before_ekell_hashing(tmp_path: Path, monkeypatch) -> None:
@@ -820,6 +845,21 @@ def test_complete_freeze_rejects_string_boolean(tmp_path: Path, monkeypatch) -> 
         _run_create_freeze_with_patches(tmp_path, monkeypatch, dense_normalize="false")
 
     assert not (tmp_path / "freeze.json").exists()
+
+
+def test_cross_method_normalize_embeddings_mismatch_fails_before_index_hashing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: dict = {}
+    with pytest.raises(SystemExit, match="cross_method_normalize_embeddings_mismatch"):
+        _run_create_freeze_with_patches(
+            tmp_path,
+            monkeypatch,
+            dense_normalize=False,
+            calls_out=calls,
+        )
+    assert calls["index_validation"] == []
 
 
 def test_complete_freeze_does_not_leave_output_on_failure(tmp_path: Path, monkeypatch) -> None:
@@ -1055,6 +1095,72 @@ def test_frozen_runtime_inputs_reject_dense_documents_file_checksum_mismatch(tmp
         validate_frozen_runtime_inputs(
             payload,
             loaded_index_manifests=live,
+        )
+
+
+def test_frozen_runtime_inputs_require_complete_live_identity(tmp_path: Path) -> None:
+    _experiment, payload, _methods = _complete_freeze_payload(tmp_path)
+    live = json.loads(json.dumps(payload["indexes"]))
+    del live["ekell"]["embeddings_checksum"]
+
+    with pytest.raises(
+        FormalConfigError,
+        match="loaded index missing indexes.ekell.embeddings_checksum",
+    ):
+        validate_frozen_runtime_inputs(
+            payload,
+            loaded_index_manifests=live,
+            require_complete_indexes=True,
+        )
+
+
+def test_frozen_runtime_identity_report_contains_field_level_matches(tmp_path: Path) -> None:
+    _experiment, payload, _methods = _complete_freeze_payload(tmp_path)
+
+    report = validate_frozen_runtime_inputs(
+        payload,
+        loaded_index_manifests=payload["indexes"],
+        require_complete_indexes=True,
+    )
+
+    assert report["ok"] is True
+    assert report["dense"]["index_checksum_match"] is True
+    assert report["dense"]["documents_file_checksum_match"] is True
+    assert report["dense"]["normalize_embeddings_match"] is True
+    assert report["hybrid_dense_dependency"]["index_manifest_sha256_match"] is True
+    assert report["ekell"]["kg_checksum_match"] is True
+    assert report["ekell"]["embeddings_checksum_match"] is True
+
+
+@pytest.mark.parametrize(
+    ("block", "field", "value", "match"),
+    [
+        ("dense", "actual_embedding_used", False, "actual_embedding_used must be true"),
+        ("dense", "smoke_fallback_used", True, "smoke_fallback_used must be false"),
+        ("ekell", "actual_embedding_used", False, "actual_embedding_used must be true"),
+        ("ekell", "smoke_fallback_used", True, "smoke_fallback_used must be false"),
+    ],
+)
+def test_complete_freeze_requires_real_embedding_flag_values(
+    tmp_path: Path,
+    block: str,
+    field: str,
+    value: bool,
+    match: str,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["indexes"][block][field] = value
+
+    with pytest.raises(FormalConfigError, match=match):
+        validate_freeze_manifest(
+            payload,
+            experiment_manifest_path=experiment,
+            experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+            require_complete=True,
+            expected_runner_bundle_checksum="c" * 64,
+            expected_corpus_checksum="a" * 64,
+            expected_prediction_schema_checksum="e" * 64,
+            method_config_paths=methods,
         )
 
 

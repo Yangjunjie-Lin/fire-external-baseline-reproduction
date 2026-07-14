@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from external_baselines.common.checksums import sha256_file
 from external_baselines.ekell_style.embedding_backends import create_embedding_backend
 from external_baselines.ekell_style.kg_loader import FireKG
 from external_baselines.ekell_style.vector_index import (
@@ -15,7 +16,6 @@ from external_baselines.ekell_style.vector_index import (
     ekell_index_identity_checksum,
 )
 from external_baselines.ekell_style.vector_retriever import VectorRetriever
-from external_baselines.common.checksums import sha256_file
 
 
 class FakeEmbeddingModel:
@@ -118,6 +118,18 @@ def test_ekell_build_records_explicit_normalize_embeddings(tmp_path: Path) -> No
     manifest = index.save_directory(tmp_path / "ekell_idx")
 
     assert manifest["normalize_embeddings"] is False
+
+
+def test_ekell_build_rejects_string_normalize_embeddings() -> None:
+    backend, _ = _backend()
+
+    with pytest.raises(VectorIndexError, match="ekell_index_normalize_embeddings_must_be_bool"):
+        VectorIndex.from_kg(
+            _tiny_kg(),
+            backend,
+            reject_smoke=True,
+            normalize_embeddings="true",  # type: ignore[arg-type]
+        )
 
 
 def test_ekell_build_actually_normalizes_vectors() -> None:
@@ -470,5 +482,5 @@ def test_ekell_strict_validator_rejects_zero_vector(tmp_path: Path) -> None:
     arr[0] = 0.0
     _rewrite_ekell_embeddings(index_dir, arr)
 
-    with pytest.raises(VectorIndexError, match="zero_vector"):
+    with pytest.raises(VectorIndexError, match="ekell_index_zero_embedding_vector"):
         VectorIndex.validate_directory_for_freeze(index_dir)

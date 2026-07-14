@@ -325,11 +325,29 @@ def main(argv: list[str] | None = None) -> None:
             else None,
             expected_prediction_schema_checksum=bundle.get("prediction_schema_sha256"),
         )
-        validate_frozen_runtime_inputs(
-            freeze_path,
-            bundle=bundle,
-            method_configs=method_configs,
-        )
+        if args.method_set == "comparison_suite":
+            from external_baselines.common.decision_suite_preflight import (  # noqa: E402
+                preflight_decision_suite,
+            )
+
+            preflight = preflight_decision_suite(
+                method_ids=methods,
+                method_configs=method_configs,
+                runner_bundle=Path(bundle_path),
+                execution_stage="formal",
+                experiment_manifest=Path(args.experiment_manifest),
+            )
+            if preflight.get("ok") is not True:
+                raise FormalConfigError(
+                    "; ".join(preflight.get("shared_errors") or [])
+                    or "legacy_formal_comparison_suite_preflight_failed"
+                )
+        else:
+            validate_frozen_runtime_inputs(
+                freeze_path,
+                bundle=bundle,
+                method_configs=method_configs,
+            )
 
     legacy_output = args.legacy_output or experiment.get("legacy_output")
     run_manifest = args.manifest or experiment.get("run_manifest")

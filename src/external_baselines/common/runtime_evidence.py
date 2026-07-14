@@ -22,6 +22,10 @@ SMOKE_LLM_PROVIDERS = frozenset({"heuristic", "local", "smoke", "mock", "fake", 
 SMOKE_MODEL_TOKENS = ("heuristic", "smoke", "fixture", "mock", "fake")
 
 
+class RuntimeIndexIdentityError(RuntimeError):
+    """Raised when the runtime index no longer matches the preflight identity."""
+
+
 def _strict_real_index_evidence(
     evidence: "RuntimeEvidence",
 ) -> bool:
@@ -69,6 +73,9 @@ class RuntimeEvidence:
     index_path: str | None = None
     index_checksum: str | None = None
     index_manifest_sha256: str | None = None
+    index_documents_file_checksum: str | None = None
+    index_embeddings_checksum: str | None = None
+    index_normalize_embeddings: bool | None = None
     index_loaded: bool = False
     index_built_during_run: bool = False
     index_document_count: int | None = None
@@ -204,6 +211,9 @@ def collect_dense_runtime_evidence(
     evidence.index_path = resolved_text
     evidence.index_checksum = str(manifest.get("index_checksum") or manifest.get("checksum") or "")
     evidence.index_manifest_sha256 = _manifest_file_sha(resolved_text)
+    evidence.index_documents_file_checksum = manifest.get("documents_file_checksum")
+    evidence.index_embeddings_checksum = manifest.get("embeddings_checksum")
+    evidence.index_normalize_embeddings = manifest.get("normalize_embeddings")
     evidence.index_loaded = bool(getattr(audit, "index_load_count", 0) or index is not None)
     evidence.index_built_during_run = bool(getattr(runtime, "index_built_during_run", False))
     evidence.index_document_count = int(manifest.get("document_count") or 0) or None
@@ -313,6 +323,9 @@ def collect_ekell_runtime_evidence(
     evidence.index_path = resolved_text
     evidence.index_checksum = str(manifest.get("index_checksum") or manifest.get("checksum") or "")
     evidence.index_manifest_sha256 = _manifest_file_sha(resolved_text)
+    evidence.index_documents_file_checksum = manifest.get("documents_file_checksum")
+    evidence.index_embeddings_checksum = manifest.get("embeddings_checksum")
+    evidence.index_normalize_embeddings = manifest.get("normalize_embeddings")
     evidence.index_loaded = bool(getattr(audit, "index_load_count", 0) or index is not None)
     evidence.index_built_during_run = bool(getattr(runtime, "index_built_during_run", False))
     evidence.index_document_count = int(manifest.get("document_count") or 0) or None
@@ -350,6 +363,60 @@ def collect_method_runtime_evidence(
         evidence.llm_is_smoke = llm_part.llm_is_smoke
         evidence.llm_initialized = True
     return evidence
+
+
+def assert_runtime_index_identity_matches_preflight(
+    *,
+    method_id: str,
+    evidence: RuntimeEvidence,
+    preflight: dict[str, Any],
+) -> None:
+    """Fail closed if a prepared runtime differs from its strict preflight identity."""
+    if method_id not in {
+        "dense_rag",
+        "hybrid_rag",
+        "ekell_style_controlled_shared_llm",
+    }:
+        return
+    # Older non-production callers and isolated tests may supply a synthetic
+    # preflight report. Real Formal preflight always includes this block.
+    if "frozen_runtime_identity" not in preflight:
+        return
+    frozen_runtime = preflight.get("frozen_runtime_identity")
+    if not isinstance(frozen_runtime, dict) or frozen_runtime.get("ok") is not True:
+        raise RuntimeIndexIdentityError("runtime_index_identity_missing_from_preflight")
+    method_report = (preflight.get("methods") or {}).get(method_id) or {}
+    expected = method_report.get("index_identity") or {}
+    if not isinstance(expected, dict) or not expected:
+        raise RuntimeIndexIdentityError("runtime_index_identity_missing_from_preflight")
+
+    actual = {
+        "index_checksum": evidence.index_checksum,
+        "index_manifest_sha256": evidence.index_manifest_sha256,
+        "documents_file_checksum": evidence.index_documents_file_checksum,
+        "embeddings_checksum": evidence.index_embeddings_checksum,
+        "normalize_embeddings": evidence.index_normalize_embeddings,
+    }
+    fields = (
+        ("index_checksum", "index_manifest_sha256")
+        if method_id == "hybrid_rag"
+        else (
+            "index_checksum",
+            "index_manifest_sha256",
+            "documents_file_checksum",
+            "embeddings_checksum",
+            "normalize_embeddings",
+        )
+    )
+    for identity_field in fields:
+        if (
+            identity_field not in expected
+            or actual[identity_field] != expected[identity_field]
+        ):
+            raise RuntimeIndexIdentityError(
+                "runtime_index_identity_changed_after_preflight:"
+                f"{method_id}:{identity_field}"
+            )
 
 
 def method_formal_compliance(
@@ -569,6 +636,9 @@ def evidence_to_summary_sections(evidence: RuntimeEvidence) -> dict[str, Any]:
             "index_path": evidence.index_path,
             "index_checksum": evidence.index_checksum,
             "index_manifest_sha256": evidence.index_manifest_sha256,
+            "documents_file_checksum": evidence.index_documents_file_checksum,
+            "embeddings_checksum": evidence.index_embeddings_checksum,
+            "normalize_embeddings": evidence.index_normalize_embeddings,
             "index_loaded": evidence.index_loaded,
             "index_built_during_run": evidence.index_built_during_run,
             "document_count": evidence.index_document_count,

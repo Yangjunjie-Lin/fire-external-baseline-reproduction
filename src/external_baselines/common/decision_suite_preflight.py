@@ -362,6 +362,7 @@ def _preflight_method_resources(
                     expected_model_version=expected_model_version,
                     expected_backend=expected_backend,
                     expected_dimension=expected_dimension,
+                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
                     expected_normalize_embeddings=_preflight_bool(
                         dense.get("normalize_embeddings"),
                         field="dense_rag.normalize_embeddings",
@@ -440,6 +441,7 @@ def _preflight_method_resources(
                     expected_model_version=expected_model_version,
                     expected_backend=expected_backend,
                     expected_dimension=expected_dimension,
+                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
                     expected_normalize_embeddings=_preflight_bool(
                         normalize_value,
                         field="dense_rag.normalize_embeddings",
@@ -503,6 +505,8 @@ def _preflight_method_resources(
                     expected_model_name=expected_model_name,
                     expected_model_version=expected_model_version,
                     expected_dimension=expected_dimension,
+                    expected_kg_checksum=str(config.get("kg_checksum") or "") or None,
+                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
                     expected_normalize_embeddings=_preflight_bool(
                         vector.get("normalize_embeddings"),
                         field="ekell_vector.normalize_embeddings",
@@ -579,6 +583,11 @@ def preflight_decision_suite(
                 "errors": list(shared_errors),
                 "skipped_index_hashing": True,
             },
+            "frozen_runtime_identity": {
+                "ok": False,
+                "errors": list(shared_errors),
+                "skipped_index_hashing": True,
+            },
             "methods": {},
         }
 
@@ -648,8 +657,8 @@ def preflight_decision_suite(
             from external_baselines.common.freeze_manifest import validate_frozen_runtime_inputs
 
             dense_identity = (method_reports.get("dense_rag") or {}).get("index_identity") or {}
-            hybrid_identity = (method_reports.get("hybrid_rag") or {}).get("index_identity") or {}
-            if not hybrid_identity and dense_identity:
+            hybrid_identity: dict[str, Any] = {}
+            if dense_identity:
                 hybrid_identity = {
                     "index_checksum": dense_identity.get("index_checksum"),
                     "index_manifest_sha256": dense_identity.get("index_manifest_sha256"),
@@ -670,7 +679,10 @@ def preflight_decision_suite(
                     bundle=bundle,
                     method_configs=method_configs,
                     loaded_index_manifests=live_index_identities,
+                    require_complete_indexes=True,
                 )
+                if "hybrid_rag" in method_reports:
+                    method_reports["hybrid_rag"]["index_identity"] = dict(hybrid_identity)
             except FormalConfigError as exc:
                 shared_errors.append(str(exc))
                 for report in method_reports.values():
@@ -698,5 +710,6 @@ def preflight_decision_suite(
         "shared_generation_identity": generation_identity,
         "ekell_prompt_bundle_valid": ekell_prompt_bundle_valid if formal else False,
         "formal_runtime_validation": formal_runtime_validation,
+        "frozen_runtime_identity": formal_runtime_validation,
         "methods": method_reports,
     }

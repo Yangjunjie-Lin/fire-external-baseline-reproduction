@@ -184,10 +184,6 @@ def main(argv: list[str] | None = None) -> None:
                 dimension=resolve_dimension(vector, 1024),
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(vector.get("reject_smoke", True)),
-                normalize_embeddings=require_exact_bool(
-                    vector.get("normalize_embeddings"),
-                    field="ekell_vector.normalize_embeddings",
-                ),
             )
             index = VectorIndex.from_kg(
                 kg,
@@ -197,6 +193,10 @@ def main(argv: list[str] | None = None) -> None:
                 else None,
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(vector.get("reject_smoke", True)),
+                normalize_embeddings=require_exact_bool(
+                    vector.get("normalize_embeddings"),
+                    field="ekell_vector.normalize_embeddings",
+                ),
             )
             if not index_path or _is_placeholder(index_path):
                 status["error"] = "ekell_index_path_missing"
