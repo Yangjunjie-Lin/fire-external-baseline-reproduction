@@ -1242,11 +1242,16 @@ def _write_freeze_manifest(tmp_path: Path, bundle: dict, **overrides) -> Path:
     return freeze_path
 
 
-def _build_fake_dense_index(tmp_path: Path) -> Path:
+def _build_fake_dense_index(
+    tmp_path: Path,
+    *,
+    evidence_path: Path | None = None,
+    corpus_checksum: str | None = None,
+) -> Path:
     from external_baselines.dense_rag.pipeline import build_dense_index
     from tests.test_dense_real_index import FakeEmbeddingModel, _evidence
 
-    evidence = _evidence(tmp_path)
+    evidence = evidence_path or _evidence(tmp_path)
     index_dir = tmp_path / "dense_idx"
     build_dense_index(
         evidence,
@@ -1257,13 +1262,19 @@ def _build_fake_dense_index(tmp_path: Path) -> Path:
         cache_path=index_dir,
         embedding_model=FakeEmbeddingModel(8),
         reject_smoke=True,
+        corpus_checksum=corpus_checksum,
     )
     return index_dir
 
 
-def _build_fake_ekell_index(tmp_path: Path) -> Path:
+def _build_fake_ekell_index(
+    tmp_path: Path,
+    *,
+    corpus_dir: Path | None = None,
+    corpus_checksum: str | None = None,
+) -> Path:
     from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-    from external_baselines.ekell_style.kg_loader import FireKG
+    from external_baselines.ekell_style.kg_loader import FireKG, fire_kg_checksum, load_kg
     from external_baselines.ekell_style.vector_index import VectorIndex
     from tests.test_ekell_index_persistence import FakeEmbeddingModel
 
@@ -1276,13 +1287,20 @@ def _build_fake_ekell_index(tmp_path: Path) -> Path:
         model=fake,
         reject_smoke=True,
     )
-    kg = FireKG(
+    fallback_kg = FireKG(
         entities=[{"entity_id": "e1", "name": "hose"}],
         relations=[{"relation_id": "r1", "name": "used_for"}],
         triples=[{"head": "hose", "relation": "used_for", "tail": "fire", "source_id": "t1"}],
         evidence_chunks=[{"chunk_id": "c1", "text": "fire hose near exit", "source_id": "s1"}],
     )
-    index = VectorIndex.from_kg(kg, backend, reject_smoke=True)
+    kg = load_kg(corpus_dir, require_any=True) if corpus_dir is not None else fallback_kg
+    index = VectorIndex.from_kg(
+        kg,
+        backend,
+        reject_smoke=True,
+        corpus_checksum=corpus_checksum,
+        kg_checksum=fire_kg_checksum(kg),
+    )
     index_dir = tmp_path / "ekell_idx"
     index.save_directory(index_dir)
     return index_dir
@@ -1291,8 +1309,18 @@ def _build_fake_ekell_index(tmp_path: Path) -> Path:
 def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name: str = "published") -> dict:
     bundle_dir = _make_runner_bundle(tmp_path, n_cases=n_cases)
     bundle = _finalize_bundle_checksums(bundle_dir)
-    dense_idx = _build_fake_dense_index(tmp_path)
-    ekell_idx = _build_fake_ekell_index(tmp_path)
+    corpus_dir = Path(bundle["corpus_dir"])
+    corpus_checksum = bundle["corpus_manifest"]["aggregate_sha256"]
+    dense_idx = _build_fake_dense_index(
+        tmp_path,
+        evidence_path=corpus_dir / "evidence_chunks.jsonl",
+        corpus_checksum=corpus_checksum,
+    )
+    ekell_idx = _build_fake_ekell_index(
+        tmp_path,
+        corpus_dir=corpus_dir,
+        corpus_checksum=corpus_checksum,
+    )
 
     shared = tmp_path / "shared.yaml"
     shared.write_text(
@@ -1562,7 +1590,7 @@ def test_unified_formal_preflight_rejects_replaced_ekell_index(tmp_path: Path) -
     import shutil
 
     from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-    from external_baselines.ekell_style.kg_loader import FireKG
+    from external_baselines.ekell_style.kg_loader import FireKG, fire_kg_checksum, load_kg
     from external_baselines.ekell_style.vector_index import VectorIndex
     from tests.test_ekell_index_persistence import FakeEmbeddingModel
 
@@ -3318,8 +3346,18 @@ def test_formal_orchestration_and_publish_with_injected_components(tmp_path, mon
 
     bundle_dir = _make_runner_bundle(tmp_path, n_cases=2)
     bundle = _finalize_bundle_checksums(bundle_dir)
-    dense_idx = _build_fake_dense_index(tmp_path)
-    ekell_idx = _build_fake_ekell_index(tmp_path)
+    corpus_dir = Path(bundle["corpus_dir"])
+    corpus_checksum = bundle["corpus_manifest"]["aggregate_sha256"]
+    dense_idx = _build_fake_dense_index(
+        tmp_path,
+        evidence_path=corpus_dir / "evidence_chunks.jsonl",
+        corpus_checksum=corpus_checksum,
+    )
+    ekell_idx = _build_fake_ekell_index(
+        tmp_path,
+        corpus_dir=corpus_dir,
+        corpus_checksum=corpus_checksum,
+    )
 
     shared = tmp_path / "shared.yaml"
     shared.write_text(

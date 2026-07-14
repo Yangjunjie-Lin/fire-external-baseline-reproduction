@@ -323,13 +323,13 @@ def test_freeze_validates_corpus_checksum(tmp_path: Path) -> None:
     freeze = {
         "freeze_status": "frozen",
         "selected_dev_run_evidence": str(evidence),
-        "corpus_checksum": "c1",
+        "corpus_checksum": "c" * 64,
         "embedding": {"model_version": "rev1"},
     }
     with pytest.raises(FormalConfigError, match="corpus_checksum"):
         validate_frozen_runtime_inputs(
             freeze,
-            bundle={"corpus_manifest": {"aggregate_sha256": "c2"}},
+            bundle={"corpus_manifest": {"aggregate_sha256": "d" * 64}},
         )
 
 
@@ -464,6 +464,8 @@ def test_freeze_rejects_missing_dev_evidence(tmp_path: Path) -> None:
 
 
 def test_complete_freeze_manifest_passes(tmp_path: Path) -> None:
+    from external_baselines.common.experiment_manifest import experiment_core_sha256
+
     shared = tmp_path / "shared.yaml"
     shared.write_text(
         "llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n"
@@ -502,7 +504,8 @@ def test_complete_freeze_manifest_passes(tmp_path: Path) -> None:
         "freeze_id": "controlled_comparison_v1",
         "freeze_status": "frozen",
         "selected_dev_run_evidence": str(evidence),
-        "experiment_manifest_sha256": sha256_file(manifest),
+        "experiment_core_sha256": experiment_core_sha256(payload),
+        "selected_dev_run_evidence_sha256": sha256_file(evidence),
         "shared_model_config_sha256": sha256_file(shared),
         "method_config_sha256": {"direct_llm": sha256_file(method)},
         "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
@@ -523,7 +526,6 @@ def test_complete_freeze_manifest_passes(tmp_path: Path) -> None:
     freeze.write_text(json.dumps(freeze_body), encoding="utf-8")
     payload["freeze_manifest"] = str(freeze)
     manifest.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    freeze_body["experiment_manifest_sha256"] = sha256_file(manifest)
     freeze.write_text(json.dumps(freeze_body), encoding="utf-8")
     result = validate_experiment_manifest(manifest, validation_stage="formal", method_set="main_table")
     assert result["valid"] is True
@@ -550,6 +552,12 @@ def _run_create_freeze_with_patches(
     scenarios.write_text('{"case_id":"FBPUB_000001","input":{"scenario":"smoke"}}\n', encoding="utf-8")
     output = tmp_path / "freeze.json"
     bundle_path = tmp_path / "bundle"
+    corpus_dir = bundle_path / "corpus"
+    corpus_dir.mkdir(parents=True)
+    (corpus_dir / "evidence_chunks.jsonl").write_text(
+        '{"chunk_id":"c1","text":"smoke evidence"}\n',
+        encoding="utf-8",
+    )
     calls = calls_out if calls_out is not None else {}
     calls.update(
         {
@@ -592,6 +600,7 @@ def _run_create_freeze_with_patches(
             "scenarios_path": str(scenarios),
             "input_cases_sha256": "i" * 64,
             "corpus_manifest": {"aggregate_sha256": "a" * 64},
+            "corpus_dir": str(corpus_dir),
         }
 
     def fake_enabled_methods(_experiment, *, method_set):

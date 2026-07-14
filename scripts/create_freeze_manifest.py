@@ -30,9 +30,12 @@ from external_baselines.common.freeze_manifest import (  # noqa: E402
 )
 from external_baselines.common.io import read_json, write_json  # noqa: E402
 from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
+from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg  # noqa: E402
 from external_baselines.ekell_style.vector_index import VectorIndex  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
     load_runner_bundle,
+    runner_bundle_corpus_aggregate_sha256,
+    runner_bundle_evidence_source_checksum,
     validate_formal_bundle_aggregate_checksum,
 )
 from external_baselines.method_registry import comparison_suite_methods  # noqa: E402
@@ -105,6 +108,8 @@ def main(argv: list[str] | None = None) -> None:
     consumer_computed_hash = None
     input_cases_sha256 = None
     corpus_checksum = None
+    evidence_source_checksum = None
+    bundle_kg_checksum = None
     schema_checksum = None
     bundle_path = args.bundle or experiment.get("bundle")
     bundle = None
@@ -120,9 +125,19 @@ def main(argv: list[str] | None = None) -> None:
             scenarios_path = bundle.get("scenarios_path")
             if scenarios_path:
                 input_cases_sha256 = bundle.get("input_cases_sha256") or sha256_file(scenarios_path)
-            corpus_manifest = bundle.get("corpus_manifest") or {}
-            if isinstance(corpus_manifest, dict):
-                corpus_checksum = corpus_manifest.get("aggregate_sha256")
+            corpus_checksum = runner_bundle_corpus_aggregate_sha256(
+                bundle,
+                required=not args.draft,
+            )
+            evidence_source_checksum = runner_bundle_evidence_source_checksum(
+                bundle,
+                required=not args.draft,
+            )
+            corpus_dir = bundle.get("corpus_dir")
+            if corpus_dir:
+                bundle_kg_checksum = fire_kg_checksum(
+                    load_kg(corpus_dir, require_any=not args.draft)
+                )
         except Exception as exc:  # noqa: BLE001
             if not args.draft:
                 raise SystemExit(f"Failed to load Runner Bundle for freeze: {exc}") from exc
@@ -145,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
     dense_index_path = None
     ekell_index_path = None
     embedding_candidates: dict[str, dict] = {}
-    ekell_expected_kg_checksum = None
+    ekell_expected_kg_checksum = bundle_kg_checksum
     for entry in methods:
         cfg = build_method_config(experiment, entry)
         mid = entry["method_id"]
@@ -180,7 +195,13 @@ def main(argv: list[str] | None = None) -> None:
         elif mid == "ekell_style_controlled_shared_llm":
             vector = cfg.get("ekell_vector") or {}
             ekell_index_path = vector.get("index_path")
-            ekell_expected_kg_checksum = cfg.get("kg_checksum")
+            configured_kg_checksum = cfg.get("kg_checksum")
+            if (
+                configured_kg_checksum is not None
+                and bundle_kg_checksum is not None
+                and configured_kg_checksum != bundle_kg_checksum
+            ):
+                raise SystemExit("ekell_config_kg_checksum_mismatch")
             embedding_candidates[mid] = {
                 "backend": vector.get("backend"),
                 "model_name": vector.get("model_name"),
@@ -227,6 +248,7 @@ def main(argv: list[str] | None = None) -> None:
             expected_model_version=embedding.get("model_version"),
             expected_dimension=embedding.get("dimension"),
             expected_corpus_checksum=corpus_checksum,
+            expected_evidence_source_checksum=evidence_source_checksum,
             expected_normalize_embeddings=embedding.get("normalize_embeddings"),
         )
         ekell_block = VectorIndex.validate_directory_for_freeze(

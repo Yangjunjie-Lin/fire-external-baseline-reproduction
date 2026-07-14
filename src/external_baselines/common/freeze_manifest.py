@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from external_baselines.common.checksums import sha256_file
+from external_baselines.common.experiment_manifest import (
+    build_method_config,
+    experiment_core_sha256,
+    get_method_entry,
+    load_experiment_manifest,
+    merged_method_config_sha256,
+)
 from external_baselines.common.formal_config_validator import FormalConfigError, _is_placeholder
 from external_baselines.common.io import read_json
 from external_baselines.method_registry import comparison_suite_methods
@@ -16,9 +23,12 @@ SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 
 REQUIRED_COMPLETE_FIELDS = (
     "selected_dev_run_evidence",
-    "experiment_manifest_sha256",
+    "selected_dev_run_evidence_sha256",
+    "experiment_core_sha256",
+    "base_config_sha256",
     "shared_model_config_sha256",
     "method_config_sha256",
+    "merged_method_config_sha256",
     "prompt_tree_sha256",
     "runner_bundle",
     "llm",
@@ -136,6 +146,56 @@ def _resolve_path(path: str | Path) -> Path:
     return ROOT_REL / str(path)
 
 
+def _raw_experiment_mapping(experiment: dict[str, Any]) -> dict[str, Any]:
+    raw = experiment.get("raw")
+    return raw if isinstance(raw, dict) else experiment
+
+
+def _freeze_config_identities(
+    *,
+    experiment_manifest_path: str | Path,
+    experiment: dict[str, Any],
+    method_config_paths: dict[str, str] | None,
+) -> tuple[str | None, str | None, dict[str, str | None], dict[str, str | None]]:
+    """Compute file-level and canonical merged-config identities from one merge path."""
+    try:
+        resolved = load_experiment_manifest(experiment_manifest_path)
+    except (FileNotFoundError, ValueError):
+        resolved = experiment if "base_config" in experiment else {}
+
+    base = resolved.get("base_config") or _raw_experiment_mapping(experiment).get("base_config")
+    shared = resolved.get("shared_model_config") or _raw_experiment_mapping(experiment).get(
+        "shared_model_config"
+    )
+    base_sha = sha256_file(_resolve_path(str(base))) if base else None
+    shared_sha = sha256_file(_resolve_path(str(shared))) if shared else None
+
+    paths = dict(method_config_paths or {})
+    if not paths:
+        for entry in resolved.get("methods") or experiment.get("methods") or []:
+            if isinstance(entry, dict) and entry.get("method_id") and entry.get("config"):
+                paths[str(entry["method_id"])] = str(entry["config"])
+    method_hashes: dict[str, str | None] = {mid: None for mid in COMPARISON_METHOD_IDS}
+    for mid in COMPARISON_METHOD_IDS:
+        rel = paths.get(mid)
+        if rel:
+            method_hashes[mid] = sha256_file(_resolve_path(rel))
+
+    merged_hashes: dict[str, str | None] = {mid: None for mid in COMPARISON_METHOD_IDS}
+    if resolved:
+        for mid in COMPARISON_METHOD_IDS:
+            try:
+                entry = dict(get_method_entry(resolved, mid, require_enabled=False))
+                if paths.get(mid):
+                    entry["config"] = paths[mid]
+                merged_hashes[mid] = merged_method_config_sha256(
+                    build_method_config(resolved, entry)
+                )
+            except (FileNotFoundError, KeyError, TypeError, ValueError):
+                merged_hashes[mid] = None
+    return base_sha, shared_sha, method_hashes, merged_hashes
+
+
 def _index_block(
     *,
     index_checksum: str | None = None,
@@ -177,21 +237,19 @@ def build_freeze_manifest_payload(
 ) -> dict[str, Any]:
     experiment_manifest_path = Path(experiment_manifest_path)
     selected = Path(selected_dev_run)
-    shared = experiment_raw.get("shared_model_config")
-
-    method_hashes: dict[str, str | None] = {mid: None for mid in COMPARISON_METHOD_IDS}
-    paths = dict(method_config_paths or {})
-    if not paths:
-        for entry in experiment_raw.get("methods") or []:
-            if isinstance(entry, dict) and entry.get("method_id") and entry.get("config"):
-                paths[str(entry["method_id"])] = str(entry["config"])
-    for mid in COMPARISON_METHOD_IDS:
-        rel = paths.get(mid)
-        if rel and Path(rel).is_file():
-            method_hashes[mid] = sha256_file(rel)
-        elif rel:
-            resolved = _resolve_path(rel)
-            method_hashes[mid] = sha256_file(resolved) if resolved.is_file() else None
+    try:
+        resolved_experiment = load_experiment_manifest(experiment_manifest_path)
+    except (FileNotFoundError, ValueError):
+        resolved_experiment = experiment_raw
+    raw_experiment = _raw_experiment_mapping(resolved_experiment)
+    shared = resolved_experiment.get("shared_model_config") or raw_experiment.get(
+        "shared_model_config"
+    )
+    base_sha, shared_sha, method_hashes, merged_hashes = _freeze_config_identities(
+        experiment_manifest_path=experiment_manifest_path,
+        experiment=experiment_raw,
+        method_config_paths=method_config_paths,
+    )
 
     llm_out = dict(llm or {})
     shared_path = Path(str(shared)) if shared else None
@@ -244,12 +302,19 @@ def build_freeze_manifest_payload(
         "freeze_id": "controlled_comparison_v1",
         "freeze_status": "frozen",
         "selected_dev_run_evidence": str(selected).replace("\\", "/"),
+        "selected_dev_run_evidence_sha256": sha256_file(_resolve_path(selected)),
         "selection_criterion": (
             "Safety-Gated + Critical Failure Rate + Risk/Action F1 + evidence support + latency"
         ),
-        "experiment_manifest_sha256": sha256_file(experiment_manifest_path),
-        "shared_model_config_sha256": sha256_file(shared) if shared else None,
+        "experiment_manifest_sha256_at_freeze_candidate": sha256_file(
+            experiment_manifest_path
+        ),
+        "experiment_manifest_sha256_authoritative": False,
+        "experiment_core_sha256": experiment_core_sha256(raw_experiment),
+        "base_config_sha256": base_sha,
+        "shared_model_config_sha256": shared_sha,
         "method_config_sha256": method_hashes,
+        "merged_method_config_sha256": merged_hashes,
         "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
         "runner_bundle": runner_bundle_block,
         "llm": llm_out,
@@ -426,6 +491,10 @@ def validate_freeze_manifest(
         raise FormalConfigError("freeze_manifest.freeze_status must be frozen.")
 
     migration_warning: str | None = None
+    if freeze.get("experiment_manifest_sha256") and not freeze.get(
+        "experiment_core_sha256"
+    ):
+        raise FormalConfigError("legacy_freeze_requires_regeneration")
     if require_complete:
         runner_block_raw = freeze.get("runner_bundle")
         if not isinstance(runner_block_raw, dict):
@@ -453,21 +522,71 @@ def validate_freeze_manifest(
         raise FormalConfigError("freeze_manifest requires selected_dev_run_evidence.")
     evidence_path = _resolve_path(str(evidence))
     _require_nonempty_file(evidence_path, label="selected_dev_run_evidence")
+    evidence_sha = freeze.get("selected_dev_run_evidence_sha256")
+    if evidence_sha is not None or require_complete:
+        frozen_evidence_sha = _require_sha256_value(
+            evidence_sha,
+            label="selected_dev_run_evidence_sha256",
+        )
+        if frozen_evidence_sha != sha256_file(evidence_path):
+            raise FormalConfigError(
+                "freeze_manifest selected_dev_run_evidence_sha256 mismatch."
+            )
 
-    expected_exp = sha256_file(experiment_manifest_path)
-    if freeze.get("experiment_manifest_sha256") or require_complete:
+    try:
+        current_experiment = load_experiment_manifest(experiment_manifest_path)
+    except (FileNotFoundError, ValueError):
+        current_experiment = experiment_raw
+    raw_experiment = _raw_experiment_mapping(current_experiment)
+    frozen_core = freeze.get("experiment_core_sha256")
+    if frozen_core is not None or require_complete:
+        frozen_core = _require_sha256_value(
+            frozen_core,
+            label="experiment_core_sha256",
+        )
+        if frozen_core != experiment_core_sha256(raw_experiment):
+            raise FormalConfigError("experiment_core_sha256_mismatch")
+    candidate_sha = freeze.get("experiment_manifest_sha256_at_freeze_candidate")
+    if candidate_sha is not None:
+        _require_sha256_value(
+            candidate_sha,
+            label="experiment_manifest_sha256_at_freeze_candidate",
+        )
+        if freeze.get("experiment_manifest_sha256_authoritative") is not False:
+            raise FormalConfigError(
+                "freeze_manifest experiment_manifest_sha256_authoritative must be false."
+            )
+
+    base_sha, expected_shared_sha, expected_method_hashes, expected_merged_hashes = (
+        _freeze_config_identities(
+            experiment_manifest_path=experiment_manifest_path,
+            experiment=experiment_raw,
+            method_config_paths=method_config_paths,
+        )
+    )
+    if freeze.get("base_config_sha256") is not None or require_complete:
+        _require_sha256_value(
+            freeze.get("base_config_sha256"),
+            label="base_config_sha256",
+        )
         _check_hash(
-            freeze.get("experiment_manifest_sha256"),
-            expected_exp,
-            label="experiment_manifest_sha256",
-            require=require_complete or bool(freeze.get("experiment_manifest_sha256")),
+            freeze.get("base_config_sha256"),
+            base_sha,
+            label="base_config_sha256",
+            require=True,
         )
 
-    shared = experiment_raw.get("shared_model_config")
+    shared = experiment_raw.get("shared_model_config") or raw_experiment.get(
+        "shared_model_config"
+    )
     if shared and (freeze.get("shared_model_config_sha256") or require_complete):
+        _require_sha256_value(
+            freeze.get("shared_model_config_sha256"),
+            label="shared_model_config_sha256",
+        )
         _check_hash(
             freeze.get("shared_model_config_sha256"),
-            sha256_file(shared),
+            expected_shared_sha,
             label="shared_model_config_sha256",
             require=require_complete or bool(freeze.get("shared_model_config_sha256")),
         )
@@ -476,25 +595,47 @@ def validate_freeze_manifest(
     if require_complete or method_hashes:
         if not isinstance(method_hashes, dict):
             raise FormalConfigError("freeze_manifest method_config_sha256 must be an object.")
-        paths = dict(method_config_paths or {})
-        if not paths:
-            for entry in experiment_raw.get("methods") or []:
-                if isinstance(entry, dict) and entry.get("method_id") and entry.get("config"):
-                    paths[str(entry["method_id"])] = str(entry["config"])
         for mid in COMPARISON_METHOD_IDS:
             frozen_hash = method_hashes.get(mid)
             if frozen_hash in (None, "") and not require_complete:
                 continue
             if frozen_hash in (None, "") and require_complete:
                 raise FormalConfigError(f"freeze_manifest missing method_config_sha256.{mid}.")
-            rel = paths.get(mid)
-            if not rel:
-                if require_complete:
-                    raise FormalConfigError(f"method config path missing for {mid}.")
+            _require_sha256_value(
+                frozen_hash,
+                label=f"method_config_sha256.{mid}",
+            )
+            _check_hash(
+                frozen_hash,
+                expected_method_hashes.get(mid),
+                label=f"method_config_sha256.{mid}",
+                require=True,
+            )
+
+    merged_hashes = freeze.get("merged_method_config_sha256") or {}
+    if require_complete or merged_hashes:
+        if not isinstance(merged_hashes, dict):
+            raise FormalConfigError(
+                "freeze_manifest merged_method_config_sha256 must be an object."
+            )
+        if require_complete and set(merged_hashes) != set(COMPARISON_METHOD_IDS):
+            raise FormalConfigError(
+                "freeze_manifest merged_method_config_sha256 must contain exactly the comparison methods."
+            )
+        for mid in COMPARISON_METHOD_IDS:
+            frozen_hash = merged_hashes.get(mid)
+            if frozen_hash in (None, "") and not require_complete:
                 continue
-            resolved = _resolve_path(rel)
-            actual = sha256_file(resolved)
-            _check_hash(frozen_hash, actual, label=f"method_config_sha256.{mid}", require=True)
+            _require_sha256_value(
+                frozen_hash,
+                label=f"merged_method_config_sha256.{mid}",
+            )
+            _check_hash(
+                frozen_hash,
+                expected_merged_hashes.get(mid),
+                label=f"merged_method_config_sha256.{mid}",
+                require=True,
+            )
 
     prompt_hash = freeze.get("prompt_tree_sha256")
     if prompt_hash or require_complete:
@@ -806,9 +947,11 @@ def validate_frozen_runtime_inputs(
     expected_bundle = bundle.get("producer_declared_checksum") or bundle.get(
         "consumer_computed_bundle_hash"
     )
-    corpus_manifest = bundle.get("corpus_manifest") or {}
-    expected_corpus = (
-        corpus_manifest.get("aggregate_sha256") if isinstance(corpus_manifest, dict) else None
+    from external_baselines.interop.bundle import runner_bundle_corpus_aggregate_sha256
+
+    expected_corpus = runner_bundle_corpus_aggregate_sha256(
+        bundle,
+        required=bool(require_complete_indexes and bundle),
     )
     expected_schema = bundle.get("prediction_schema_sha256")
 

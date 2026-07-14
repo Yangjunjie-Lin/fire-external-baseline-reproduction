@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from external_baselines.common.checksums import sha256_json
 from external_baselines.common.io import read_jsonl
 from external_baselines.common.text_utils import normalize_text
 
@@ -31,6 +32,22 @@ class FireKG:
             "triples": len(self.triples),
             "evidence_chunks": len(self.evidence_chunks),
         }
+
+
+def canonical_fire_kg_payload(kg: FireKG) -> dict[str, Any]:
+    """Canonical FireKG content shared by build, freeze, and Formal preflight."""
+    if not isinstance(kg, FireKG):
+        raise TypeError("canonical_fire_kg_payload requires FireKG")
+    return {
+        "entities": kg.entities,
+        "relations": kg.relations,
+        "triples": kg.triples,
+        "evidence_chunks": kg.evidence_chunks,
+    }
+
+
+def fire_kg_checksum(kg: FireKG) -> str:
+    return sha256_json(canonical_fire_kg_payload(kg))
 
 
 def _first(row: dict[str, Any], keys: list[str], default: Any = "") -> Any:

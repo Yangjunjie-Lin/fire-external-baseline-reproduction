@@ -17,6 +17,7 @@ from external_baselines.ekell_style.embedding_backends import (
     EmbeddingBackend,
     embedding_package_versions,
     l2_normalize_vector,
+    require_exact_embedding_evidence_flags,
     validate_embedding_backend,
 )
 from external_baselines.ekell_style.kg_loader import (
@@ -25,6 +26,7 @@ from external_baselines.ekell_style.kg_loader import (
     evidence_citation,
     evidence_source_id,
     evidence_text,
+    fire_kg_checksum,
     triple_id,
     triple_parts,
     triple_to_text,
@@ -332,16 +334,13 @@ class VectorIndex:
         if type(normalize_embeddings) is not bool:
             raise VectorIndexError("ekell_index_normalize_embeddings_must_be_bool")
         validate_embedding_backend(backend, paper_final=paper_final, reject_smoke=reject_smoke)
+        actual_embedding_used, smoke_fallback_used = require_exact_embedding_evidence_flags(
+            backend
+        )
         if isinstance(documents_or_kg, FireKG):
             kg = documents_or_kg
             documents = kg_segments(kg)
-            canonical_kg = {
-                "entities": kg.entities,
-                "relations": kg.relations,
-                "triples": kg.triples,
-                "evidence_chunks": kg.evidence_chunks,
-            }
-            computed_kg_checksum = sha256_json(canonical_kg)
+            computed_kg_checksum = fire_kg_checksum(kg)
             computed_corpus_checksum = sha256_json(
                 {"triples": kg.triples, "evidence_chunks": kg.evidence_chunks}
             )
@@ -376,8 +375,8 @@ class VectorIndex:
             "backend": backend.backend,
             "normalize_embeddings": normalize_embeddings,
             "package_versions": package_versions,
-            "actual_embedding_used": bool(backend.actual_embedding_used),
-            "smoke_fallback_used": bool(backend.smoke_fallback_used),
+            "actual_embedding_used": actual_embedding_used,
+            "smoke_fallback_used": smoke_fallback_used,
             "document_count": len(documents),
         }
         checksum_payload = {
@@ -571,10 +570,22 @@ class VectorIndex:
             raise VectorIndexError("model_version mismatch.")
         if expected_dimension is not None and dimension != int(expected_dimension):
             raise VectorIndexError("dimension mismatch.")
-        if expected_kg_checksum and kg_checksum != str(expected_kg_checksum):
-            raise VectorIndexError("kg_checksum mismatch.")
-        if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
-            raise VectorIndexError("corpus_checksum mismatch.")
+        if expected_kg_checksum is not None:
+            if (
+                type(expected_kg_checksum) is not str
+                or not SHA256_HEX_RE.fullmatch(expected_kg_checksum)
+            ):
+                raise VectorIndexError("ekell_index_expected_kg_checksum_invalid")
+            if kg_checksum != expected_kg_checksum:
+                raise VectorIndexError("ekell_index_kg_checksum_mismatch")
+        if expected_corpus_checksum is not None:
+            if (
+                type(expected_corpus_checksum) is not str
+                or not SHA256_HEX_RE.fullmatch(expected_corpus_checksum)
+            ):
+                raise VectorIndexError("ekell_index_expected_corpus_checksum_invalid")
+            if corpus_checksum != expected_corpus_checksum:
+                raise VectorIndexError("index_corpus_checksum_contract_requires_rebuild")
         if expected_normalize_embeddings is not None:
             if type(expected_normalize_embeddings) is not bool:
                 raise VectorIndexError("ekell_index_expected_normalize_embeddings_must_be_bool")

@@ -27,7 +27,13 @@ from external_baselines.common.strict_config_types import (
     require_exact_int,
     require_exact_nonempty_string,
 )
-from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum
+from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg
+from external_baselines.interop.bundle import (
+    load_runner_bundle,
+    runner_bundle_corpus_aggregate_sha256,
+    runner_bundle_evidence_source_checksum,
+    validate_bundle_checksum,
+)
 from external_baselines.method_registry import canonicalize_method_id
 
 EKELL_REQUIRED_PROMPTS = (
@@ -302,6 +308,54 @@ def _preflight_bool(value: Any, *, field: str, formal: bool) -> bool | None:
     return value if type(value) is bool else None
 
 
+def _strict_dense_identity_cached(
+    index_path: Path,
+    *,
+    expected_backend: str,
+    expected_model_name: str,
+    expected_model_version: str,
+    expected_dimension: int | None,
+    expected_normalize_embeddings: bool,
+    expected_corpus_checksum: str,
+    expected_evidence_source_checksum: str,
+    cache: dict[tuple[Any, ...], dict[str, Any]],
+    expectations_by_path: dict[str, tuple[Any, ...]],
+) -> dict[str, Any]:
+    """Hash one shared Dense index once per preflight and expected identity."""
+    resolved_path = str(index_path.resolve(strict=False))
+    expectation = (
+        expected_backend,
+        expected_model_name,
+        expected_model_version,
+        expected_dimension,
+        expected_normalize_embeddings,
+        expected_corpus_checksum,
+        expected_evidence_source_checksum,
+    )
+    previous = expectations_by_path.get(resolved_path)
+    if previous is not None and previous != expectation:
+        raise ValueError("cross_method_dense_identity_mismatch")
+    expectations_by_path[resolved_path] = expectation
+    manifest_sha = sha256_file(index_path / "index_manifest.json")
+    key = (resolved_path, manifest_sha, *expectation)
+    if key not in cache:
+        from external_baselines.retrieval.dense_index import (
+            validate_dense_index_integrity_for_freeze,
+        )
+
+        cache[key] = validate_dense_index_integrity_for_freeze(
+            index_path,
+            expected_backend=expected_backend,
+            expected_model_name=expected_model_name,
+            expected_model_version=expected_model_version,
+            expected_dimension=expected_dimension,
+            expected_corpus_checksum=expected_corpus_checksum,
+            expected_evidence_source_checksum=expected_evidence_source_checksum,
+            expected_normalize_embeddings=expected_normalize_embeddings,
+        )
+    return dict(cache[key])
+
+
 def _preflight_method_resources(
     method_id: str,
     config: dict[str, Any],
@@ -309,6 +363,11 @@ def _preflight_method_resources(
     execution_stage: str,
     dense_config: dict[str, Any] | None = None,
     freeze: dict[str, Any] | None = None,
+    expected_corpus_checksum: str | None = None,
+    expected_evidence_source_checksum: str | None = None,
+    expected_kg_checksum: str | None = None,
+    strict_index_identity_cache: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+    dense_expectations_by_path: dict[str, tuple[Any, ...]] | None = None,
 ) -> MethodPreflightResult:
     result = MethodPreflightResult(method_id=method_id)
     result.llm_identity = _preflight_llm_identity(config)
@@ -321,6 +380,7 @@ def _preflight_method_resources(
             require_formal=formal,
             validation_stage=execution_stage,
             dense_config=dense_config,
+            validate_index_integrity=False,
         )
         result.config_valid = True
     except FormalConfigError as exc:
@@ -336,11 +396,7 @@ def _preflight_method_resources(
     elif method_id == "dense_rag":
         dense = config.get("dense_rag") or {}
         index_path = _resolve_path(config, _preflight_string(dense.get("index_path"), field="dense_rag.index_path", formal=formal))
-        from external_baselines.retrieval.dense_index import (
-            DenseIndexError,
-            validate_dense_index_directory,
-            validate_dense_index_integrity_for_freeze,
-        )
+        from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
 
         try:
             expected_model_name = _preflight_string(dense.get("model_name"), field="dense_rag.model_name", formal=formal)
@@ -356,18 +412,28 @@ def _preflight_method_resources(
                 formal=formal,
             )
             if formal:
-                payload = validate_dense_index_integrity_for_freeze(
+                payload = _strict_dense_identity_cached(
                     index_path,
                     expected_model_name=expected_model_name,
                     expected_model_version=expected_model_version,
                     expected_backend=expected_backend,
                     expected_dimension=expected_dimension,
-                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
-                    expected_normalize_embeddings=_preflight_bool(
+                    expected_corpus_checksum=require_exact_nonempty_string(
+                        expected_corpus_checksum,
+                        field="runner_bundle.corpus_manifest.aggregate_sha256",
+                    ),
+                    expected_evidence_source_checksum=require_exact_nonempty_string(
+                        expected_evidence_source_checksum,
+                        field="runner_bundle.evidence_source_checksum",
+                    ),
+                    expected_normalize_embeddings=require_exact_bool(
                         dense.get("normalize_embeddings"),
                         field="dense_rag.normalize_embeddings",
-                        formal=formal,
                     ),
+                    cache=strict_index_identity_cache if strict_index_identity_cache is not None else {},
+                    expectations_by_path=dense_expectations_by_path
+                    if dense_expectations_by_path is not None
+                    else {},
                 )
             else:
                 payload = validate_dense_index_directory(
@@ -405,11 +471,7 @@ def _preflight_method_resources(
                 formal=formal,
             ),
         )
-        from external_baselines.retrieval.dense_index import (
-            DenseIndexError,
-            validate_dense_index_directory,
-            validate_dense_index_integrity_for_freeze,
-        )
+        from external_baselines.retrieval.dense_index import DenseIndexError, validate_dense_index_directory
 
         try:
             dimension_value = dense_cfg["dimension"] if "dimension" in dense_cfg else hybrid.get("dimension")
@@ -435,18 +497,28 @@ def _preflight_method_resources(
                     if "normalize_embeddings" in dense_cfg
                     else hybrid.get("normalize_embeddings")
                 )
-                payload = validate_dense_index_integrity_for_freeze(
+                payload = _strict_dense_identity_cached(
                     index_path,
                     expected_model_name=expected_model_name,
                     expected_model_version=expected_model_version,
                     expected_backend=expected_backend,
                     expected_dimension=expected_dimension,
-                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
-                    expected_normalize_embeddings=_preflight_bool(
+                    expected_corpus_checksum=require_exact_nonempty_string(
+                        expected_corpus_checksum,
+                        field="runner_bundle.corpus_manifest.aggregate_sha256",
+                    ),
+                    expected_evidence_source_checksum=require_exact_nonempty_string(
+                        expected_evidence_source_checksum,
+                        field="runner_bundle.evidence_source_checksum",
+                    ),
+                    expected_normalize_embeddings=require_exact_bool(
                         normalize_value,
                         field="dense_rag.normalize_embeddings",
-                        formal=formal,
                     ),
+                    cache=strict_index_identity_cache if strict_index_identity_cache is not None else {},
+                    expectations_by_path=dense_expectations_by_path
+                    if dense_expectations_by_path is not None
+                    else {},
                 )
             else:
                 payload = validate_dense_index_directory(
@@ -499,14 +571,20 @@ def _preflight_method_resources(
                 formal=formal,
             )
             if formal:
+                configured_kg_checksum = config.get("kg_checksum")
+                if (
+                    configured_kg_checksum is not None
+                    and configured_kg_checksum != expected_kg_checksum
+                ):
+                    raise ValueError("ekell_config_kg_checksum_mismatch")
                 manifest = VectorIndex.validate_directory_for_freeze(
                     index_path,
                     expected_backend=expected_backend,
                     expected_model_name=expected_model_name,
                     expected_model_version=expected_model_version,
                     expected_dimension=expected_dimension,
-                    expected_kg_checksum=str(config.get("kg_checksum") or "") or None,
-                    expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
+                    expected_kg_checksum=expected_kg_checksum,
+                    expected_corpus_checksum=expected_corpus_checksum,
                     expected_normalize_embeddings=_preflight_bool(
                         vector.get("normalize_embeddings"),
                         field="ekell_vector.normalize_embeddings",
@@ -598,6 +676,25 @@ def preflight_decision_suite(
     if not corpus_dir or not Path(corpus_dir).is_dir():
         shared_errors.append("runner_bundle_corpus_dir_missing")
 
+    expected_corpus_checksum: str | None = None
+    expected_evidence_source_checksum: str | None = None
+    expected_kg_checksum: str | None = None
+    if formal and not shared_errors:
+        try:
+            expected_corpus_checksum = runner_bundle_corpus_aggregate_sha256(
+                bundle,
+                required=True,
+            )
+            expected_evidence_source_checksum = runner_bundle_evidence_source_checksum(
+                bundle,
+                required=True,
+            )
+            expected_kg_checksum = fire_kg_checksum(
+                load_kg(Path(str(corpus_dir)), require_any=True)
+            )
+        except Exception as exc:  # noqa: BLE001
+            shared_errors.append(f"runner_bundle_source_identity_invalid:{exc}")
+
     if formal:
         from external_baselines.common.firebench_taxonomy import validate_formal_alias_table
 
@@ -623,6 +720,8 @@ def preflight_decision_suite(
 
     dense_cfg = method_configs.get("dense_rag")
     method_reports: dict[str, Any] = {}
+    strict_index_identity_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    dense_expectations_by_path: dict[str, tuple[Any, ...]] = {}
     all_ok = not shared_errors and bool(bundle_integrity.get("ok", True))
     ekell_prompt_bundle_valid = True
 
@@ -635,6 +734,11 @@ def preflight_decision_suite(
             execution_stage=execution_stage,
             dense_config=dense_cfg if mid == "hybrid_rag" else None,
             freeze=freeze,
+            expected_corpus_checksum=expected_corpus_checksum,
+            expected_evidence_source_checksum=expected_evidence_source_checksum,
+            expected_kg_checksum=expected_kg_checksum,
+            strict_index_identity_cache=strict_index_identity_cache,
+            dense_expectations_by_path=dense_expectations_by_path,
         )
         if shared_errors:
             report.errors.extend(shared_errors)

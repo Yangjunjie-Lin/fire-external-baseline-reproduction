@@ -375,6 +375,7 @@ def validate_dense_config_for_real_run(
     *,
     allow_placeholders: bool = False,
     validation_stage: str = "formal",
+    validate_index_integrity: bool = True,
 ) -> None:
     dense = config.get("dense_rag") or {}
     if not isinstance(dense, dict) or not dense:
@@ -429,7 +430,7 @@ def validate_dense_config_for_real_run(
         path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
-        if _requires_paper_facing_strictness(validation_stage):
+        if _requires_paper_facing_strictness(validation_stage) and validate_index_integrity:
             from external_baselines.retrieval.dense_index import (
                 DenseIndexError,
                 validate_dense_index_integrity_for_freeze,
@@ -603,6 +604,7 @@ def validate_ekell_vector_for_formal(
     *,
     allow_placeholders: bool = False,
     validation_stage: str = "formal",
+    validate_index_integrity: bool = True,
 ) -> None:
     vector = config.get("ekell_vector") or (config.get("ekell_style") or {}).get("vector") or {}
     if not isinstance(vector, dict) or not vector:
@@ -663,7 +665,7 @@ def validate_ekell_vector_for_formal(
         from external_baselines.ekell_style.vector_index import VectorIndex, VectorIndexError
 
         try:
-            if _requires_paper_facing_strictness(validation_stage):
+            if _requires_paper_facing_strictness(validation_stage) and validate_index_integrity:
                 VectorIndex.validate_directory_for_freeze(
                     path,
                     expected_backend=backend,
@@ -754,6 +756,7 @@ def validate_method_config(
     require_formal: bool = True,
     validation_stage: str = "formal",
     dense_config: dict[str, Any] | None = None,
+    validate_index_integrity: bool = True,
 ) -> list[str]:
     """Return warnings; raise FormalConfigError on hard violations."""
     warnings: list[str] = []
@@ -787,12 +790,14 @@ def validate_method_config(
                 config,
                 allow_placeholders=allow_placeholders,
                 validation_stage=validation_stage,
+                validate_index_integrity=validate_index_integrity,
             )
         if mid == "dense_rag":
             validate_dense_config_for_real_run(
                 config,
                 allow_placeholders=allow_placeholders,
                 validation_stage=validation_stage,
+                validate_index_integrity=validate_index_integrity,
             )
         if mid == "hybrid_rag":
             validate_hybrid_config_for_real_run(

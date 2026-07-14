@@ -15,7 +15,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from external_baselines.common.checksums import sha256_file  # noqa: E402
 from external_baselines.common.experiment_manifest import (  # noqa: E402
     build_method_config,
     enabled_methods,
@@ -24,7 +23,14 @@ from external_baselines.common.experiment_manifest import (  # noqa: E402
 from external_baselines.common.formal_config_validator import _is_placeholder  # noqa: E402
 from external_baselines.common.io import write_json  # noqa: E402
 from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
-from external_baselines.interop.bundle import load_runner_bundle, validate_bundle_checksum  # noqa: E402
+from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg  # noqa: E402
+from external_baselines.interop.bundle import (  # noqa: E402
+    load_runner_bundle,
+    runner_bundle_corpus_aggregate_sha256,
+    runner_bundle_evidence_source_checksum,
+    validate_bundle_checksum,
+    validate_formal_bundle_aggregate_checksum,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -54,15 +60,23 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(report, indent=2))
         raise SystemExit(0 if args.validate_only else 1)
 
-    bundle = load_runner_bundle(bundle_path)
+    bundle = load_runner_bundle(bundle_path, formal=True)
+    validate_formal_bundle_aggregate_checksum(bundle)
     checksum = validate_bundle_checksum(bundle)
+    bundle_corpus_checksum = runner_bundle_corpus_aggregate_sha256(bundle, required=True)
+    evidence_source_checksum = runner_bundle_evidence_source_checksum(bundle, required=True)
+    corpus_dir = Path(str(bundle.get("corpus_dir") or ""))
+    kg = load_kg(corpus_dir, require_any=True)
+    canonical_kg_checksum = fire_kg_checksum(kg)
     report["bundle"] = {
         "path": str(bundle_path),
         "checksum_ok": bool(checksum.get("ok")),
         "consumer_computed_bundle_hash": bundle.get("consumer_computed_bundle_hash"),
         "corpus_dir": bundle.get("corpus_dir"),
+        "bundle_corpus_aggregate_sha256": bundle_corpus_checksum,
+        "evidence_source_checksum": evidence_source_checksum,
+        "kg_checksum": canonical_kg_checksum,
     }
-    corpus_dir = Path(str(bundle.get("corpus_dir") or "data/corpus"))
     methods = enabled_methods(experiment, method_set=args.method_set)
     dense_checksum = None
     for entry in methods:
@@ -85,19 +99,42 @@ def main(argv: list[str] | None = None) -> None:
                     status["error"] = "model_version_placeholder"
                 elif index_path and Path(str(index_path)).is_dir():
                     try:
-                        from external_baselines.retrieval.dense_index import load_dense_index
+                        from external_baselines.retrieval.dense_index import (
+                            validate_dense_index_integrity_for_freeze,
+                        )
 
-                        payload = load_dense_index(
+                        payload = validate_dense_index_integrity_for_freeze(
                             index_path,
                             expected_model_name=str(dense.get("model_name")) if dense.get("model_name") else None,
                             expected_model_version=str(dense.get("model_version"))
                             if dense.get("model_version") and not _is_placeholder(dense.get("model_version"))
                             else None,
                             expected_backend=str(dense.get("backend")) if dense.get("backend") else None,
+                            expected_dimension=int(dense.get("dimension") or dense.get("dim") or 0)
+                            or None,
+                            expected_corpus_checksum=bundle_corpus_checksum,
+                            expected_evidence_source_checksum=evidence_source_checksum,
+                            expected_normalize_embeddings=require_exact_bool(
+                                dense.get("normalize_embeddings"),
+                                field="dense_rag.normalize_embeddings",
+                            ),
                         )
-                        status["checksum"] = payload.get("checksum")
+                        status.update(
+                            {
+                                "bundle_corpus_aggregate_sha256": payload.get(
+                                    "corpus_checksum"
+                                ),
+                                "evidence_source_checksum": payload.get(
+                                    "evidence_source_checksum"
+                                ),
+                                "index_checksum": payload.get("index_checksum"),
+                                "index_manifest_sha256": payload.get(
+                                    "index_manifest_sha256"
+                                ),
+                            }
+                        )
                         status["validated"] = True
-                        dense_checksum = payload.get("checksum")
+                        dense_checksum = payload.get("index_checksum")
                     except Exception as exc:  # noqa: BLE001
                         status["error"] = str(exc)
                         report["errors"].append(f"dense_validate:{exc}")
@@ -107,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
             from external_baselines.retrieval.embedding_backends import resolve_dimension
 
             evidence = corpus_dir / "evidence_chunks.jsonl"
-            index = build_dense_index(
+            build_dense_index(
                 evidence,
                 model_name=str(dense.get("model_name")),
                 model_version=str(dense.get("model_version")),
@@ -121,11 +158,42 @@ def main(argv: list[str] | None = None) -> None:
                 ),
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(dense.get("reject_smoke", True)),
-                corpus_checksum=sha256_file(evidence),
+                corpus_checksum=bundle_corpus_checksum,
             )
-            status["checksum"] = index.checksum
+            from external_baselines.retrieval.dense_index import (
+                validate_dense_index_integrity_for_freeze,
+            )
+
+            dense_identity = validate_dense_index_integrity_for_freeze(
+                index_path,
+                expected_backend=str(dense.get("backend")),
+                expected_model_name=str(dense.get("model_name")),
+                expected_model_version=str(dense.get("model_version")),
+                expected_dimension=int(dense.get("dimension") or dense.get("dim") or 0)
+                or None,
+                expected_corpus_checksum=bundle_corpus_checksum,
+                expected_evidence_source_checksum=evidence_source_checksum,
+                expected_normalize_embeddings=require_exact_bool(
+                    dense.get("normalize_embeddings"),
+                    field="dense_rag.normalize_embeddings",
+                ),
+            )
+            status.update(
+                {
+                    "bundle_corpus_aggregate_sha256": dense_identity.get(
+                        "corpus_checksum"
+                    ),
+                    "evidence_source_checksum": dense_identity.get(
+                        "evidence_source_checksum"
+                    ),
+                    "index_checksum": dense_identity.get("index_checksum"),
+                    "index_manifest_sha256": dense_identity.get(
+                        "index_manifest_sha256"
+                    ),
+                }
+            )
             status["built"] = True
-            dense_checksum = index.checksum
+            dense_checksum = dense_identity.get("index_checksum")
             report["indexes"]["dense"] = status
         elif mid == "hybrid_rag":
             dense = cfg.get("dense_rag") or {}
@@ -152,16 +220,42 @@ def main(argv: list[str] | None = None) -> None:
                     try:
                         from external_baselines.ekell_style.vector_index import VectorIndex
 
-                        loaded = VectorIndex.load_directory(
+                        configured_kg_checksum = cfg.get("kg_checksum")
+                        if (
+                            configured_kg_checksum is not None
+                            and configured_kg_checksum != canonical_kg_checksum
+                        ):
+                            raise ValueError("ekell_config_kg_checksum_mismatch")
+                        loaded = VectorIndex.validate_directory_for_freeze(
                             index_path,
                             expected_backend=str(vector.get("backend")) if vector.get("backend") else None,
                             expected_model_name=str(vector.get("model_name")) if vector.get("model_name") else None,
                             expected_model_version=str(vector.get("model_version"))
                             if vector.get("model_version") and not _is_placeholder(vector.get("model_version"))
                             else None,
-                            require_real_embedding=True,
+                            expected_dimension=int(
+                                vector.get("dimension") or vector.get("dim") or 0
+                            )
+                            or None,
+                            expected_corpus_checksum=bundle_corpus_checksum,
+                            expected_kg_checksum=canonical_kg_checksum,
+                            expected_normalize_embeddings=require_exact_bool(
+                                vector.get("normalize_embeddings"),
+                                field="ekell_vector.normalize_embeddings",
+                            ),
                         )
-                        status["checksum"] = (loaded.metadata or {}).get("index_checksum")
+                        status.update(
+                            {
+                                "bundle_corpus_aggregate_sha256": loaded.get(
+                                    "corpus_checksum"
+                                ),
+                                "kg_checksum": loaded.get("kg_checksum"),
+                                "index_checksum": loaded.get("index_checksum"),
+                                "index_manifest_sha256": loaded.get(
+                                    "index_manifest_sha256"
+                                ),
+                            }
+                        )
                         status["validated"] = True
                     except Exception as exc:  # noqa: BLE001
                         status["error"] = str(exc)
@@ -169,14 +263,18 @@ def main(argv: list[str] | None = None) -> None:
                 report["indexes"]["ekell"] = status
                 continue
 
-            from external_baselines.ekell_style.kg_loader import load_kg
             from external_baselines.ekell_style.vector_index import VectorIndex
             from external_baselines.retrieval.embedding_backends import (
                 create_embedding_backend,
                 resolve_dimension,
             )
 
-            kg = load_kg(corpus_dir)
+            configured_kg_checksum = cfg.get("kg_checksum")
+            if (
+                configured_kg_checksum is not None
+                and configured_kg_checksum != canonical_kg_checksum
+            ):
+                raise SystemExit("ekell_config_kg_checksum_mismatch")
             backend = create_embedding_backend(
                 str(vector.get("backend", "text2vec")),
                 model_name=str(vector.get("model_name") or ""),
@@ -188,9 +286,8 @@ def main(argv: list[str] | None = None) -> None:
             index = VectorIndex.from_kg(
                 kg,
                 backend,
-                corpus_checksum=sha256_file(corpus_dir / "evidence_chunks.jsonl")
-                if (corpus_dir / "evidence_chunks.jsonl").is_file()
-                else None,
+                corpus_checksum=bundle_corpus_checksum,
+                kg_checksum=canonical_kg_checksum,
                 paper_final=bool(cfg.get("paper_final")),
                 reject_smoke=bool(vector.get("reject_smoke", True)),
                 normalize_embeddings=require_exact_bool(
@@ -203,15 +300,32 @@ def main(argv: list[str] | None = None) -> None:
                 report["errors"].append("ekell_index_path_missing")
             else:
                 manifest = index.save_directory(index_path)
-                reloaded = VectorIndex.load_directory(
+                reloaded = VectorIndex.validate_directory_for_freeze(
                     index_path,
                     expected_backend=str(vector.get("backend")),
                     expected_model_name=str(vector.get("model_name")),
                     expected_model_version=str(vector.get("model_version")),
-                    require_real_embedding=True,
+                    expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0)
+                    or None,
+                    expected_corpus_checksum=bundle_corpus_checksum,
+                    expected_kg_checksum=canonical_kg_checksum,
+                    expected_normalize_embeddings=require_exact_bool(
+                        vector.get("normalize_embeddings"),
+                        field="ekell_vector.normalize_embeddings",
+                    ),
                 )
-                status["checksum"] = manifest.get("index_checksum") or (reloaded.metadata or {}).get(
-                    "index_checksum"
+                status.update(
+                    {
+                        "bundle_corpus_aggregate_sha256": reloaded.get(
+                            "corpus_checksum"
+                        ),
+                        "kg_checksum": reloaded.get("kg_checksum"),
+                        "index_checksum": manifest.get("index_checksum")
+                        or reloaded.get("index_checksum"),
+                        "index_manifest_sha256": reloaded.get(
+                            "index_manifest_sha256"
+                        ),
+                    }
                 )
                 status["built"] = True
                 status["reloaded"] = True

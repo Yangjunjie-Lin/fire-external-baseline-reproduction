@@ -9,5 +9,6 @@ from external_baselines.retrieval.embedding_backends import (  # noqa: F401
     create_embedding_backend,
     embedding_package_versions,
     l2_normalize_vector,
+    require_exact_embedding_evidence_flags,
     validate_embedding_backend,
 )

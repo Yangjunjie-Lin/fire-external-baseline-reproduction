@@ -17,6 +17,7 @@ from external_baselines.retrieval.embedding_backends import (
     EmbeddingBackend,
     embedding_package_versions,
     l2_normalize_vector,
+    require_exact_embedding_evidence_flags,
     validate_embedding_backend,
 )
 
@@ -263,6 +264,9 @@ def build_dense_index(
     validate_embedding_backend(
         embedding_backend, paper_final=paper_final, reject_smoke=reject_smoke
     )
+    actual_embedding_used, smoke_fallback_used = require_exact_embedding_evidence_flags(
+        embedding_backend
+    )
     evidence_path = Path(evidence_path)
     index_dir = Path(index_dir)
     documents = _load_documents(evidence_path)
@@ -334,8 +338,8 @@ def build_dense_index(
         "evidence_source_checksum": evidence_checksum,
         "index_checksum": index_checksum,
         "package_versions": embedding_package_versions(),
-        "actual_embedding_used": bool(embedding_backend.actual_embedding_used),
-        "smoke_fallback_used": bool(embedding_backend.smoke_fallback_used),
+        "actual_embedding_used": actual_embedding_used,
+        "smoke_fallback_used": smoke_fallback_used,
         "index_dir": str(index_dir).replace("\\", "/"),
         "evidence_path": str(evidence_path).replace("\\", "/"),
     }
@@ -459,6 +463,7 @@ def validate_dense_index_integrity_for_freeze(
     expected_model_version: str | None = None,
     expected_dimension: int | None = None,
     expected_corpus_checksum: str | None = None,
+    expected_evidence_source_checksum: str | None = None,
     expected_normalize_embeddings: bool | None = None,
 ) -> dict[str, Any]:
     """Strict persisted Dense index validation for freeze-candidate/complete freeze."""
@@ -508,8 +513,22 @@ def validate_dense_index_integrity_for_freeze(
         raise DenseIndexError("model_version mismatch.")
     if expected_dimension is not None and dimension != int(expected_dimension):
         raise DenseIndexError("dimension mismatch.")
-    if expected_corpus_checksum and corpus_checksum != str(expected_corpus_checksum):
-        raise DenseIndexError("corpus_checksum mismatch.")
+    if expected_corpus_checksum is not None:
+        if (
+            type(expected_corpus_checksum) is not str
+            or not SHA256_HEX_RE.fullmatch(expected_corpus_checksum)
+        ):
+            raise DenseIndexError("dense_index_expected_corpus_checksum_invalid")
+        if corpus_checksum != expected_corpus_checksum:
+            raise DenseIndexError("index_corpus_checksum_contract_requires_rebuild")
+    if expected_evidence_source_checksum is not None:
+        if (
+            type(expected_evidence_source_checksum) is not str
+            or not SHA256_HEX_RE.fullmatch(expected_evidence_source_checksum)
+        ):
+            raise DenseIndexError("dense_index_expected_evidence_source_checksum_invalid")
+        if evidence_source_checksum != expected_evidence_source_checksum:
+            raise DenseIndexError("dense_index_evidence_source_checksum_mismatch")
     if expected_normalize_embeddings is not None:
         if type(expected_normalize_embeddings) is not bool:
             raise DenseIndexError("dense_index_expected_normalize_embeddings_must_be_bool")

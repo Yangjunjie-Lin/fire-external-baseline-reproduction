@@ -849,6 +849,48 @@ def validate_formal_bundle_aggregate_checksum(bundle: dict[str, Any]) -> dict[st
     }
 
 
+def runner_bundle_corpus_aggregate_sha256(
+    bundle: dict[str, Any],
+    *,
+    required: bool,
+) -> str | None:
+    """Return the validated Runner Bundle corpus aggregate identity."""
+    corpus_manifest = bundle.get("corpus_manifest")
+    if not isinstance(corpus_manifest, dict):
+        if required:
+            raise BundleIntegrityError("runner_bundle_corpus_manifest_missing_or_invalid")
+        return None
+    value = corpus_manifest.get("aggregate_sha256")
+    if value is None and not required:
+        return None
+    if type(value) is not str or not SHA256_HEX_RE.fullmatch(value):
+        raise BundleIntegrityError("runner_bundle_corpus_aggregate_sha256_invalid")
+    return value
+
+
+def runner_bundle_evidence_source_checksum(
+    bundle: dict[str, Any],
+    *,
+    filename: str = "evidence_chunks.jsonl",
+    required: bool,
+) -> str | None:
+    """Hash the exact Dense evidence source in the loaded Runner Bundle corpus."""
+    corpus_dir = bundle.get("corpus_dir")
+    if type(corpus_dir) is not str or not corpus_dir:
+        if required:
+            raise BundleIntegrityError("runner_bundle_corpus_dir_missing")
+        return None
+    path = Path(corpus_dir) / filename
+    if path.is_symlink() or not path.is_file():
+        if required:
+            raise BundleIntegrityError("runner_bundle_evidence_source_missing_or_not_plain_file")
+        return None
+    digest = sha256_file(path)
+    if type(digest) is not str or not SHA256_HEX_RE.fullmatch(digest):
+        raise BundleIntegrityError("runner_bundle_evidence_source_checksum_invalid")
+    return digest
+
+
 @dataclass
 class RunnerBundleCoverage:
     manifest_case_count: int | None

@@ -15,6 +15,19 @@ class EmbeddingBackendError(RuntimeError):
     """Raised when an embedding backend cannot satisfy the requested run."""
 
 
+def require_exact_embedding_evidence_flags(
+    backend: "EmbeddingBackend",
+) -> tuple[bool, bool]:
+    """Return provenance flags only when the backend supplies exact booleans."""
+    actual_embedding_used = getattr(backend, "actual_embedding_used", None)
+    smoke_fallback_used = getattr(backend, "smoke_fallback_used", None)
+    if type(actual_embedding_used) is not bool:
+        raise EmbeddingBackendError("embedding_backend_actual_embedding_used_must_be_bool")
+    if type(smoke_fallback_used) is not bool:
+        raise EmbeddingBackendError("embedding_backend_smoke_fallback_used_must_be_bool")
+    return actual_embedding_used, smoke_fallback_used
+
+
 def _as_vectors(values: Any) -> list[list[float]]:
     if hasattr(values, "tolist"):
         values = values.tolist()
@@ -222,8 +235,9 @@ def embedding_package_versions() -> dict[str, str]:
 def validate_embedding_backend(
     backend: EmbeddingBackend, *, paper_final: bool = False, reject_smoke: bool = False
 ) -> None:
+    actual_embedding_used, smoke_fallback_used = require_exact_embedding_evidence_flags(backend)
     if (paper_final or reject_smoke) and (
-        backend.smoke_fallback_used or not backend.actual_embedding_used
+        smoke_fallback_used or not actual_embedding_used
     ):
         raise EmbeddingBackendError(
             "A real embedding backend is required when paper_final=true or reject_smoke=true."

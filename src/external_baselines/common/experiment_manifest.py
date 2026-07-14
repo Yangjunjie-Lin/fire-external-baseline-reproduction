@@ -8,9 +8,11 @@ Formal runs use a single experiment manifest that:
 - distinguishes main-table vs supplemental methods
 """
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from external_baselines.common.checksums import sha256_json
 from external_baselines.common.io import load_config, read_json, read_yaml
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
 from external_baselines.method_registry import (
@@ -33,6 +35,40 @@ METHOD_SETS = {
 
 class MethodEntryError(ValueError):
     """Raised when an experiment manifest lacks a usable method entry."""
+
+
+EXPERIMENT_FREEZE_LIFECYCLE_FIELDS = frozenset({"freeze_status", "freeze_manifest"})
+
+
+def canonical_experiment_core(experiment_raw: dict[str, Any]) -> dict[str, Any]:
+    """Return experiment semantics while excluding only freeze lifecycle state."""
+    if not isinstance(experiment_raw, dict):
+        raise TypeError("canonical_experiment_core requires a mapping")
+    core = deepcopy(experiment_raw)
+    for field in EXPERIMENT_FREEZE_LIFECYCLE_FIELDS:
+        core.pop(field, None)
+    return core
+
+
+def experiment_core_sha256(experiment_raw: dict[str, Any]) -> str:
+    """Identity stable across provisional-to-frozen manifest finalization."""
+    return sha256_json(canonical_experiment_core(experiment_raw))
+
+
+def canonical_method_config_for_freeze(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a merged method config without experiment freeze lifecycle state."""
+    if not isinstance(config, dict):
+        raise TypeError("canonical_method_config_for_freeze requires a mapping")
+    canonical = deepcopy(config)
+    experiment = canonical.get("experiment")
+    if isinstance(experiment, dict):
+        for field in EXPERIMENT_FREEZE_LIFECYCLE_FIELDS:
+            experiment.pop(field, None)
+    return canonical
+
+
+def merged_method_config_sha256(config: dict[str, Any]) -> str:
+    return sha256_json(canonical_method_config_for_freeze(config))
 
 
 def _manifest_exact_bool(raw: dict[str, Any], key: str, *, path: str) -> None:
