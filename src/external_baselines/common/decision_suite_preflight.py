@@ -21,13 +21,18 @@ from external_baselines.common.generation_identity import (
     detect_method_llm_overrides,
     validate_shared_generation_identity,
 )
-from external_baselines.common.io import read_json, read_jsonl, read_yaml
+from external_baselines.common.io import read_json, read_yaml
+from external_baselines.common.path_resolution import PathContext, resolve_declared_path
 from external_baselines.common.strict_config_types import (
     require_exact_bool,
     require_exact_int,
     require_exact_nonempty_string,
 )
-from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg
+from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg_strict
+from external_baselines.ekell_style.prompt_identity import (
+    EKELL_REQUIRED_PROMPTS,
+    validate_and_hash_prompt_bundle,
+)
 from external_baselines.interop.bundle import (
     load_runner_bundle,
     runner_bundle_corpus_aggregate_sha256,
@@ -36,21 +41,13 @@ from external_baselines.interop.bundle import (
 )
 from external_baselines.method_registry import canonicalize_method_id
 
-EKELL_REQUIRED_PROMPTS = (
-    "stepwise_projection.txt",
-    "stepwise_intersection.txt",
-    "stepwise_union.txt",
-    "stepwise_negation.txt",
-    "final_kg_grounded_response.txt",
-)
-
 EKELL_LOGICAL_COMPONENTS = (
     ("parse_query", "external_baselines.ekell_style.logical_query.parser", "parse_query"),
     ("validate_query", "external_baselines.ekell_style.logical_query.validator", "validate_query"),
     ("execute_query", "external_baselines.ekell_style.logical_query.fol_executor", "execute_query"),
     ("run_stepwise_prompt_chain", "external_baselines.ekell_style.stepwise_prompt_chain", "run_stepwise_prompt_chain"),
     ("expand_neighborhood", "external_baselines.ekell_style.neighborhood_expander", "expand_neighborhood"),
-    ("load_kg", "external_baselines.ekell_style.kg_loader", "load_kg"),
+    ("load_kg_strict", "external_baselines.ekell_style.kg_loader", "load_kg_strict"),
 )
 
 
@@ -84,11 +81,17 @@ class MethodPreflightResult:
 
 
 def _resolve_path(config: dict[str, Any], rel: str | Path) -> Path:
-    candidate = Path(rel)
-    if candidate.is_file() or candidate.is_dir():
-        return candidate
     root = Path(__file__).resolve().parents[3]
-    return root / rel
+    if not str(rel).strip():
+        # Dry-run configs may omit optional resources; Formal callers reject the
+        # empty declaration before resolution through _preflight_string().
+        return root
+    return resolve_declared_path(
+        rel,
+        context=PathContext(repository_root=root),
+        policy="repository_relative",
+        must_exist=False,
+    )
 
 
 def _load_freeze_manifest(experiment_manifest: Path | None) -> dict[str, Any] | None:
@@ -100,10 +103,16 @@ def _load_freeze_manifest(experiment_manifest: Path | None) -> dict[str, Any] | 
     freeze_path = manifest.get("freeze_manifest")
     if not freeze_path:
         return None
-    freeze_file = Path(str(freeze_path))
-    if not freeze_file.is_file():
-        root = Path(__file__).resolve().parents[3]
-        freeze_file = root / str(freeze_path)
+    root = Path(__file__).resolve().parents[3]
+    freeze_file = resolve_declared_path(
+        str(freeze_path),
+        context=PathContext(
+            repository_root=root,
+            experiment_manifest_path=experiment_manifest,
+        ),
+        policy="repository_relative",
+        must_exist=False,
+    )
     if not freeze_file.is_file():
         return None
     return read_json(freeze_file)
@@ -193,6 +202,7 @@ def _validate_ekell_prompts(
     *,
     freeze: dict[str, Any] | None,
     formal: bool,
+    declared_prompt_dir: str | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     prompt_hashes: dict[str, str] = {}
@@ -216,14 +226,34 @@ def _validate_ekell_prompts(
 
     frozen_prompt_hashes = {}
     if isinstance(freeze, dict):
-        frozen_prompt_hashes = dict(freeze.get("ekell_prompt_hashes") or {})
-        prompt_tree = freeze.get("prompt_tree_sha256")
-        if formal and prompt_tree and prompt_hashes:
-            from external_baselines.common.freeze_manifest import prompt_tree_checksum
-
-            actual_tree = prompt_tree_checksum(prompt_dir)
-            if actual_tree and str(actual_tree) != str(prompt_tree):
-                errors.append("ekell_prompt_tree_hash_mismatch")
+        frozen_bundle = freeze.get("ekell_prompt_bundle")
+        if formal and not isinstance(frozen_bundle, dict):
+            errors.append("legacy_freeze_prompt_identity_requires_regeneration")
+        elif isinstance(frozen_bundle, dict):
+            frozen_prompt_hashes = dict(
+                frozen_bundle.get("required_prompt_files") or {}
+            )
+            try:
+                actual_bundle = validate_and_hash_prompt_bundle(
+                    declared_prompt_dir or prompt_dir,
+                    path_context=PathContext(
+                        repository_root=Path(__file__).resolve().parents[3]
+                    ),
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                errors.append(str(exc))
+            else:
+                for field in (
+                    "declared_prompt_dir",
+                    "canonical_prompt_dir",
+                    "path_policy",
+                    "prompt_tree_sha256",
+                ):
+                    if frozen_bundle.get(field) != actual_bundle.get(field):
+                        errors.append(f"ekell_prompt_bundle_mismatch:{field}")
+                top_level_tree = freeze.get("prompt_tree_sha256")
+                if top_level_tree != frozen_bundle.get("prompt_tree_sha256"):
+                    errors.append("ekell_prompt_tree_hash_mismatch")
     if formal and frozen_prompt_hashes:
         for name, expected in frozen_prompt_hashes.items():
             actual = prompt_hashes.get(name)
@@ -247,33 +277,11 @@ def _validate_ekell_logical_components() -> list[str]:
 
 
 def _validate_kg_jsonl(corpus_dir: Path) -> list[str]:
-    errors: list[str] = []
-    for name in ("entities.jsonl", "relations.jsonl", "triples.jsonl"):
-        path = corpus_dir / name
-        if not path.is_file() or path.stat().st_size == 0:
-            errors.append(f"ekell_{name}_missing_or_empty")
-            continue
-        try:
-            rows = read_jsonl(path)
-        except ValueError:
-            errors.append(f"ekell_kg_jsonl_parse_error:{name}")
-            continue
-        if not rows:
-            errors.append(f"ekell_{name}_missing_or_empty")
-    triples_path = corpus_dir / "triples.jsonl"
-    if triples_path.is_file():
-        try:
-            triples = read_jsonl(triples_path)
-            for row in triples:
-                if not isinstance(row, dict):
-                    errors.append("ekell_triples_invalid_record")
-                    break
-                if not any(row.get(k) for k in ("head", "relation", "tail", "triple_id")):
-                    errors.append("ekell_triples_missing_fields")
-                    break
-        except ValueError:
-            errors.append("ekell_kg_jsonl_parse_error:triples.jsonl")
-    return errors
+    try:
+        load_kg_strict(corpus_dir)
+    except (OSError, TypeError, ValueError) as exc:
+        return [str(exc)]
+    return []
 
 
 def _preflight_llm_identity(config: dict[str, Any]) -> dict[str, Any]:
@@ -387,7 +395,10 @@ def _preflight_method_resources(
         result.errors.append(str(exc))
         return result
 
-    corpus_dir = Path((config.get("paths") or {}).get("corpus_dir") or "data/corpus")
+    corpus_dir = _resolve_path(
+        config,
+        (config.get("paths") or {}).get("corpus_dir") or "data/corpus",
+    )
     if method_id == "bm25_rag":
         evidence = corpus_dir / "evidence_chunks.jsonl"
         if not evidence.is_file() or evidence.stat().st_size == 0:
@@ -612,14 +623,26 @@ def _preflight_method_resources(
         except (VectorIndexError, ValueError) as exc:
             result.errors.append(str(exc))
             return result
-        prompt_dir_raw = (config.get("ekell_style") or {}).get("prompt_dir") or "configs/prompts/controlled"
-        prompt_dir = Path(prompt_dir_raw)
-        if not prompt_dir.is_dir():
-            prompt_dir = Path(__file__).resolve().parents[3] / str(prompt_dir_raw)
+        prompt_dir_raw = (config.get("ekell_style") or {}).get("prompt_dir")
+        try:
+            prompt_dir_raw = _preflight_string(
+                prompt_dir_raw,
+                field="ekell_style.prompt_dir",
+                formal=formal,
+            )
+            prompt_dir = _resolve_path(config, prompt_dir_raw)
+        except (TypeError, ValueError) as exc:
+            result.errors.append(str(exc))
+            return result
         if not prompt_dir.is_dir():
             result.errors.append("ekell_prompt_dir_missing")
             return result
-        prompt_report = _validate_ekell_prompts(prompt_dir, freeze=freeze, formal=formal)
+        prompt_report = _validate_ekell_prompts(
+            prompt_dir,
+            freeze=freeze,
+            formal=formal,
+            declared_prompt_dir=prompt_dir_raw,
+        )
         result.errors.extend(prompt_report.get("errors") or [])
         result.warnings.append(json.dumps({"ekell_prompt_hashes": prompt_report.get("prompt_hashes") or {}}))
         result.errors.extend(_validate_ekell_logical_components())
@@ -689,9 +712,7 @@ def preflight_decision_suite(
                 bundle,
                 required=True,
             )
-            expected_kg_checksum = fire_kg_checksum(
-                load_kg(Path(str(corpus_dir)), require_any=True)
-            )
+            expected_kg_checksum = fire_kg_checksum(load_kg_strict(Path(str(corpus_dir))))
         except Exception as exc:  # noqa: BLE001
             shared_errors.append(f"runner_bundle_source_identity_invalid:{exc}")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,12 @@ CORPUS_FILES = {
     "triples": "triples.jsonl",
     "evidence_chunks": "evidence_chunks.jsonl",
 }
+
+
+@dataclass(frozen=True)
+class JsonlObjectRow:
+    line_no: int
+    value: dict[str, Any]
 
 
 @dataclass
@@ -144,6 +151,161 @@ def _schema_warnings(kind: str, rows: list[dict[str, Any]]) -> list[str]:
 
 def load_asset(path: Path) -> list[dict[str, Any]]:
     return read_jsonl(path)
+
+
+def read_jsonl_object_records_strict(
+    path: str | Path,
+    *,
+    require_nonempty: bool,
+) -> list[JsonlObjectRow]:
+    """Read every non-empty JSONL line and require an object record."""
+    source = Path(path)
+    filename = source.name
+    if not source.exists():
+        raise ValueError(f"kg_jsonl_missing:{filename}")
+    if not source.is_file() or source.is_symlink():
+        raise ValueError(f"kg_jsonl_not_plain_file:{filename}")
+    rows: list[JsonlObjectRow] = []
+    try:
+        with source.open("r", encoding="utf-8") as stream:
+            for line_no, line in enumerate(stream, start=1):
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"kg_jsonl_invalid_json:{filename}:line_{line_no}"
+                    ) from exc
+                if not isinstance(value, dict):
+                    raise ValueError(
+                        f"kg_jsonl_record_must_be_object:{filename}:line_{line_no}"
+                    )
+                rows.append(JsonlObjectRow(line_no=line_no, value=value))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"kg_jsonl_not_utf8:{filename}:line_{exc.start}") from exc
+    if require_nonempty and not rows:
+        raise ValueError(f"kg_jsonl_empty:{filename}")
+    return rows
+
+
+def _nonempty_field(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if type(value) is str and value.strip():
+            return value.strip()
+        if value is not None and type(value) in (int, float):
+            return str(value)
+    return ""
+
+
+def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> None:
+    value = row.value
+    prefix = f"kg_schema_invalid:{filename}:line_{row.line_no}"
+    if kind == "entities":
+        if not _nonempty_field(
+            value,
+            ("entity_id", "id", "uid", "node_id", "name", "label", "entity"),
+        ):
+            raise ValueError(f"{prefix}:entity_id_or_name_missing")
+        return
+    if kind == "relations":
+        relation_identity = _nonempty_field(
+            value,
+            ("relation_id", "id", "name", "label", "relation", "predicate", "type"),
+        )
+        head = _nonempty_field(value, ("head", "source", "subject", "from", "h", "src"))
+        relation = _nonempty_field(
+            value,
+            ("relation", "predicate", "type", "label", "r", "edge", "relation_type"),
+        )
+        tail = _nonempty_field(value, ("tail", "target", "object", "to", "t", "dst"))
+        if not relation_identity and not (head and relation and tail):
+            raise ValueError(f"{prefix}:relation_identity_missing")
+        return
+    if kind == "triples":
+        fields = {
+            "head": _nonempty_field(
+                value,
+                ("head", "source", "subject", "from", "h", "head_entity", "src"),
+            ),
+            "relation": _nonempty_field(
+                value,
+                ("relation", "predicate", "type", "label", "r", "edge", "relation_type"),
+            ),
+            "tail": _nonempty_field(
+                value,
+                ("tail", "target", "object", "to", "t", "tail_entity", "dst"),
+            ),
+        }
+        for field, resolved in fields.items():
+            if not resolved:
+                raise ValueError(f"{prefix}:triple_{field}_missing")
+        return
+    if kind == "evidence_chunks":
+        if not _nonempty_field(value, ("chunk_id", "id", "evidence_id", "doc_id")):
+            raise ValueError(f"{prefix}:evidence_chunk_id_missing")
+        if not _nonempty_field(
+            value,
+            ("text", "content", "chunk", "body", "page_content", "document"),
+        ):
+            raise ValueError(f"{prefix}:evidence_text_missing")
+        if not _nonempty_field(
+            value,
+            (
+                "source_id",
+                "source",
+                "citation",
+                "url",
+                "source_url",
+                "document_id",
+                "file",
+                "path",
+            ),
+        ):
+            raise ValueError(f"{prefix}:evidence_source_or_citation_missing")
+
+
+def load_kg_strict(
+    corpus_dir: str | Path,
+    *,
+    require_entities: bool = True,
+    require_relations: bool = True,
+    require_triples: bool = True,
+    require_evidence_chunks: bool = True,
+) -> FireKG:
+    """Load the complete official FireKG contract without lossy JSONL parsing."""
+    root = Path(corpus_dir)
+    if not root.is_dir():
+        raise ValueError(f"kg_corpus_dir_missing:{root}")
+    requirements = {
+        "entities": require_entities,
+        "relations": require_relations,
+        "triples": require_triples,
+        "evidence_chunks": require_evidence_chunks,
+    }
+    data: dict[str, list[dict[str, Any]]] = {}
+    missing: list[str] = []
+    for kind, filename in CORPUS_FILES.items():
+        path = root / filename
+        required = requirements[kind]
+        if not required and not path.exists():
+            data[kind] = []
+            missing.append(filename)
+            continue
+        rows = read_jsonl_object_records_strict(path, require_nonempty=required)
+        for row in rows:
+            _validate_strict_row(kind, row, filename=filename)
+        data[kind] = [row.value for row in rows]
+    return FireKG(
+        entities=data["entities"],
+        relations=data["relations"],
+        triples=data["triples"],
+        evidence_chunks=data["evidence_chunks"],
+        missing_files=missing,
+        schema_warnings=[],
+    )
 
 
 def load_kg(corpus_dir: str | Path, *, require_any: bool = False) -> FireKG:

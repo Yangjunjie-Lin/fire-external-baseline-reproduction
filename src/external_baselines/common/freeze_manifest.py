@@ -16,6 +16,12 @@ from external_baselines.common.experiment_manifest import (
 )
 from external_baselines.common.formal_config_validator import FormalConfigError, _is_placeholder
 from external_baselines.common.io import read_json
+from external_baselines.common.path_resolution import PathContext, resolve_declared_path
+from external_baselines.common.strict_config_types import require_exact_nonempty_string
+from external_baselines.ekell_style.prompt_identity import (
+    EKELL_REQUIRED_PROMPTS,
+    validate_and_hash_prompt_bundle,
+)
 from external_baselines.method_registry import comparison_suite_methods
 
 COMPARISON_METHOD_IDS = comparison_suite_methods()
@@ -30,6 +36,7 @@ REQUIRED_COMPLETE_FIELDS = (
     "method_config_sha256",
     "merged_method_config_sha256",
     "prompt_tree_sha256",
+    "ekell_prompt_bundle",
     "runner_bundle",
     "llm",
     "embedding",
@@ -119,11 +126,17 @@ def runner_bundle_block_from_freeze(freeze: dict[str, Any]) -> dict[str, Any]:
 
 
 def prompt_tree_checksum(prompt_dir: str | Path) -> str | None:
-    root = Path(prompt_dir)
-    if not root.is_dir():
-        from external_baselines.common.formal_config_validator import ROOT_REL
+    from external_baselines.common.formal_config_validator import ROOT_REL
 
-        root = ROOT_REL / str(prompt_dir)
+    try:
+        root = resolve_declared_path(
+            prompt_dir,
+            context=PathContext(repository_root=ROOT_REL),
+            policy="repository_relative",
+            must_exist=False,
+        )
+    except (TypeError, ValueError):
+        return None
     if not root.is_dir():
         return None
     digests: list[str] = []
@@ -138,12 +151,14 @@ def prompt_tree_checksum(prompt_dir: str | Path) -> str | None:
 
 
 def _resolve_path(path: str | Path) -> Path:
-    candidate = Path(path)
-    if candidate.exists():
-        return candidate
     from external_baselines.common.formal_config_validator import ROOT_REL
 
-    return ROOT_REL / str(path)
+    return resolve_declared_path(
+        path,
+        context=PathContext(repository_root=ROOT_REL),
+        policy="repository_relative",
+        must_exist=False,
+    )
 
 
 def _raw_experiment_mapping(experiment: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +178,11 @@ def _freeze_config_identities(
     except (FileNotFoundError, ValueError):
         resolved = experiment if "base_config" in experiment else {}
 
-    base = resolved.get("base_config") or _raw_experiment_mapping(experiment).get("base_config")
+    base = (
+        resolved.get("base_config_resolved")
+        or resolved.get("base_config")
+        or _raw_experiment_mapping(experiment).get("base_config")
+    )
     shared = resolved.get("shared_model_config") or _raw_experiment_mapping(experiment).get(
         "shared_model_config"
     )
@@ -187,13 +206,42 @@ def _freeze_config_identities(
             try:
                 entry = dict(get_method_entry(resolved, mid, require_enabled=False))
                 if paths.get(mid):
-                    entry["config"] = paths[mid]
+                    entry["config"] = str(_resolve_path(paths[mid]))
                 merged_hashes[mid] = merged_method_config_sha256(
                     build_method_config(resolved, entry)
                 )
             except (FileNotFoundError, KeyError, TypeError, ValueError):
                 merged_hashes[mid] = None
     return base_sha, shared_sha, method_hashes, merged_hashes
+
+
+def _ekell_prompt_bundle_from_experiment(
+    experiment: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        entry = get_method_entry(
+            experiment,
+            "ekell_style_controlled_shared_llm",
+            require_enabled=False,
+        )
+        merged = build_method_config(experiment, entry)
+    except (FileNotFoundError, KeyError, TypeError, ValueError):
+        return None
+    ekell_style = merged.get("ekell_style") or {}
+    if not isinstance(ekell_style, dict):
+        raise FormalConfigError("ekell_style must be an object")
+    prompt_dir = require_exact_nonempty_string(
+        ekell_style.get("prompt_dir"),
+        field="ekell_style.prompt_dir",
+    )
+    if _is_placeholder(prompt_dir):
+        raise FormalConfigError("ekell_style.prompt_dir must not be a placeholder")
+    from external_baselines.common.formal_config_validator import ROOT_REL
+
+    return validate_and_hash_prompt_bundle(
+        prompt_dir,
+        path_context=PathContext(repository_root=ROOT_REL),
+    )
 
 
 def _index_block(
@@ -250,6 +298,7 @@ def build_freeze_manifest_payload(
         experiment=experiment_raw,
         method_config_paths=method_config_paths,
     )
+    prompt_bundle = _ekell_prompt_bundle_from_experiment(resolved_experiment)
 
     llm_out = dict(llm or {})
     shared_path = Path(str(shared)) if shared else None
@@ -315,7 +364,31 @@ def build_freeze_manifest_payload(
         "shared_model_config_sha256": shared_sha,
         "method_config_sha256": method_hashes,
         "merged_method_config_sha256": merged_hashes,
-        "prompt_tree_sha256": prompt_tree_checksum("configs/prompts/controlled"),
+        "prompt_tree_sha256": (
+            prompt_bundle.get("prompt_tree_sha256") if prompt_bundle else None
+        ),
+        "ekell_prompt_bundle": prompt_bundle,
+        "path_provenance": {
+            **dict(resolved_experiment.get("path_provenance") or {}),
+            "selected_dev_evidence": {
+                "declared_path": str(selected).replace("\\", "/"),
+                "resolved_path": str(_resolve_path(selected)),
+                "path_policy": (
+                    "absolute" if selected.is_absolute() else "repository_relative"
+                ),
+            },
+            "prompt_dir": (
+                {
+                    "declared_path": prompt_bundle.get("declared_prompt_dir"),
+                    "canonical_relative_path": prompt_bundle.get(
+                        "canonical_prompt_dir"
+                    ),
+                    "path_policy": prompt_bundle.get("path_policy"),
+                }
+                if prompt_bundle
+                else None
+            ),
+        },
         "runner_bundle": runner_bundle_block,
         "llm": llm_out,
         "embedding": emb_out,
@@ -510,6 +583,12 @@ def validate_freeze_manifest(
             raise FormalConfigError("freeze_manifest missing runner_bundle block.")
         for field in REQUIRED_COMPLETE_FIELDS:
             if field not in freeze or freeze.get(field) in (None, ""):
+                if field == "ekell_prompt_bundle" and freeze.get(
+                    "prompt_tree_sha256"
+                ):
+                    raise FormalConfigError(
+                        "legacy_freeze_prompt_identity_requires_regeneration"
+                    )
                 raise FormalConfigError(f"freeze_manifest incomplete: missing {field}.")
     elif any(
         freeze.get(key)
@@ -638,11 +717,68 @@ def validate_freeze_manifest(
             )
 
     prompt_hash = freeze.get("prompt_tree_sha256")
-    if prompt_hash or require_complete:
-        actual_prompt = prompt_tree_checksum("configs/prompts/controlled")
-        if not actual_prompt:
-            raise FormalConfigError("freeze_manifest prompt_tree_sha256 set but prompt tree missing.")
-        _check_hash(prompt_hash, actual_prompt, label="prompt_tree_sha256", require=True)
+    frozen_prompt_bundle = freeze.get("ekell_prompt_bundle")
+    if require_complete and not isinstance(frozen_prompt_bundle, dict):
+        if prompt_hash:
+            raise FormalConfigError(
+                "legacy_freeze_prompt_identity_requires_regeneration"
+            )
+        raise FormalConfigError("freeze_manifest missing ekell_prompt_bundle.")
+    if isinstance(frozen_prompt_bundle, dict):
+        actual_prompt_bundle = _ekell_prompt_bundle_from_experiment(current_experiment)
+        if actual_prompt_bundle is None:
+            raise FormalConfigError("ekell_prompt_bundle_actual_identity_unavailable")
+        frozen_tree = _require_sha256_value(
+            frozen_prompt_bundle.get("prompt_tree_sha256"),
+            label="ekell_prompt_bundle.prompt_tree_sha256",
+        )
+        if prompt_hash is not None:
+            _require_sha256_value(prompt_hash, label="prompt_tree_sha256")
+            if prompt_hash != frozen_tree:
+                raise FormalConfigError(
+                    "freeze_manifest prompt_tree_sha256 mismatches ekell_prompt_bundle."
+                )
+        for field in (
+            "declared_prompt_dir",
+            "canonical_prompt_dir",
+            "path_policy",
+            "prompt_tree_sha256",
+        ):
+            frozen_value = frozen_prompt_bundle.get(field)
+            if type(frozen_value) is not str or not frozen_value:
+                raise FormalConfigError(
+                    f"freeze_manifest ekell_prompt_bundle.{field} must be a non-empty string."
+                )
+            if frozen_value != actual_prompt_bundle.get(field):
+                raise FormalConfigError(
+                    f"freeze_manifest ekell_prompt_bundle.{field} mismatch."
+                )
+        frozen_files = frozen_prompt_bundle.get("required_prompt_files")
+        if not isinstance(frozen_files, dict):
+            raise FormalConfigError(
+                "freeze_manifest ekell_prompt_bundle.required_prompt_files must be an object."
+            )
+        if set(frozen_files) != set(EKELL_REQUIRED_PROMPTS):
+            raise FormalConfigError(
+                "freeze_manifest ekell_prompt_bundle.required_prompt_files must contain "
+                "exactly all required E-KELL prompts."
+            )
+        actual_files = actual_prompt_bundle["required_prompt_files"]
+        for name in EKELL_REQUIRED_PROMPTS:
+            frozen_file_sha = _require_sha256_value(
+                frozen_files.get(name),
+                label=f"ekell_prompt_bundle.required_prompt_files.{name}",
+            )
+            if frozen_file_sha != actual_files.get(name):
+                raise FormalConfigError(
+                    f"freeze_manifest ekell_prompt_bundle.required_prompt_files.{name} mismatch."
+                )
+    elif prompt_hash:
+        if require_complete:
+            raise FormalConfigError(
+                "legacy_freeze_prompt_identity_requires_regeneration"
+            )
+        _require_sha256_value(prompt_hash, label="prompt_tree_sha256")
 
     # Bundle / corpus / schema: standard runner_bundle block is authoritative for formal runs.
     runner_block = runner_bundle_block_from_freeze(freeze)

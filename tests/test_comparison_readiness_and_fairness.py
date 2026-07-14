@@ -449,7 +449,7 @@ def test_formal_requires_selected_dev_evidence(tmp_path: Path) -> None:
         validate_experiment_manifest(manifest, validation_stage="formal")
 
 
-def test_formal_rejects_config_checksum_mismatch(tmp_path: Path) -> None:
+def test_formal_rejects_legacy_manifest_checksum_freeze(tmp_path: Path) -> None:
     shared = tmp_path / "shared.yaml"
     shared.write_text(
         "llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n",
@@ -470,7 +470,7 @@ def test_formal_rejects_config_checksum_mismatch(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    with pytest.raises(FormalConfigError, match="experiment_manifest_sha256"):
+    with pytest.raises(FormalConfigError, match="legacy_freeze_requires_regeneration"):
         validate_freeze_manifest(
             freeze,
             experiment_manifest_path=shared,
@@ -525,7 +525,7 @@ def test_formal_rejects_embedding_version_mismatch(tmp_path: Path) -> None:
         )
 
 
-def test_formal_accepts_complete_frozen_configuration(tmp_path: Path) -> None:
+def test_formal_rejects_legacy_prompt_hash_only_configuration(tmp_path: Path) -> None:
     from external_baselines.common.checksums import sha256_file
     from external_baselines.common.freeze_manifest import prompt_tree_checksum
 
@@ -594,5 +594,5 @@ def test_formal_accepts_complete_frozen_configuration(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    result = validate_experiment_manifest(manifest, validation_stage="formal")
-    assert result["valid"] is True
+    with pytest.raises(FormalConfigError, match="legacy_freeze_requires_regeneration"):
+        validate_experiment_manifest(manifest, validation_stage="formal")

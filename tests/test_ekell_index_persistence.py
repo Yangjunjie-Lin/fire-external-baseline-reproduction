@@ -9,7 +9,7 @@ import pytest
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-from external_baselines.ekell_style.kg_loader import FireKG
+from external_baselines.ekell_style.kg_loader import FireKG, load_kg_strict
 from external_baselines.ekell_style.vector_index import (
     VectorIndex,
     VectorIndexError,
@@ -54,6 +54,26 @@ def _tiny_kg() -> FireKG:
         triples=[{"head": "hose", "relation": "used_for", "tail": "fire", "source_id": "t1"}],
         evidence_chunks=[{"chunk_id": "c1", "text": "fire hose near exit", "source_id": "s1"}],
     )
+
+
+def _strict_kg_dir(tmp_path: Path) -> Path:
+    corpus = tmp_path / "strict_kg"
+    corpus.mkdir()
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose"}\n', encoding="utf-8"
+    )
+    (corpus / "relations.jsonl").write_text(
+        '{"relation_id":"r1","name":"used_for"}\n', encoding="utf-8"
+    )
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire"}\n',
+        encoding="utf-8",
+    )
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '{"chunk_id":"c1","text":"hose evidence","source_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    return corpus
 
 
 def _build_ekell_index(tmp_path: Path) -> Path:
@@ -484,3 +504,78 @@ def test_ekell_strict_validator_rejects_zero_vector(tmp_path: Path) -> None:
 
     with pytest.raises(VectorIndexError, match="ekell_index_zero_embedding_vector"):
         VectorIndex.validate_directory_for_freeze(index_dir)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "entities.jsonl",
+        "relations.jsonl",
+        "triples.jsonl",
+        "evidence_chunks.jsonl",
+    ],
+)
+def test_strict_kg_rejects_missing_required_file(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / filename).unlink()
+    with pytest.raises(ValueError, match=rf"kg_jsonl_missing:{filename}"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_empty_file(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "relations.jsonl").write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="kg_jsonl_empty:relations.jsonl"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_non_object_jsonl_record(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '["not", "an", "object"]\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError,
+        match="kg_jsonl_record_must_be_object:entities.jsonl:line_1",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_reports_original_line_number(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n{"head":"ok","relation":"r","tail":"ok"}\n[1, 2]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="kg_jsonl_record_must_be_object:triples.jsonl:line_3",
+    ):
+        load_kg_strict(corpus)
+
+
+@pytest.mark.parametrize("field", ["head", "relation", "tail"])
+def test_strict_kg_rejects_triple_missing_required_field(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    triple = {"head": "hose", "relation": "used_for", "tail": "fire"}
+    del triple[field]
+    (corpus / "triples.jsonl").write_text(
+        json.dumps(triple) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=rf"triple_{field}_missing"):
+        load_kg_strict(corpus)
+
+
+def test_strict_kg_rejects_evidence_missing_text(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '{"chunk_id":"c1","source_id":"s1"}\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="evidence_text_missing"):
+        load_kg_strict(corpus)

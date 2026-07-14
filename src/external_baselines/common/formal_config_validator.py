@@ -100,7 +100,7 @@ class FormalConfigError(ValueError):
 
 
 def _requires_paper_facing_strictness(stage: str) -> bool:
-    return stage in {"freeze_candidate", "formal"}
+    return stage in {"index_build_candidate", "freeze_candidate", "formal"}
 
 
 def _requires_existing_freeze(stage: str) -> bool:
@@ -114,9 +114,9 @@ def _is_example_path(path: str) -> bool:
 
 def _resolve_repo_path(rel: str) -> Path:
     candidate = Path(rel)
-    if candidate.is_file():
-        return candidate
-    return ROOT_REL / rel
+    if candidate.is_absolute():
+        return candidate.resolve(strict=False)
+    return (ROOT_REL / rel).resolve(strict=False)
 
 
 def _is_placeholder(value: Any) -> bool:
@@ -426,7 +426,7 @@ def validate_dense_config_for_real_run(
         )
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Dense RAG requires non-placeholder dense_rag.index_path.")
-    if validation_stage != "template" and not allow_placeholders:
+    if validation_stage not in {"template", "index_build_candidate"} and not allow_placeholders:
         path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Dense RAG index_path does not exist: {index_path}")
@@ -562,7 +562,7 @@ def validate_hybrid_config_for_real_run(
         )
     if not index_path or (_is_placeholder(index_path) and not allow_placeholders):
         raise FormalConfigError("Formal Hybrid RAG requires non-placeholder dense index_path.")
-    if validation_stage != "template" and not allow_placeholders:
+    if validation_stage not in {"template", "index_build_candidate"} and not allow_placeholders:
         path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal Hybrid RAG index_path does not exist: {index_path}")
@@ -625,7 +625,7 @@ def validate_ekell_vector_for_formal(
         )
         if _is_placeholder(value) and not allow_placeholders:
             raise FormalConfigError(f"Formal E-KELL requires ekell_vector.{field} (non-placeholder).")
-    _validate_positive_dimension(
+    validated_dimension = _validate_positive_dimension(
         vector.get("dimension"),
         allow_placeholders=allow_placeholders,
         field="ekell_vector.dimension",
@@ -658,7 +658,12 @@ def validate_ekell_vector_for_formal(
             field="ekell_style.prompt_dir",
             allow_placeholders=allow_placeholders,
         )
-    if not allow_placeholders and index_path and not _is_placeholder(index_path):
+    if (
+        not allow_placeholders
+        and validation_stage != "index_build_candidate"
+        and index_path
+        and not _is_placeholder(index_path)
+    ):
         path = _resolve_repo_path(index_path)
         if not path.exists():
             raise FormalConfigError(f"Formal E-KELL index_path does not exist: {index_path}")
@@ -677,7 +682,7 @@ def validate_ekell_vector_for_formal(
                         vector.get("model_version"),
                         field="ekell_vector.model_version",
                     ),
-                    expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                    expected_dimension=validated_dimension,
                     expected_kg_checksum=str(config.get("kg_checksum") or "") or None,
                     expected_corpus_checksum=str(config.get("corpus_checksum") or "") or None,
                     expected_normalize_embeddings=_validate_exact_bool(
@@ -697,7 +702,7 @@ def validate_ekell_vector_for_formal(
                         vector.get("model_version"),
                         field="ekell_vector.model_version",
                     ),
-                    expected_dimension=int(vector.get("dimension") or vector.get("dim") or 0) or None,
+                    expected_dimension=validated_dimension,
                     require_real_embedding=True,
                 )
         except VectorIndexError as exc:

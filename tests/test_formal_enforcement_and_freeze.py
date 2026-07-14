@@ -554,8 +554,20 @@ def _run_create_freeze_with_patches(
     bundle_path = tmp_path / "bundle"
     corpus_dir = bundle_path / "corpus"
     corpus_dir.mkdir(parents=True)
+    (corpus_dir / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"Entity 1"}\n',
+        encoding="utf-8",
+    )
+    (corpus_dir / "relations.jsonl").write_text(
+        '{"relation_id":"r1","name":"related_to"}\n',
+        encoding="utf-8",
+    )
+    (corpus_dir / "triples.jsonl").write_text(
+        '{"head":"e1","relation":"related_to","tail":"e1"}\n',
+        encoding="utf-8",
+    )
     (corpus_dir / "evidence_chunks.jsonl").write_text(
-        '{"chunk_id":"c1","text":"smoke evidence"}\n',
+        '{"chunk_id":"c1","text":"smoke evidence","source_id":"s1"}\n',
         encoding="utf-8",
     )
     calls = calls_out if calls_out is not None else {}
@@ -1349,4 +1361,121 @@ def test_hybrid_and_dense_index_identity_must_match() -> None:
                     "dense_index_checksum": "bbb",
                 },
             }
+        )
+
+
+def _custom_prompt_freeze(tmp_path: Path) -> tuple[Path, dict, Path, dict[str, str]]:
+    from external_baselines.ekell_style.prompt_identity import EKELL_REQUIRED_PROMPTS
+
+    prompt_dir = tmp_path / "custom_prompts"
+    prompt_dir.mkdir(parents=True)
+    for name in EKELL_REQUIRED_PROMPTS:
+        (prompt_dir / name).write_text(f"custom {name}\n", encoding="utf-8")
+    shared = tmp_path / "shared_prompt.yaml"
+    shared.write_text(
+        "llm:\n  provider: siliconflow\n  model: model\n  model_version: version\n",
+        encoding="utf-8",
+    )
+    methods: dict[str, str] = {}
+    for mid in comparison_suite_methods():
+        method = tmp_path / f"prompt_{mid}.yaml"
+        body: dict = {"method_id": mid}
+        if mid == "ekell_style_controlled_shared_llm":
+            body["ekell_style"] = {"prompt_dir": str(prompt_dir)}
+        method.write_text(yaml.safe_dump(body), encoding="utf-8")
+        methods[mid] = str(method)
+    evidence = tmp_path / "selected_prompt.json"
+    evidence.write_text('{"selected": true}\n', encoding="utf-8")
+    raw = {
+        "shared_model_config": str(shared),
+        "methods": [
+            {"method_id": mid, "config": path} for mid, path in methods.items()
+        ],
+    }
+    experiment = tmp_path / "prompt_experiment.yaml"
+    experiment.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    payload = build_freeze_manifest_payload(
+        experiment_manifest_path=experiment,
+        experiment_raw=raw,
+        selected_dev_run=evidence,
+        method_config_paths=methods,
+        embedding={
+            "backend": "text2vec",
+            "model_name": "example/bge",
+            "model_version": "v-test",
+            "dimension": 8,
+            "normalize_embeddings": True,
+        },
+    )
+    return experiment, payload, prompt_dir, methods
+
+
+def test_complete_freeze_uses_merged_ekell_prompt_dir(tmp_path: Path) -> None:
+    _experiment, payload, prompt_dir, _methods = _custom_prompt_freeze(tmp_path)
+    bundle = payload["ekell_prompt_bundle"]
+    assert bundle["declared_prompt_dir"] == str(prompt_dir).replace("\\", "/")
+    assert payload["prompt_tree_sha256"] == bundle["prompt_tree_sha256"]
+    assert set(bundle["required_prompt_files"]) == {
+        "stepwise_projection.txt",
+        "stepwise_intersection.txt",
+        "stepwise_union.txt",
+        "stepwise_negation.txt",
+        "final_kg_grounded_response.txt",
+    }
+
+
+def test_complete_freeze_accepts_custom_prompt_dir(tmp_path: Path) -> None:
+    experiment, payload, _prompt_dir, methods = _custom_prompt_freeze(tmp_path)
+    validate_freeze_manifest(
+        payload,
+        experiment_manifest_path=experiment,
+        experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+        require_complete=False,
+        method_config_paths=methods,
+    )
+
+
+def test_prompt_tree_hash_includes_additional_prompt_files(tmp_path: Path) -> None:
+    from external_baselines.common.path_resolution import PathContext
+    from external_baselines.ekell_style.prompt_identity import validate_and_hash_prompt_bundle
+
+    _experiment, first, prompt_dir, _methods = _custom_prompt_freeze(tmp_path)
+    (prompt_dir / "additional_context.txt").write_text("extra\n", encoding="utf-8")
+    second = _custom_prompt_freeze(tmp_path / "second")[1]
+    modified = validate_and_hash_prompt_bundle(
+        prompt_dir,
+        path_context=PathContext(repository_root=Path(__file__).resolve().parents[1]),
+    )
+    assert modified["prompt_tree_sha256"] != first["prompt_tree_sha256"]
+    assert second["prompt_tree_sha256"] == first["prompt_tree_sha256"]
+
+
+def test_formal_preflight_rejects_prompt_file_modified_after_freeze(tmp_path: Path) -> None:
+    from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
+
+    _experiment, payload, prompt_dir, _methods = _custom_prompt_freeze(tmp_path)
+    target = prompt_dir / "stepwise_projection.txt"
+    target.write_text("modified prompt\n", encoding="utf-8")
+    report = _validate_ekell_prompts(
+        prompt_dir,
+        freeze=payload,
+        formal=True,
+        declared_prompt_dir=str(prompt_dir),
+    )
+    assert report["ok"] is False
+    assert "ekell_prompt_hash_mismatch:stepwise_projection.txt" in report["errors"]
+
+
+def test_legacy_prompt_hash_only_freeze_requires_regeneration(tmp_path: Path) -> None:
+    _experiment, payload, _prompt_dir, _methods = _custom_prompt_freeze(tmp_path)
+    payload.pop("ekell_prompt_bundle")
+    with pytest.raises(
+        FormalConfigError,
+        match="legacy_freeze_prompt_identity_requires_regeneration",
+    ):
+        validate_freeze_manifest(
+            payload,
+            experiment_manifest_path=tmp_path / "missing.yaml",
+            experiment_raw={},
+            require_complete=True,
         )

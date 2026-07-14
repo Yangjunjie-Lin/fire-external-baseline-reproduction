@@ -50,11 +50,17 @@ python scripts/build_comparison_indexes.py \
   --method-set comparison_suite
 
 # validate-only (no model load):
+# Hard gate: exit 0 means report.ok=true; exit 1 means one or more validation
+# errors and report.ok=false.
 python scripts/build_comparison_indexes.py \
   --experiment-manifest configs/experiments/controlled_main_table_v1.yaml \
   --bundle <runner_bundle> \
   --method-set comparison_suite \
   --validate-only
+
+# Build and validation use Formal exact YAML types. Invalid string, integer, or
+# boolean values are rejected rather than coerced. Bundle aggregate and per-file
+# checksums are verified before embedding backend creation or index hashing.
 
 # 3) Dry-run validation (provisional freeze OK)
 python scripts/validate_formal_config.py \
@@ -104,6 +110,10 @@ python scripts/create_freeze_manifest.py \
 # Non-draft rejects producer/consumer Bundle checksum mismatch before index
 # loading, removes the temporary output on any failure, and preserves any
 # existing final freeze file.
+# Complete freeze derives prompt_dir from the merged E-KELL config and freezes
+# its canonical path, all required prompt-file SHA-256 values, and the complete
+# prompt-tree SHA-256. Build, freeze, and Formal preflight share one strict
+# loader for all four required FireKG JSONL files.
 
 # 6) Formal validation (requires freeze_status=frozen + freeze_manifest)
 python scripts/validate_formal_config.py \

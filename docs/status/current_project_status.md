@@ -27,6 +27,20 @@ Formal enforcement (decision suite): immutable suite summary does not pre-declar
 
 Current Formal identity rules: `comparison_suite_methods` is the sole ordered five-method authority, while `methods` is an unordered configuration registry that may retain disabled non-comparison entries only. Complete freeze generation validates the Formal Runner Bundle aggregate before `freeze_candidate` validation or persisted-index hashing, then performs strict Dense/E-KELL persisted-index validation before atomic output; draft freeze output is development-only. A producer-declared Bundle checksum is optional, but when present it must be a valid lowercase SHA-256 and exactly match the consumer-computed Bundle hash. Complete freezes contain full Dense and E-KELL file-level identity (`documents_checksum`, `documents_file_checksum`, `embeddings_checksum`, `corpus_checksum`, plus E-KELL `kg_checksum`) and semantic identity (`backend`, `model_name`, `model_version`, `dimension`, `normalize_embeddings`, `actual_embedding_used`, `smoke_fallback_used`), not only top-level checksums. Hybrid inherits Dense `index_checksum` and `index_manifest_sha256`. Formal preflight revalidates the live Dense, Hybrid, and E-KELL persisted indexes before any LLM client build or prediction generation and rejects internally valid replacement indexes whose identity differs from the freeze. Runtime evidence records the index checksum, manifest SHA-256, documents-file checksum, embeddings checksum, and normalization policy, and the prepared runtime is compared with preflight before its LLM client is created. Persisted embeddings must be finite and nonzero, and normalized indexes must satisfy unit-norm tolerance. Indexes built before `normalize_embeddings` entered the canonical checksum must be rebuilt; they are not silently migrated. `freeze_candidate` accepts only `freeze_status=provisional`; `frozen` is reserved for the reviewed manifest after complete freeze generation. Complete-freeze temporary output is removed on any failure while preserving any existing final freeze file. Schema meta-validation, runtime validation, and staged validation share the same primary schema filename and schema `$id`. Immutable run manifests record both input-cases and prediction-schema provenance. Formal `input_cases.jsonl` is strict and fail-closed: each non-empty line must be a JSON object with an exact non-empty canonical string `case_id`; diagnostics preserve original source line numbers and reject surrounding whitespace or control characters.
 
+Official index validation is also fail-closed in build and `--validate-only`
+modes: `report.ok=true` maps only to exit `0`, while any top-level error maps to
+exit `1`. The official builder applies the same exact string/integer/boolean
+rules as Formal validation. Complete freezes now derive the real E-KELL
+`prompt_dir` from the merged method configuration and bind its canonical path,
+five required prompt-file SHA-256 values, and complete tree SHA-256; legacy
+prompt-hash-only freezes must be regenerated. Official E-KELL build, freeze,
+and Formal preflight use one strict FireKG loader for all four required JSONL
+files, including full object/schema checks with original source line numbers.
+Critical paths use explicit repository-, experiment-, or Bundle-relative policy
+and are independent of CWD. The complete lifecycle is covered locally with an
+offline fake embedding backend; this is not evidence of a real Formal run or a
+remote GitHub Actions success.
+
 Formal pre-checks (read-only against main project):
 
 ```bash

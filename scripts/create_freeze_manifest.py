@@ -29,13 +29,21 @@ from external_baselines.common.freeze_manifest import (  # noqa: E402
     validate_freeze_manifest,
 )
 from external_baselines.common.io import read_json, write_json  # noqa: E402
+from external_baselines.common.path_resolution import (  # noqa: E402
+    PathContext,
+    resolve_declared_path,
+)
 from external_baselines.common.strict_config_types import require_exact_bool  # noqa: E402
-from external_baselines.ekell_style.kg_loader import fire_kg_checksum, load_kg  # noqa: E402
+from external_baselines.ekell_style.kg_loader import (  # noqa: E402
+    fire_kg_checksum,
+    load_kg_strict,
+)
 from external_baselines.ekell_style.vector_index import VectorIndex  # noqa: E402
 from external_baselines.interop.bundle import (  # noqa: E402
     load_runner_bundle,
     runner_bundle_corpus_aggregate_sha256,
     runner_bundle_evidence_source_checksum,
+    validate_bundle_checksum,
     validate_formal_bundle_aggregate_checksum,
 )
 from external_baselines.method_registry import comparison_suite_methods  # noqa: E402
@@ -71,6 +79,15 @@ def _embedding_normalize_value(block: dict, *, field: str) -> bool:
         raise SystemExit(str(exc)) from exc
 
 
+def _repo_path(value: str | Path, *, must_exist: bool = False) -> Path:
+    return resolve_declared_path(
+        value,
+        context=PathContext(repository_root=ROOT),
+        policy="repository_relative",
+        must_exist=must_exist,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Create freeze manifest (draft or complete).")
     parser.add_argument("--experiment-manifest", required=True)
@@ -89,11 +106,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    evidence = Path(args.selected_dev_run)
+    evidence = _repo_path(args.selected_dev_run)
     if not evidence.is_file() or evidence.stat().st_size <= 0:
         raise SystemExit(f"selected DEV evidence missing or empty: {evidence}")
 
-    experiment = load_experiment_manifest(args.experiment_manifest)
+    experiment_manifest_path = _repo_path(args.experiment_manifest)
+    experiment = load_experiment_manifest(experiment_manifest_path)
     raw = experiment.get("raw") or {}
     method_paths = {
         str(e.get("method_id")): str(e.get("config"))
@@ -115,9 +133,15 @@ def main(argv: list[str] | None = None) -> None:
     bundle = None
     if bundle_path and not _is_placeholder(bundle_path):
         try:
+            bundle_path = _repo_path(bundle_path)
             bundle = load_runner_bundle(bundle_path, formal=not args.draft)
             if not args.draft:
                 validate_formal_bundle_aggregate_checksum(bundle)
+                checksum_report = validate_bundle_checksum(bundle)
+                if checksum_report.get("ok") is not True:
+                    raise ValueError(
+                        "runner_bundle_file_checksum_validation_failed"
+                    )
             producer_declared_checksum = bundle.get("producer_declared_checksum")
             consumer_computed_hash = bundle.get("consumer_computed_bundle_hash")
             bundle_checksum = consumer_computed_hash
@@ -136,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
             corpus_dir = bundle.get("corpus_dir")
             if corpus_dir:
                 bundle_kg_checksum = fire_kg_checksum(
-                    load_kg(corpus_dir, require_any=not args.draft)
+                    load_kg_strict(corpus_dir)
                 )
         except Exception as exc:  # noqa: BLE001
             if not args.draft:
@@ -148,7 +172,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.draft:
         try:
             validate_experiment_manifest(
-                args.experiment_manifest,
+                experiment_manifest_path,
                 validation_stage="freeze_candidate",
                 method_set="comparison_suite",
                 runtime_bundle_path=bundle_path,
@@ -271,9 +295,9 @@ def main(argv: list[str] | None = None) -> None:
     }
 
     payload = build_freeze_manifest_payload(
-        experiment_manifest_path=args.experiment_manifest,
+        experiment_manifest_path=experiment_manifest_path,
         experiment_raw=raw,
-        selected_dev_run=args.selected_dev_run,
+        selected_dev_run=evidence,
         producer_declared_checksum=producer_declared_checksum,
         consumer_computed_hash=consumer_computed_hash or bundle_checksum,
         input_cases_sha256=input_cases_sha256,
@@ -285,6 +309,22 @@ def main(argv: list[str] | None = None) -> None:
         producer_checksum_available=producer_declared_checksum is not None,
         include_legacy_compat_fields=bool(args.include_legacy_compat_fields),
     )
+    provenance = payload.setdefault("path_provenance", {})
+    for label, declared in (
+        ("runner_bundle", bundle_path),
+        ("dense_index", dense_index_path),
+        ("ekell_index", ekell_index_path),
+        ("freeze_manifest", args.output),
+    ):
+        if declared:
+            resolved = _repo_path(declared)
+            provenance[label] = {
+                "declared_path": str(declared).replace("\\", "/"),
+                "resolved_path": str(resolved),
+                "path_policy": (
+                    "absolute" if Path(declared).is_absolute() else "repository_relative"
+                ),
+            }
     if args.draft:
         payload["freeze_status"] = "draft"
         payload["draft"] = True
@@ -294,13 +334,13 @@ def main(argv: list[str] | None = None) -> None:
         hybrid_cs = (payload.get("indexes") or {}).get("hybrid_dense_dependency", {}).get("index_checksum")
         if dense_cs and hybrid_cs and str(dense_cs) != str(hybrid_cs):
             raise SystemExit("Hybrid dense dependency checksum must equal Dense index checksum.")
-        output_path = Path(args.output)
+        output_path = _repo_path(args.output)
         temp_path = output_path.with_name(f"{output_path.name}.tmp")
         try:
             write_json(temp_path, payload)
             validate_freeze_manifest(
                 temp_path,
-                experiment_manifest_path=args.experiment_manifest,
+                experiment_manifest_path=experiment_manifest_path,
                 experiment_raw=raw,
                 require_complete=True,
                 expected_runner_bundle_checksum=consumer_computed_hash or bundle_checksum,
@@ -322,12 +362,13 @@ def main(argv: list[str] | None = None) -> None:
             if isinstance(exc, FormalConfigError):
                 raise SystemExit(f"Incomplete freeze manifest (use --draft to allow): {exc}") from exc
             raise SystemExit(f"Complete freeze manifest generation failed: {exc}") from exc
-        print(f"Wrote complete freeze manifest to {args.output}")
+        print(f"Wrote complete freeze manifest to {output_path}")
         print("Confirm freeze_status=frozen in the experiment manifest only after human review.")
         return
 
-    write_json(args.output, payload)
-    print(f"Wrote freeze manifest draft to {args.output}")
+    output_path = _repo_path(args.output)
+    write_json(output_path, payload)
+    print(f"Wrote freeze manifest draft to {output_path}")
     print("Manual confirmation still required before setting freeze_status=frozen.")
 
 

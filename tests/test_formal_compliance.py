@@ -1590,7 +1590,7 @@ def test_unified_formal_preflight_rejects_replaced_ekell_index(tmp_path: Path) -
     import shutil
 
     from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-    from external_baselines.ekell_style.kg_loader import FireKG, fire_kg_checksum, load_kg
+    from external_baselines.ekell_style.kg_loader import FireKG
     from external_baselines.ekell_style.vector_index import VectorIndex
     from tests.test_ekell_index_persistence import FakeEmbeddingModel
 
@@ -2558,18 +2558,15 @@ def test_ekell_preflight_records_prompt_hashes(tmp_path):
 
 
 def test_ekell_preflight_detects_prompt_hash_mismatch(tmp_path):
-    from external_baselines.common.checksums import sha256_file
     from external_baselines.common.decision_suite_preflight import _validate_ekell_prompts
 
     prompt_dir = _ekell_prompt_dir(tmp_path)
-    actual = sha256_file(prompt_dir / "stepwise_projection.txt")
     report = _validate_ekell_prompts(
         prompt_dir,
         freeze={"ekell_prompt_hashes": {"stepwise_projection.txt": "0" * 64}},
         formal=True,
     )
-    assert "ekell_prompt_hash_mismatch:stepwise_projection.txt" in report["errors"]
-    assert actual != "0" * 64
+    assert "legacy_freeze_prompt_identity_requires_regeneration" in report["errors"]
 
 
 def test_ekell_preflight_checks_logical_components():

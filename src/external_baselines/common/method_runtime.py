@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 
 from external_baselines.common.checksums import sha256_file
 from external_baselines.common.decision_suite_guard import sanitize_error_message
+from external_baselines.common.path_resolution import PathContext, resolve_declared_path
 from external_baselines.common.strict_config_types import (
     read_exact_bool,
     read_exact_int,
@@ -26,6 +27,17 @@ from external_baselines.retrieval.embedding_backends import (
     resolve_dimension,
     validate_runtime_embedding_identity,
 )
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _runtime_path(value: str | Path) -> Path:
+    return resolve_declared_path(
+        value,
+        context=PathContext(repository_root=REPOSITORY_ROOT),
+        policy="repository_relative",
+        must_exist=False,
+    )
 
 
 @dataclass
@@ -126,7 +138,7 @@ def clear_runtime_cache() -> None:
 
 
 def _index_manifest_checksum(index_path: str | Path) -> str:
-    manifest_path = Path(index_path) / "index_manifest.json"
+    manifest_path = _runtime_path(index_path) / "index_manifest.json"
     if manifest_path.is_file():
         return sha256_file(manifest_path)
     return ""
@@ -230,7 +242,9 @@ def prepare_dense_runtime(
     from external_baselines.retrieval.dense_index import DenseIndexError, load_dense_index
 
     dense_cfg = config.get("dense_rag") or {}
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
+    corpus_dir = _runtime_path(
+        config.get("paths", {}).get("corpus_dir", "data/corpus")
+    )
     evidence_path = corpus_dir / "evidence_chunks.jsonl"
     paper_final = read_exact_bool(config, "paper_final", field="paper_final", default=False)
     if "reject_smoke" in dense_cfg:
@@ -337,7 +351,7 @@ def prepare_dense_runtime(
             model=dense_cfg.get("injected_model"),
         )
 
-    index_dir = Path(cache_path)
+    index_dir = _runtime_path(cache_path)
     index_built_during_run = False
     if index_dir.is_dir() and (index_dir / "index_manifest.json").is_file():
         payload = load_dense_index(
@@ -455,7 +469,9 @@ def prepare_hybrid_runtime(
     merged["dense_rag"] = dense_cfg
 
     dense_runtime = prepare_dense_runtime(merged, embedding_backend=embedding_backend)
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
+    corpus_dir = _runtime_path(
+        config.get("paths", {}).get("corpus_dir", "data/corpus")
+    )
     lexical = LexicalRetriever.from_jsonl(str(corpus_dir / "evidence_chunks.jsonl"))
     runtime = HybridRuntime(
         lexical_retriever=lexical,
@@ -475,11 +491,13 @@ def prepare_ekell_runtime(
     embedding_backend: Any | None = None,
 ) -> EKELLRuntime:
     from external_baselines.ekell_style.embedding_backends import create_embedding_backend
-    from external_baselines.ekell_style.kg_loader import load_kg
+    from external_baselines.ekell_style.kg_loader import load_kg, load_kg_strict
     from external_baselines.ekell_style.vector_index import VectorIndexError
     from external_baselines.ekell_style.vector_retriever import VectorRetriever
 
-    corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
+    corpus_dir = _runtime_path(
+        config.get("paths", {}).get("corpus_dir", "data/corpus")
+    )
     ekell_cfg = config.get("ekell_style") or {}
     vector_cfg = config.get("ekell_vector") or ekell_cfg.get("vector") or {}
     paper_final = read_exact_bool(config, "paper_final", field="paper_final", default=False)
@@ -563,7 +581,7 @@ def prepare_ekell_runtime(
             )
             return cached
 
-    kg = load_kg(corpus_dir)
+    kg = load_kg_strict(corpus_dir) if formal_identity else load_kg(corpus_dir)
     if embedding_backend is not None:
         emb = embedding_backend
     else:
@@ -577,7 +595,7 @@ def prepare_ekell_runtime(
             model=vector_cfg.get("injected_model"),
         )
 
-    index_dir = Path(index_path) if index_path else None
+    index_dir = _runtime_path(index_path) if index_path else None
     index_built_during_run = False
     if index_dir and index_dir.is_dir() and (index_dir / "index_manifest.json").is_file():
         retriever = VectorRetriever.from_index_directory(

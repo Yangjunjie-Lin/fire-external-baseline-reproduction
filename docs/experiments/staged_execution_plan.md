@@ -57,7 +57,20 @@ python -m pytest tests/test_decision_comparison_suite.py tests/test_firebench_ta
 
 **Not allowed:** real LLM calls, embedding download, full index build, cross-repo dry run, formal experiment.
 
+`build_comparison_indexes.py --validate-only` is a hard gate even in Stage 0:
+any Bundle, exact-type configuration, Dense, Hybrid dependency, E-KELL, KG, or
+persisted-index failure produces `ok=false` and exit code `1`; only a completely
+valid report exits `0`. Relative resource paths are resolved from their declared
+repository, experiment-manifest, or Bundle policy and never from an arbitrary
+current working directory.
+
 Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Formal aliases mirror main-project `taxonomy.py` (commit `f228867480eb369c2b55cde3185af548965a23a5`). DEV-only aliases require explicit enable and are forbidden in formal runs. Final prediction JSONL must contain canonical IDs only; parser requires all decision/response/action fields to be explicitly present in formal mode. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
+
+After DEV selection, the complete freeze binds the prompt directory selected by
+the final merged E-KELL configuration, all required prompt-file SHA-256 values,
+and the full prompt-tree SHA-256. Official build, freeze, and Formal preflight
+also require non-empty `entities.jsonl`, `relations.jsonl`, `triples.jsonl`, and
+`evidence_chunks.jsonl`; every non-empty line must decode to a JSON object.
 
 ---
 

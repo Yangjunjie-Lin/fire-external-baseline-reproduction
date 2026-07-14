@@ -42,6 +42,19 @@ Dense and Hybrid are **controlled supplemental** baselines. They do **not** ente
 
 Formal freeze happens only after DEV selection. Do not claim experiment complete / paper ready / empirically validated.
 
+Official offline validation is fail-closed. `build_comparison_indexes.py
+--validate-only` returns exit code `0` only when the Runner Bundle and every
+required Dense, Hybrid, and E-KELL identity validate; any recorded error writes
+`ok=false` and returns exit code `1`. The builder shares Formal validation's
+exact string/integer/boolean contract and never repairs invalid configuration
+through truthiness or type coercion. Complete freezes bind the actual merged
+E-KELL `prompt_dir`, the SHA-256 of every required prompt, and the complete
+prompt-tree SHA-256. Official build, freeze, and Formal preflight share the same
+strict FireKG loader: all four JSONL files are required and non-empty, every
+record must be an object, and errors retain the original filename and line
+number. Repository, experiment, Bundle, index, evidence, and prompt paths use
+explicit resolution policies rather than the process working directory.
+
 Readiness gates:
 
 | Flag | Value |

@@ -14,6 +14,7 @@ from typing import Any
 
 from external_baselines.common.checksums import sha256_json
 from external_baselines.common.io import load_config, read_json, read_yaml
+from external_baselines.common.path_resolution import PathContext, resolve_declared_path
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
 from external_baselines.method_registry import (
     canonicalize_method_id,
@@ -27,6 +28,7 @@ MAIN_TABLE_METHODS = main_table_methods()
 SUPPLEMENTAL_METHODS = supplemental_methods()
 PAPER_FIDELITY_METHODS = paper_fidelity_methods()
 COMPARISON_SUITE_METHODS = comparison_suite_methods()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 METHOD_SETS = {
     "main_table": MAIN_TABLE_METHODS,
     "comparison_suite": COMPARISON_SUITE_METHODS,
@@ -118,8 +120,47 @@ def get_method_entry(
             return entry
     raise MethodEntryError(f"Experiment manifest does not define method entry: {mid}")
 
+
+def _resolve_experiment_resource(
+    declared: str,
+    *,
+    manifest_path: Path,
+) -> tuple[str, str]:
+    """Prefer manifest-relative resources, then deterministic repository-relative ones."""
+    candidate = Path(declared)
+    context = PathContext(
+        repository_root=REPOSITORY_ROOT,
+        experiment_manifest_path=manifest_path,
+    )
+    if candidate.is_absolute():
+        return str(candidate.resolve(strict=False)), "absolute"
+    experiment_candidate = resolve_declared_path(
+        declared,
+        context=context,
+        policy="experiment_relative",
+        must_exist=False,
+    )
+    if experiment_candidate.exists():
+        return str(experiment_candidate), "experiment_relative"
+    repository_candidate = resolve_declared_path(
+        declared,
+        context=context,
+        policy="repository_relative",
+        must_exist=False,
+    )
+    return str(repository_candidate), "repository_relative"
+
 def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path)
+    if not path.is_absolute():
+        path = resolve_declared_path(
+            path,
+            context=PathContext(repository_root=REPOSITORY_ROOT),
+            policy="repository_relative",
+            must_exist=False,
+        )
+    else:
+        path = path.resolve(strict=False)
     if not path.exists():
         raise FileNotFoundError(path)
     name = path.name.lower()
@@ -130,7 +171,16 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Experiment manifest must be a mapping: {path}")
 
-    shared_model = _manifest_string(raw, "shared_model_config")
+    shared_model_declared = _manifest_string(raw, "shared_model_config")
+    shared_model, shared_policy = _resolve_experiment_resource(
+        shared_model_declared,
+        manifest_path=path,
+    )
+    base_declared = _optional_manifest_string(raw, "base_config") or "configs/default.yaml"
+    base_config, base_policy = _resolve_experiment_resource(
+        base_declared,
+        manifest_path=path,
+    )
 
     methods = raw.get("methods")
     if not isinstance(methods, list) or not methods:
@@ -171,9 +221,19 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
                 method_config_path,
                 field=f"methods[{index}].config",
             )
+            method_config_declared = method_config_path
+            method_config_path, method_config_policy = _resolve_experiment_resource(
+                method_config_declared,
+                manifest_path=path,
+            )
+        else:
+            method_config_declared = None
+            method_config_policy = None
         resolved.append({
             "method_id": method_id,
             "config": method_config_path,
+            "config_declared": method_config_declared,
+            "config_path_policy": method_config_policy,
             "paper_table_role": role,
             "enabled": _method_enabled(entry, index=index),
         })
@@ -184,7 +244,31 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         "schema_version": _optional_manifest_string(raw, "schema_version") or "firebench-interop-v1",
         "track": _optional_manifest_string(raw, "track") or "A_shared_outcome",
         "shared_model_config": str(shared_model),
-        "base_config": _optional_manifest_string(raw, "base_config") or "configs/default.yaml",
+        "shared_model_config_declared": shared_model_declared,
+        "base_config": base_declared,
+        "base_config_resolved": base_config,
+        "base_config_declared": base_declared,
+        "path_provenance": {
+            "base_config": {
+                "declared_path": base_declared,
+                "resolved_path": base_config,
+                "path_policy": base_policy,
+            },
+            "shared_model_config": {
+                "declared_path": shared_model_declared,
+                "resolved_path": shared_model,
+                "path_policy": shared_policy,
+            },
+            "method_configs": {
+                entry["method_id"]: {
+                    "declared_path": entry.get("config_declared"),
+                    "resolved_path": entry.get("config"),
+                    "path_policy": entry.get("config_path_policy"),
+                }
+                for entry in resolved
+                if entry.get("config")
+            },
+        },
         "methods": resolved,
         "main_table_methods": list(raw.get("main_table_methods") or MAIN_TABLE_METHODS),
         "comparison_suite_methods": list(raw.get("comparison_suite_methods") or COMPARISON_SUITE_METHODS),
@@ -217,7 +301,10 @@ def build_method_config(manifest: dict[str, Any], method_entry: dict[str, Any]) 
         )
     if not method_entry.get("method_id"):
         raise TypeError("build_method_config requires method_entry with method_id")
-    paths = [manifest["base_config"], manifest["shared_model_config"]]
+    paths = [
+        manifest.get("base_config_resolved") or manifest["base_config"],
+        manifest["shared_model_config"],
+    ]
     if method_entry.get("config"):
         paths.append(method_entry["config"])
     config = load_config(*paths)
