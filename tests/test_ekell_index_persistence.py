@@ -778,6 +778,506 @@ def test_strict_kg_rejects_duplicate_triple(tmp_path: Path) -> None:
     )
     with pytest.raises(
         ValueError,
-        match=r"kg_duplicate_triple:hose\|used_for\|fire",
+        match=r"kg_duplicate_triple_provenance:hose\|used_for\|fire\|provenance_sha256=",
     ):
         load_kg_strict(corpus)
+
+
+def test_duplicate_explicit_triple_id_is_rejected(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"triple_id":"t1","head":"hose","relation":"used_for","tail":"fire","source_id":"s1"}',
+                '{"triple_id":"t1","head":"hydrant","relation":"used_for","tail":"fire","source_id":"s2"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_triple_id:t1"):
+        load_kg_strict(corpus)
+
+
+def test_same_fact_same_provenance_is_rejected(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s1"}',
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s1"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"kg_duplicate_triple_provenance:hose\|used_for\|fire\|provenance_sha256=",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_same_fact_different_source_is_allowed(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s1"}',
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s2"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    assert len(kg.triples) == 2
+
+
+def test_same_fact_different_citation_is_allowed(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","citation":"manual_a"}',
+                '{"head":"hose","relation":"used_for","tail":"fire","citation":"manual_b"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    assert len(kg.triples) == 2
+
+
+def test_same_fact_different_source_chunk_is_allowed(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        "\n".join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s1","source_chunk_id":"c1"}',
+                '{"head":"hose","relation":"used_for","tail":"fire","source_id":"s1","source_chunk_id":"c2"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    assert len(kg.triples) == 2
+
+
+def test_same_fact_evidence_reference_alias_is_same_provenance(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        "\n".join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","chunk_id":"c1"}',
+                '{"head":"hose","relation":"used_for","tail":"fire","source_chunk_id":"c1"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_triple_provenance"):
+        load_kg_strict(corpus)
+
+
+def test_same_fact_evidence_reference_list_order_is_same_provenance(
+    tmp_path: Path,
+) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        "\n".join(
+            [
+                '{"head":"hose","relation":"used_for","tail":"fire","source_chunk_ids":["c1","c2"]}',
+                '{"head":"hose","relation":"used_for","tail":"fire","source_chunk_ids":["c2","c1"]}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="kg_duplicate_triple_provenance"):
+        load_kg_strict(corpus)
+
+
+def test_duplicate_error_preserves_filename_and_original_line(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        "\n"
+        '{"head":"hose","relation":"used_for","tail":"fire"}\n'
+        "\n"
+        '{"head":"hose","relation":"used_for","tail":"fire"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"triples.jsonl:line_4:first_line_2",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_entity_id_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1 ","name":"hose"}\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError,
+        match="entity_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_relation_id_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "relations.jsonl").write_text(
+        '{"relation_id":" r1","name":"used_for"}\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError,
+        match="relation_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_triple_id_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"triple_id":"t1 ","head":"hose","relation":"used_for","tail":"fire"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="triple_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_chunk_id_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "evidence_chunks.jsonl").write_text(
+        '{"chunk_id":"c1 ","text":"hose evidence","source_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="evidence_chunk_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_triple_head_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose ","relation":"used_for","tail":"fire"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="triple_head_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_triple_tail_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":" fire"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="triple_tail_identifier_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_identifier_rejects_control_characters(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e\\u00071","name":"hose"}\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError,
+        match="entity_identifier_contains_control_character",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_identifier_rejects_interior_newline(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"ho\\nse","relation":"used_for","tail":"fire"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="triple_head_identifier_contains_control_character",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_identifier_accepts_exact_integer(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":123,"name":"hose"}\n', encoding="utf-8"
+    )
+    kg = load_kg_strict(corpus)
+    assert kg.entities[0]["entity_id"] == 123
+
+
+def test_identifier_rejects_boolean(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":true,"name":"hose"}\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="entity_identifier_invalid_type"):
+        load_kg_strict(corpus)
+
+
+def test_identifier_rejects_float(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":1.0,"name":"hose"}\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="entity_identifier_invalid_type"):
+        load_kg_strict(corpus)
+
+
+def test_strict_identity_matches_runtime_identity(tmp_path: Path) -> None:
+    from external_baselines.ekell_style.kg_loader import (
+        entity_id,
+        evidence_chunk_id,
+        triple_id,
+    )
+
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"E1","name":"hose"}\n{"entity_id":42,"name":"hydrant"}\n',
+        encoding="utf-8",
+    )
+    (corpus / "triples.jsonl").write_text(
+        '{"triple_id":"T1","head":"hose","relation":"used_for","tail":"fire","source_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    from external_baselines.ekell_style.kg_loader import _strict_identity
+
+    for entity in kg.entities:
+        assert _strict_identity("entities", entity)[1] == entity_id(entity)
+    for triple in kg.triples:
+        assert _strict_identity("triples", triple)[1] == triple_id(triple)
+    for chunk in kg.evidence_chunks:
+        assert _strict_identity("evidence_chunks", chunk)[1] == evidence_chunk_id(chunk)
+
+
+def test_entity_alias_list_accepts_exact_strings(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":["fire hose","water line"]}\n',
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    assert kg.entities[0]["aliases"] == ["fire hose", "water line"]
+
+
+def test_entity_alias_list_rejects_integer(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":["fire hose",123]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="entity_alias_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_entity_alias_list_rejects_boolean(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":[true]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="entity_alias_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_entity_alias_list_rejects_object(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":[{"x":1}]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="entity_alias_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_entity_alias_rejects_surrounding_whitespace(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":["fire hose "]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="entity_alias_must_not_have_surrounding_whitespace",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_entity_alias_scalar_field_rejects_non_string(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":123}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="entity_alias_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_entity_alias_legacy_delimited_string_is_accepted(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":"fire hose, water line"}\n',
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    assert kg.entities[0]["aliases"] == "fire hose, water line"
+
+
+def test_entity_alias_legacy_delimited_empty_item_is_rejected(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":"fire hose,,water line"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="entity_alias_legacy_delimited_item_empty",
+    ):
+        load_kg_strict(corpus)
+
+
+def test_triple_evidence_must_be_string(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire","evidence":123}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="triple_evidence_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_triple_description_must_be_string(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire","description":true}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="triple_description_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_triple_text_must_be_string(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire","text":["a","b"]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="triple_text_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_triple_content_must_be_string(tmp_path: Path) -> None:
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire","content":{"x":1}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="triple_content_must_be_string"):
+        load_kg_strict(corpus)
+
+
+def test_valid_strict_kg_does_not_require_lossy_string_coercion(
+    tmp_path: Path,
+) -> None:
+    from external_baselines.ekell_style.kg_loader import (
+        entity_aliases,
+        triple_to_text,
+    )
+
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":["fire hose"]}\n',
+        encoding="utf-8",
+    )
+    (corpus / "triples.jsonl").write_text(
+        '{"head":"hose","relation":"used_for","tail":"fire","evidence":"manual section 2"}\n',
+        encoding="utf-8",
+    )
+    kg = load_kg_strict(corpus)
+    aliases = entity_aliases(kg.entities[0])
+    assert "fire hose" in aliases
+    assert all(type(a) is str for a in aliases)
+    text = triple_to_text(kg.triples[0])
+    assert text == "hose --used_for--> fire. manual section 2"
+
+
+def test_lenient_triple_to_text_ignores_non_string_evidence() -> None:
+    from external_baselines.ekell_style.kg_loader import triple_to_text
+
+    text = triple_to_text(
+        {"head": "hose", "relation": "used_for", "tail": "fire", "evidence": 123}
+    )
+    assert text == "hose --used_for--> fire"
+
+
+def test_lenient_entity_aliases_skip_non_string_elements() -> None:
+    from external_baselines.ekell_style.kg_loader import entity_aliases
+
+    aliases = entity_aliases(
+        {"entity_id": "e1", "name": "hose", "aliases": ["fire hose", 123, True]}
+    )
+    assert "fire hose" in aliases
+    assert "123" not in aliases
+    assert "True" not in aliases
+
+
+def test_repository_dev_firekg_corpus_strict_compatibility() -> None:
+    corpus = Path(__file__).resolve().parents[1] / "data" / "corpus"
+    kg = load_kg_strict(corpus)
+    assert kg.counts() == {
+        "entities": 3,
+        "relations": 2,
+        "triples": 2,
+        "evidence_chunks": 2,
+    }
+
+
+def test_strict_firekg_audit_reports_structure_only() -> None:
+    from scripts.audit.audit_strict_firekg import audit_strict_firekg
+
+    corpus = Path(__file__).resolve().parents[1] / "data" / "corpus"
+    report = audit_strict_firekg(corpus)
+    assert report["ok"] is True
+    assert report["strict_loader_executed"] is True
+    assert report["strict_loader_error"] is None
+    assert report["counts"]["triples"] == 2
+    assert report["duplicate_statistics"]["triples"] == 0
+    assert report["schema_errors"] == []
+
+
+def test_strict_firekg_audit_preserves_rejected_file_and_line(tmp_path: Path) -> None:
+    from scripts.audit.audit_strict_firekg import audit_strict_firekg
+
+    corpus = _strict_kg_dir(tmp_path)
+    (corpus / "entities.jsonl").write_text(
+        '{"entity_id":"e1","name":"hose","aliases":[123]}\n',
+        encoding="utf-8",
+    )
+    report = audit_strict_firekg(corpus)
+    assert report["ok"] is False
+    assert report["rejected_field_type_statistics"]["entities"] == {
+        "entity_alias_must_be_string": 1
+    }
+    assert report["schema_errors"][0]["file"] == "entities.jsonl"
+    assert report["schema_errors"][0]["line"] == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -327,3 +328,61 @@ def test_official_lifecycle_is_cwd_independent(
         experiment_manifest=result["manifest"],
     )
     assert report["ok"] is True
+
+
+def test_official_lifecycle_survives_repository_relocation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.common.decision_suite_preflight as preflight_module
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+    import external_baselines.common.formal_config_validator as formal_validator
+
+    original = tmp_path / "original"
+    original.mkdir()
+    initial = _complete_lifecycle(original, monkeypatch)
+    relocated = tmp_path / "relocated"
+    shutil.copytree(original, relocated)
+    shutil.rmtree(original)
+
+    monkeypatch.setattr(experiment_manifest_module, "REPOSITORY_ROOT", relocated)
+    monkeypatch.setattr(formal_validator, "ROOT_REL", relocated)
+    monkeypatch.setattr(preflight_module, "ROOT_REL", relocated)
+    manifest_path = relocated / initial["manifest"].relative_to(initial["repository_root"])
+    bundle_path = relocated / initial["bundle"].relative_to(initial["repository_root"])
+
+    validated = validate_experiment_manifest(
+        manifest_path,
+        validation_stage="formal",
+        method_set="comparison_suite",
+        runtime_bundle_path=bundle_path,
+    )
+    assert validated["valid"] is True
+
+    experiment = load_experiment_manifest(
+        manifest_path,
+        repository_root=relocated,
+    )
+    bundle = load_runner_bundle(bundle_path, formal=True)
+    method_configs: dict[str, dict[str, Any]] = {}
+    for entry in enabled_methods(experiment, method_set="comparison_suite"):
+        config = build_method_config(experiment, entry)
+        config.setdefault("paths", {})["corpus_dir"] = bundle["corpus_dir"]
+        method_configs[entry["method_id"]] = config
+    report = preflight_decision_suite(
+        method_ids=list(method_configs),
+        method_configs=method_configs,
+        runner_bundle=bundle_path,
+        execution_stage="formal",
+        experiment_manifest=manifest_path,
+    )
+    assert report["ok"] is True
+    assert not original.exists()
+
+    freeze_path = relocated / initial["freeze"].relative_to(initial["repository_root"])
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    assert freeze["selected_dev_run_evidence"]["canonical_path"] == "selected_dev.json"
+    assert freeze["selected_dev_run_evidence"]["path_policy"] == "repository_relative"
+    for entry in freeze["path_provenance"].values():
+        if isinstance(entry, dict) and "resolved_path_authoritative" in entry:
+            assert entry["resolved_path_authoritative"] is False

@@ -9,8 +9,7 @@ from typing import Any
 from external_baselines.common.checksums import sha256_file
 from external_baselines.common.path_resolution import (
     PathContext,
-    repository_relative_identity,
-    resolve_declared_path,
+    resolve_path_reference,
 )
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
 
@@ -34,14 +33,15 @@ def validate_and_hash_prompt_bundle(
         declared_value,
         field="ekell_style.prompt_dir",
     )
-    declared_path = Path(declared)
-    policy = "repository_relative" if not declared_path.is_absolute() else "absolute"
-    root = resolve_declared_path(
+    reference = resolve_path_reference(
         declared,
         context=path_context,
         policy="repository_relative",
         expected_kind="directory",
+        allow_external_absolute=True,
     )
+    root = reference.resolved_path
+    policy = reference.path_policy
     if root.is_symlink():
         raise ValueError("ekell_prompt_dir_must_not_be_symlink")
 
@@ -74,19 +74,15 @@ def validate_and_hash_prompt_bundle(
             )
     tree_sha = hashlib.sha256("\n".join(tree_entries).encode("utf-8")).hexdigest()
 
-    try:
-        canonical = repository_relative_identity(
-            root,
-            repository_root=path_context.repository_root,
-        )
-    except ValueError:
-        canonical = root.as_posix()
+    canonical = reference.canonical_path
     return {
         "declared_prompt_dir": declared.replace("\\", "/"),
         "canonical_prompt_dir": canonical,
         "resolved_prompt_dir": str(root),
         "resolved_prompt_dir_authoritative": False,
         "path_policy": policy,
+        "external": reference.external,
+        "portable": not reference.external,
         "prompt_tree_sha256": tree_sha,
         "required_prompt_files": required_hashes,
     }

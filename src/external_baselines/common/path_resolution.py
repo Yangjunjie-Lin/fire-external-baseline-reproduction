@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -84,6 +85,83 @@ def _assert_within(path: Path, root: Path, *, policy: PathPolicy) -> None:
         raise ValueError(f"declared_path_escapes_{policy}_root") from exc
 
 
+def classify_absolute_reference(
+    resolved: Path,
+    *,
+    context: PathContext,
+) -> tuple[PathPolicy, str] | None:
+    """Classify a fully resolved absolute path against declared internal roots.
+
+    Priority is fixed and CWD-independent: repository root first, then the
+    experiment-manifest directory, then the Runner Bundle root.  ``resolved``
+    must already be symlink-resolved, so symlinks cannot smuggle an external
+    target into an internal identity (or vice versa).  Returns ``None`` when
+    the path is outside every declared root.
+    """
+    candidates: list[tuple[PathPolicy, Path]] = [
+        ("repository_relative", context.repository_root.resolve()),
+    ]
+    if context.experiment_manifest_path is not None:
+        candidates.append(
+            ("experiment_relative", context.experiment_manifest_path.resolve().parent)
+        )
+    if context.bundle_root is not None:
+        candidates.append(("bundle_relative", context.bundle_root.resolve()))
+    for policy, root in candidates:
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            continue
+        return policy, relative.as_posix()
+    return None
+
+
+def _internal_roots(context: PathContext) -> list[tuple[PathPolicy, Path, Path]]:
+    """Return ``(policy, lexical_root, resolved_root)`` in classification order."""
+    roots: list[tuple[PathPolicy, Path]] = [
+        ("repository_relative", context.repository_root),
+    ]
+    if context.experiment_manifest_path is not None:
+        roots.append(("experiment_relative", context.experiment_manifest_path.parent))
+    if context.bundle_root is not None:
+        roots.append(("bundle_relative", context.bundle_root))
+    return [
+        (
+            policy,
+            Path(os.path.abspath(root)),
+            root.resolve(),
+        )
+        for policy, root in roots
+    ]
+
+
+def _reject_absolute_symlink_escape(
+    declared: Path,
+    resolved: Path,
+    *,
+    context: PathContext,
+) -> None:
+    """Reject a lexically internal absolute path whose resolved target escapes.
+
+    Classifying such a path as merely external would allow a symlink beneath an
+    internal root to bypass the root boundary.  The diagnostic intentionally
+    names only the policy, not either machine-local path.
+    """
+    lexical = Path(os.path.abspath(declared))
+    for policy, lexical_root, resolved_root in _internal_roots(context):
+        try:
+            lexical.relative_to(lexical_root)
+        except ValueError:
+            continue
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(
+                "internal_absolute_path_classification_failed:"
+                f"declared_path_escapes_{policy}_root"
+            ) from exc
+
+
 def resolve_declared_path(
     declared: str | Path,
     *,
@@ -117,21 +195,32 @@ def resolve_path_reference(
     text = _validate_declared_path(declared)
     candidate = Path(text)
     if candidate.is_absolute():
-        if policy == "bundle_relative":
-            raise ValueError("bundle_relative_path_must_be_relative")
         if policy not in {
             "absolute_only",
             "absolute_external",
             "repository_relative",
             "experiment_relative",
+            "bundle_relative",
         }:
             raise ValueError(f"unknown path policy: {policy!r}")
-        if policy in {"repository_relative", "experiment_relative"} and not allow_external_absolute:
-            raise ValueError(f"absolute_path_not_allowed_for_{policy}")
         resolved = candidate.resolve(strict=False)
-        resolved_policy = "absolute_external"
-        canonical = resolved.as_posix()
-        external = True
+        _reject_absolute_symlink_escape(candidate, resolved, context=context)
+        internal = classify_absolute_reference(resolved, context=context)
+        if internal is not None:
+            # An absolute path inside a declared root is not external: its
+            # authoritative identity is the internal relative canonical path.
+            resolved_policy, canonical = internal
+            external = False
+        else:
+            if policy in {
+                "repository_relative",
+                "experiment_relative",
+                "bundle_relative",
+            } and not allow_external_absolute:
+                raise ValueError(f"absolute_path_not_allowed_for_{policy}")
+            resolved_policy = "absolute_external"
+            canonical = resolved.as_posix()
+            external = True
     else:
         if policy in {"absolute_only", "absolute_external"}:
             raise ValueError("declared_path_must_be_absolute")

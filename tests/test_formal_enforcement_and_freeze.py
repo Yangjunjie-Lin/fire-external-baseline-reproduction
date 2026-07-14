@@ -18,7 +18,11 @@ from external_baselines.common.freeze_manifest import (
     validate_freeze_manifest,
     validate_frozen_runtime_inputs,
 )
-from external_baselines.common.path_resolution import PathContext, resolve_path_reference
+from external_baselines.common.path_resolution import (
+    PathContext,
+    ResolvedPathReference,
+    resolve_path_reference,
+)
 from external_baselines.method_registry import comparison_suite_methods
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -951,7 +955,19 @@ def test_complete_freeze_cleans_temp_when_replace_fails(tmp_path: Path, monkeypa
     assert not (tmp_path / "freeze.json.tmp").exists()
 
 
-def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]]:
+def _complete_freeze_payload(
+    tmp_path: Path,
+    *,
+    selected_dev_declared: str | Path | ResolvedPathReference | None = None,
+) -> tuple[Path, dict, dict[str, str]]:
+    (tmp_path / "configs").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "configs" / "default.yaml", tmp_path / "configs" / "default.yaml")
+    shutil.copytree(
+        ROOT / "configs" / "prompts" / "paper_fidelity",
+        tmp_path / "configs" / "prompts" / "paper_fidelity",
+        dirs_exist_ok=True,
+    )
+    (tmp_path / "bundle").mkdir()
     shared = tmp_path / "shared.yaml"
     shared.write_text("llm:\n  provider: siliconflow\n  model: m\n  model_version: v\n", encoding="utf-8")
     methods: dict[str, str] = {}
@@ -963,7 +979,9 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
     evidence.write_text('{"selected": true}\n', encoding="utf-8")
     experiment = tmp_path / "experiment.yaml"
     raw = {
+        "base_config": "configs/default.yaml",
         "shared_model_config": shared.name,
+        "bundle": "bundle",
         "methods": [
             {"method_id": mid, "config": Path(path).name}
             for mid, path in methods.items()
@@ -973,11 +991,15 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
     payload = build_freeze_manifest_payload(
         experiment_manifest_path=experiment,
         experiment_raw=raw,
-        selected_dev_run=resolve_path_reference(
-            evidence.name,
-            context=PathContext(repository_root=tmp_path),
-            policy="repository_relative",
-            expected_kind="file",
+        selected_dev_run=(
+            selected_dev_declared
+            if selected_dev_declared is not None
+            else resolve_path_reference(
+                evidence.name,
+                context=PathContext(repository_root=tmp_path),
+                policy="repository_relative",
+                expected_kind="file",
+            )
         ),
         producer_declared_checksum=None,
         consumer_computed_hash="c" * 64,
@@ -1035,7 +1057,25 @@ def _complete_freeze_payload(tmp_path: Path) -> tuple[Path, dict, dict[str, str]
             },
         },
         producer_checksum_available=False,
+        repository_root=tmp_path,
     )
+    provenance = payload["path_provenance"]
+    for label, declared in (
+        ("dense_index", "dense_index"),
+        ("ekell_index", "ekell_index"),
+        ("freeze_manifest", "freeze.json"),
+    ):
+        reference = resolve_path_reference(
+            declared,
+            context=PathContext(repository_root=tmp_path),
+            policy="repository_relative",
+            must_exist=False,
+        )
+        entry = reference.to_dict()
+        entry["resolved_path_at_freeze"] = str(reference.resolved_path)
+        entry["resolved_path_authoritative"] = False
+        entry["portable"] = True
+        provenance[label] = entry
     return experiment, payload, methods
 
 
@@ -1070,6 +1110,41 @@ def test_complete_freeze_records_portable_selected_dev_identity(tmp_path: Path) 
         "path_policy": "repository_relative",
         "sha256": sha256_file(tmp_path / "selected.json"),
     }
+    assert _validate_complete_payload(
+        experiment,
+        payload,
+        methods,
+        repository_root=tmp_path,
+    )["ok"] is True
+
+
+def test_absolute_selected_dev_inside_repository_becomes_repository_relative(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(
+        tmp_path,
+        selected_dev_declared=(tmp_path / "selected.json").resolve(),
+    )
+    evidence = payload["selected_dev_run_evidence"]
+
+    assert evidence["path_policy"] == "repository_relative"
+    assert evidence["canonical_path"] == "selected.json"
+    assert payload["path_provenance"]["selected_dev_evidence"]["external"] is False
+    assert _validate_complete_payload(
+        experiment,
+        payload,
+        methods,
+        repository_root=tmp_path,
+    )["ok"] is True
+
+
+def test_complete_freeze_accepts_internal_absolute_selected_dev_path(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(
+        tmp_path,
+        selected_dev_declared=str((tmp_path / "selected.json").resolve()),
+    )
     assert _validate_complete_payload(
         experiment,
         payload,
@@ -1172,6 +1247,101 @@ def test_complete_freeze_rejects_external_selected_dev_path(tmp_path: Path) -> N
             methods,
             repository_root=repository,
         )
+
+
+def _assert_complete_rejects_external_resource(
+    tmp_path: Path,
+    resource: str,
+    nested_method: str | None = None,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    provenance = payload["path_provenance"]
+    if nested_method is not None:
+        entry = provenance["method_configs"][nested_method]
+        expected_label = f"method_configs.{nested_method}"
+    else:
+        entry = provenance[resource]
+        expected_label = resource
+    entry["path_policy"] = "absolute_external"
+    entry["external"] = True
+    entry["portable"] = False
+
+    with pytest.raises(
+        FormalConfigError,
+        match=rf"complete_freeze_external_resource_not_portable:{expected_label}",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_complete_freeze_rejects_external_base_config(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "base_config")
+
+
+def test_complete_freeze_rejects_external_shared_model_config(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "shared_model_config")
+
+
+def test_complete_freeze_rejects_external_method_config(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(
+        tmp_path,
+        "method_config",
+        "dense_rag",
+    )
+
+
+def test_complete_freeze_rejects_external_runner_bundle(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "runner_bundle")
+
+
+def test_complete_freeze_rejects_external_prompt_dir(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "prompt_dir")
+
+
+def test_complete_freeze_rejects_external_dense_index(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "dense_index")
+
+
+def test_complete_freeze_rejects_external_ekell_index(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "ekell_index")
+
+
+def test_complete_freeze_rejects_external_freeze_manifest(tmp_path: Path) -> None:
+    _assert_complete_rejects_external_resource(tmp_path, "freeze_manifest")
+
+
+def test_draft_freeze_can_report_external_resource_as_nonportable(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    external = tmp_path / "external-selected.json"
+    external.write_text('{"selected": true}\n', encoding="utf-8")
+    reference = resolve_path_reference(
+        external,
+        context=PathContext(repository_root=repository),
+        policy="repository_relative",
+        expected_kind="file",
+        allow_external_absolute=True,
+    )
+
+    assert reference.external is True
+    assert reference.to_dict()["resolved_path_authoritative"] is False
+    assert reference.path_policy == "absolute_external"
+    _experiment, payload, _methods = _complete_freeze_payload(
+        repository,
+        selected_dev_declared=reference,
+    )
+    payload["freeze_status"] = "draft"
+    payload["draft"] = True
+    provenance = payload["path_provenance"]["selected_dev_evidence"]
+    assert provenance["external"] is True
+    assert provenance["portable"] is False
+    assert provenance["resolved_path_authoritative"] is False
 
 
 def test_complete_freeze_requires_repository_relative_selected_dev_policy(
@@ -1571,6 +1741,8 @@ def test_hybrid_and_dense_index_identity_must_match() -> None:
 def _custom_prompt_freeze(tmp_path: Path) -> tuple[Path, dict, Path, dict[str, str]]:
     from external_baselines.ekell_style.prompt_identity import EKELL_REQUIRED_PROMPTS
 
+    (tmp_path / "configs").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "configs" / "default.yaml", tmp_path / "configs" / "default.yaml")
     prompt_dir = tmp_path / "custom_prompts"
     prompt_dir.mkdir(parents=True)
     for name in EKELL_REQUIRED_PROMPTS:
@@ -1591,6 +1763,7 @@ def _custom_prompt_freeze(tmp_path: Path) -> tuple[Path, dict, Path, dict[str, s
     evidence = tmp_path / "selected_prompt.json"
     evidence.write_text('{"selected": true}\n', encoding="utf-8")
     raw = {
+        "base_config": "configs/default.yaml",
         "shared_model_config": str(shared),
         "methods": [
             {"method_id": mid, "config": path} for mid, path in methods.items()
@@ -1615,6 +1788,7 @@ def _custom_prompt_freeze(tmp_path: Path) -> tuple[Path, dict, Path, dict[str, s
             "dimension": 8,
             "normalize_embeddings": True,
         },
+        repository_root=tmp_path,
     )
     return experiment, payload, prompt_dir, methods
 

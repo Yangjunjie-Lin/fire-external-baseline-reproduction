@@ -120,22 +120,45 @@ def test_path_resolution_rejects_symlink_escape(tmp_path: Path) -> None:
 
 
 def test_bundle_relative_path_cannot_escape(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
     bundle = tmp_path / "bundle"
+    repository.mkdir()
     bundle.mkdir()
     with pytest.raises(ValueError, match="escapes_bundle_relative_root"):
         resolve_declared_path(
             "../secret.json",
-            context=PathContext(repository_root=tmp_path, bundle_root=bundle),
+            context=PathContext(repository_root=repository, bundle_root=bundle),
             policy="bundle_relative",
             must_exist=False,
         )
-    with pytest.raises(ValueError, match="bundle_relative_path_must_be_relative"):
+    with pytest.raises(ValueError, match="absolute_path_not_allowed_for_bundle_relative"):
         resolve_declared_path(
             tmp_path / "outside.json",
-            context=PathContext(repository_root=tmp_path, bundle_root=bundle),
+            context=PathContext(repository_root=repository, bundle_root=bundle),
             policy="bundle_relative",
             must_exist=False,
+            allow_external_absolute=False,
         )
+
+
+def test_absolute_path_inside_bundle_becomes_bundle_relative(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    bundle = tmp_path / "bundle"
+    resource = bundle / "corpus" / "triples.jsonl"
+    repository.mkdir()
+    resource.parent.mkdir(parents=True)
+    resource.write_text("{}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        resource,
+        context=PathContext(repository_root=repository, bundle_root=bundle),
+        policy="bundle_relative",
+        expected_kind="file",
+    )
+
+    assert reference.path_policy == "bundle_relative"
+    assert reference.canonical_path == "corpus/triples.jsonl"
+    assert reference.external is False
 
 
 def test_resolved_path_reference_records_portable_repository_identity(
@@ -164,12 +187,14 @@ def test_resolved_path_reference_records_portable_repository_identity(
 def test_resolved_path_reference_marks_allowed_absolute_as_external(
     tmp_path: Path,
 ) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
     resource = tmp_path / "resource.yaml"
     resource.write_text("{}\n", encoding="utf-8")
 
     reference = resolve_path_reference(
         resource,
-        context=PathContext(repository_root=tmp_path),
+        context=PathContext(repository_root=repository),
         policy="repository_relative",
         expected_kind="file",
         allow_external_absolute=True,
@@ -183,10 +208,12 @@ def test_resolved_path_reference_marks_allowed_absolute_as_external(
 def test_resolved_path_reference_rejects_absolute_when_external_is_disabled(
     tmp_path: Path,
 ) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
     with pytest.raises(ValueError, match="absolute_path_not_allowed"):
         resolve_path_reference(
             tmp_path / "resource.yaml",
-            context=PathContext(repository_root=tmp_path),
+            context=PathContext(repository_root=repository),
             policy="repository_relative",
             must_exist=False,
             allow_external_absolute=False,
@@ -196,12 +223,165 @@ def test_resolved_path_reference_rejects_absolute_when_external_is_disabled(
 def test_resolved_path_reference_rejects_absolute_external_by_default(
     tmp_path: Path,
 ) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
     with pytest.raises(ValueError, match="absolute_path_not_allowed"):
         resolve_path_reference(
             tmp_path / "resource.yaml",
-            context=PathContext(repository_root=tmp_path),
+            context=PathContext(repository_root=repository),
             policy="repository_relative",
             must_exist=False,
+        )
+
+
+def test_absolute_path_inside_repository_becomes_repository_relative(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    resource = repository / "outputs" / "dev" / "selected.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("{}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        resource,
+        context=PathContext(repository_root=repository),
+        policy="repository_relative",
+        expected_kind="file",
+    )
+
+    assert reference.path_policy == "repository_relative"
+    assert reference.canonical_path == "outputs/dev/selected.json"
+    assert reference.authoritative_path == "outputs/dev/selected.json"
+    assert reference.external is False
+
+
+def test_absolute_path_inside_manifest_dir_prefers_repository_identity(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    manifest = repository / "configs" / "experiments" / "manifest.yaml"
+    resource = manifest.parent / "shared.yaml"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("llm: {}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        resource,
+        context=PathContext(
+            repository_root=repository,
+            experiment_manifest_path=manifest,
+        ),
+        policy="repository_relative",
+        expected_kind="file",
+    )
+
+    assert reference.path_policy == "repository_relative"
+    assert reference.canonical_path == "configs/experiments/shared.yaml"
+    assert reference.external is False
+
+
+def test_absolute_path_inside_manifest_dir_outside_repo_is_experiment_relative(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    manifest = tmp_path / "experiments" / "manifest.yaml"
+    resource = manifest.parent / "shared.yaml"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("llm: {}\n", encoding="utf-8")
+
+    reference = resolve_path_reference(
+        resource,
+        context=PathContext(
+            repository_root=repository,
+            experiment_manifest_path=manifest,
+        ),
+        policy="repository_relative",
+        expected_kind="file",
+        allow_external_absolute=True,
+    )
+
+    assert reference.path_policy == "experiment_relative"
+    assert reference.canonical_path == "shared.yaml"
+    assert reference.external is False
+
+
+def test_internal_absolute_path_identity_survives_repository_relocation(
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    original = tmp_path / "origin"
+    resource = original / "outputs" / "selected.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("{}\n", encoding="utf-8")
+    before = resolve_path_reference(
+        resource,
+        context=PathContext(repository_root=original),
+        policy="repository_relative",
+        expected_kind="file",
+    )
+
+    relocated = tmp_path / "relocated"
+    shutil.copytree(original, relocated)
+    shutil.rmtree(original)
+    after = resolve_path_reference(
+        relocated / "outputs" / "selected.json",
+        context=PathContext(repository_root=relocated),
+        policy="repository_relative",
+        expected_kind="file",
+    )
+
+    assert before.canonical_path == after.canonical_path == "outputs/selected.json"
+    assert before.path_policy == after.path_policy == "repository_relative"
+    assert before.external is after.external is False
+
+
+def test_internal_path_resolution_is_cwd_independent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = tmp_path / "repo"
+    resource = repository / "outputs" / "selected.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("{}\n", encoding="utf-8")
+    references = []
+    for cwd in (tmp_path, repository / "outputs"):
+        monkeypatch.chdir(cwd)
+        references.append(
+            resolve_path_reference(
+                resource,
+                context=PathContext(repository_root=repository),
+                policy="repository_relative",
+                expected_kind="file",
+            )
+        )
+    assert references[0].canonical_path == references[1].canonical_path
+    assert references[0].resolved_path == references[1].resolved_path
+    assert all(ref.path_policy == "repository_relative" for ref in references)
+
+
+def test_internal_absolute_symlink_escape_is_rejected(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.json").write_text("{}\n", encoding="utf-8")
+    link = repository / "linked"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlink creation unavailable")
+
+    with pytest.raises(
+        ValueError,
+        match="internal_absolute_path_classification_failed",
+    ):
+        resolve_path_reference(
+            repository / "linked" / "secret.json",
+            context=PathContext(repository_root=repository),
+            policy="repository_relative",
+            expected_kind="file",
+            allow_external_absolute=True,
         )
 
 

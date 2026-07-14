@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from external_baselines.common.experiment_manifest import (
     MAIN_TABLE_METHODS,
@@ -409,3 +410,61 @@ def test_manifest_relative_path_wins_over_repository_candidate(tmp_path: Path) -
     assert manifest["base_config_path_policy"] == "experiment_relative"
     provenance = manifest["path_provenance"]["base_config"]
     assert provenance["alternate_repository_candidate_exists"] is True
+
+
+def test_internal_absolute_critical_resources_are_canonicalized(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+
+    monkeypatch.setattr(experiment_manifest_module, "REPOSITORY_ROOT", tmp_path)
+    base = tmp_path / "configs" / "base.yaml"
+    shared = tmp_path / "configs" / "shared.yaml"
+    method = tmp_path / "configs" / "method.yaml"
+    bundle = tmp_path / "bundle"
+    freeze = tmp_path / "outputs" / "freeze.json"
+    base.parent.mkdir(parents=True)
+    bundle.mkdir()
+    freeze.parent.mkdir()
+    base.write_text("{}\n", encoding="utf-8")
+    shared.write_text("llm: {}\n", encoding="utf-8")
+    method.write_text("method_id: direct_llm\n", encoding="utf-8")
+    freeze.write_text("{}\n", encoding="utf-8")
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(
+            {
+                "base_config": str(base.resolve()),
+                "shared_model_config": str(shared.resolve()),
+                "bundle": str(bundle.resolve()),
+                "freeze_manifest": str(freeze.resolve()),
+                "methods": [
+                    {
+                        "method_id": "direct_llm",
+                        "config": str(method.resolve()),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_experiment_manifest(manifest_path.resolve())
+    provenance = manifest["path_provenance"]
+    for label in (
+        "experiment_manifest",
+        "base_config",
+        "shared_model_config",
+        "runner_bundle",
+        "freeze_manifest",
+    ):
+        entry = provenance[label]
+        assert entry["path_policy"] == "repository_relative"
+        assert entry["external"] is False
+        assert not Path(entry["canonical_path"]).is_absolute()
+        assert "\\" not in entry["canonical_path"]
+    method_entry = provenance["method_configs"]["direct_llm"]
+    assert method_entry["path_policy"] == "repository_relative"
+    assert method_entry["external"] is False
+    assert method_entry["canonical_path"] == "configs/method.yaml"

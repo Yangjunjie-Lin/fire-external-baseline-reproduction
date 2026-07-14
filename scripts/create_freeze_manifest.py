@@ -25,6 +25,7 @@ from external_baselines.common.formal_config_validator import (  # noqa: E402
     validate_experiment_manifest,
 )
 from external_baselines.common.freeze_manifest import (  # noqa: E402
+    assert_freeze_provenance_portable,
     build_freeze_manifest_payload,
     validate_freeze_manifest,
 )
@@ -362,6 +363,7 @@ def main(argv: list[str] | None = None) -> None:
         embedding=embedding or None,
         producer_checksum_available=producer_declared_checksum is not None,
         include_legacy_compat_fields=bool(args.include_legacy_compat_fields),
+        repository_root=ROOT,
     )
     provenance = payload.setdefault("path_provenance", {})
     for label, declared in (
@@ -385,6 +387,7 @@ def main(argv: list[str] | None = None) -> None:
                 reference.resolved_path
             )
             freeze_reference["resolved_path_authoritative"] = False
+            freeze_reference["portable"] = not reference.external
             provenance[label] = freeze_reference
     if bundle_ref is not None:
         bundle_provenance = dict(
@@ -402,6 +405,10 @@ def main(argv: list[str] | None = None) -> None:
         payload["freeze_status"] = "draft"
         payload["draft"] = True
     else:
+        try:
+            assert_freeze_provenance_portable(provenance)
+        except FormalConfigError as exc:
+            raise SystemExit(str(exc)) from exc
         # Ensure hybrid matches dense
         dense_cs = (payload.get("indexes") or {}).get("dense", {}).get("index_checksum")
         hybrid_cs = (payload.get("indexes") or {}).get("hybrid_dense_dependency", {}).get("index_checksum")

@@ -80,10 +80,13 @@ def entity_type(entity: dict[str, Any]) -> str:
 def entity_aliases(entity: dict[str, Any]) -> list[str]:
     aliases = _first(entity, ["aliases", "alias", "synonyms", "keywords", "terms"], [])
     if isinstance(aliases, str):
+        # Legacy comma/semicolon-delimited compatibility form.
         aliases = [a.strip() for a in aliases.replace(";", ",").split(",") if a.strip()]
     if not isinstance(aliases, list):
         aliases = []
-    values = [entity_name(entity), entity_id(entity), entity_type(entity)] + [str(a) for a in aliases]
+    # Exact strings only: no lossy str() coercion of numbers/objects.
+    alias_strings = [a for a in aliases if type(a) is str]
+    values = [entity_name(entity), entity_id(entity), entity_type(entity)] + alias_strings
     return list(dict.fromkeys(v for v in values if v and v != "None"))
 
 
@@ -95,7 +98,7 @@ def triple_parts(row: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def triple_id(row: dict[str, Any], index: int | None = None) -> str:
-    value = _first(row, ["triple_id", "id", "edge_id", "relation_id"], "")
+    value = _first(row, ["triple_id", "id", "edge_id"], "")
     if value:
         return f"{value}"
     h, r, t = triple_parts(row)
@@ -107,6 +110,10 @@ def triple_id(row: dict[str, Any], index: int | None = None) -> str:
 def triple_to_text(row: dict[str, Any]) -> str:
     h, r, t = triple_parts(row)
     evidence = _first(row, ["evidence", "description", "text", "content"], "")
+    if type(evidence) is not str:
+        # Exact strings only: strict-loaded records guarantee this; lenient
+        # records must not be silently stringified into retrieval text.
+        evidence = ""
     text = f"{h} --{r}--> {t}".strip()
     return f"{text}. {evidence}" if evidence else text
 
@@ -190,6 +197,10 @@ def read_jsonl_object_records_strict(
     return rows
 
 
+def _contains_control_character(text: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
 def _exact_nonempty_text_field(
     row: dict[str, Any],
     keys: tuple[str, ...],
@@ -217,16 +228,99 @@ def _entity_identifier_field(
     *,
     label: str,
 ) -> str:
+    """Return the exact identifier value without silent normalization.
+
+    Strings are returned verbatim; surrounding whitespace and control
+    characters are schema errors, never trimmed.  Exact integers use their
+    stable decimal form.  ``bool``/``float``/containers are rejected.
+    """
     for key in keys:
         if key not in row or row[key] is None:
             continue
         value = row[key]
-        if type(value) is str and value.strip():
-            return value.strip()
+        if type(value) is str:
+            if not value:
+                raise ValueError(f"{label}_must_be_nonempty_string")
+            if value != value.strip():
+                raise ValueError(f"{label}_must_not_have_surrounding_whitespace")
+            if _contains_control_character(value):
+                raise ValueError(f"{label}_contains_control_character")
+            return value
         if type(value) is int:
             return f"{value}"
         raise ValueError(f"{label}_invalid_type")
     return ""
+
+
+ALIAS_FIELD_KEYS = ("aliases", "alias", "synonyms", "keywords", "terms")
+
+
+def _validate_alias_string(value: str, *, label: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{label}_must_be_nonempty_string")
+    if value != value.strip():
+        raise ValueError(f"{label}_must_not_have_surrounding_whitespace")
+    if _contains_control_character(value):
+        raise ValueError(f"{label}_contains_control_character")
+
+
+def _validate_alias_fields(row: dict[str, Any], *, prefix: str) -> None:
+    """Aliases must be an exact string (legacy delimited form) or a list of exact strings."""
+    for key in ALIAS_FIELD_KEYS:
+        if key not in row or row[key] is None:
+            continue
+        value = row[key]
+        if type(value) is str:
+            _strict_field(
+                prefix,
+                _validate_alias_string,
+                value,
+                label="entity_alias",
+            )
+            # Legacy comma/semicolon-delimited compatibility form: every
+            # delimited item must be non-empty after separation.
+            parts = value.replace(";", ",").split(",")
+            if any(not part.strip() for part in parts):
+                raise ValueError(f"{prefix}:entity_alias_legacy_delimited_item_empty")
+            continue
+        if type(value) is list:
+            for element in value:
+                if type(element) is not str:
+                    raise ValueError(f"{prefix}:entity_alias_must_be_string")
+                _strict_field(
+                    prefix,
+                    _validate_alias_string,
+                    element,
+                    label="entity_alias",
+                )
+            continue
+        raise ValueError(f"{prefix}:entity_alias_must_be_string")
+
+
+def _validate_identifier_list_fields(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    prefix: str,
+    label: str,
+) -> None:
+    for key in keys:
+        if key not in row or row[key] is None:
+            continue
+        values = row[key]
+        if type(values) is not list:
+            raise ValueError(f"{prefix}:{label}_must_be_list")
+        for value in values:
+            _strict_field(
+                prefix,
+                _entity_identifier_field,
+                {key: value},
+                (key,),
+                label=label,
+            )
+
+
+TRIPLE_SEMANTIC_TEXT_KEYS = ("evidence", "description", "text", "content")
 
 
 def _strict_field(prefix: str, reader, *args, **kwargs) -> str:
@@ -241,6 +335,7 @@ def _validate_optional_text_fields(
     keys: tuple[str, ...],
     *,
     prefix: str,
+    label_prefix: str = "",
 ) -> None:
     for key in keys:
         if key not in row or row[key] is None:
@@ -250,7 +345,7 @@ def _validate_optional_text_fields(
             _exact_nonempty_text_field,
             row,
             (key,),
-            label=key,
+            label=f"{label_prefix}{key}",
         )
 
 
@@ -278,6 +373,13 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             value,
             ("type", "entity_type", "category", "label_type"),
             prefix=prefix,
+        )
+        _validate_alias_fields(value, prefix=prefix)
+        _validate_identifier_list_fields(
+            value,
+            ("source_chunk_ids", "evidence_chunk_ids"),
+            prefix=prefix,
+            label="entity_evidence_reference_identifier",
         )
         return
     if kind == "relations":
@@ -329,6 +431,17 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             )
             if not head or not relation_name or not tail:
                 raise ValueError(f"{prefix}:relation_identity_missing")
+            for keys, label in (
+                (("head_entity_id",), "relation_head_entity_identifier"),
+                (("tail_entity_id",), "relation_tail_entity_identifier"),
+            ):
+                _strict_field(
+                    prefix,
+                    _entity_identifier_field,
+                    value,
+                    keys,
+                    label=label,
+                )
         elif not relation_identifier and not relation_name:
             raise ValueError(f"{prefix}:relation_identity_missing")
         _validate_optional_text_fields(
@@ -336,6 +449,13 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             ("source_id", "citation", "url", "source_url", "file", "path"),
             prefix=prefix,
         )
+        if triple_shaped:
+            _validate_optional_text_fields(
+                value,
+                TRIPLE_SEMANTIC_TEXT_KEYS,
+                prefix=prefix,
+                label_prefix="relation_",
+            )
         return
     if kind == "triples":
         fields = {
@@ -371,10 +491,53 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             ("triple_id", "id", "edge_id"),
             label="triple_identifier",
         )
+        for keys, label in (
+            (("head_entity_id",), "triple_head_entity_identifier"),
+            (("relation_id",), "triple_relation_identifier"),
+            (("tail_entity_id",), "triple_tail_entity_identifier"),
+            (
+                (
+                    "chunk_id",
+                    "source_chunk_id",
+                    "evidence_id",
+                    "doc_id",
+                    "evidence_chunk_id",
+                    "supporting_chunk_id",
+                ),
+                "triple_evidence_reference_identifier",
+            ),
+        ):
+            _strict_field(
+                prefix,
+                _entity_identifier_field,
+                value,
+                keys,
+                label=label,
+            )
+        _validate_identifier_list_fields(
+            value,
+            ("source_chunk_ids", "evidence_chunk_ids"),
+            prefix=prefix,
+            label="triple_evidence_reference_identifier",
+        )
         _validate_optional_text_fields(
             value,
-            ("source_id", "citation", "url", "source_url", "file", "path"),
+            (
+                "source_id",
+                "citation",
+                "url",
+                "source_url",
+                "document_id",
+                "file",
+                "path",
+            ),
             prefix=prefix,
+        )
+        _validate_optional_text_fields(
+            value,
+            TRIPLE_SEMANTIC_TEXT_KEYS,
+            prefix=prefix,
+            label_prefix="triple_",
         )
         return
     if kind == "evidence_chunks":
@@ -382,7 +545,7 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             prefix,
             _entity_identifier_field,
             value,
-            ("chunk_id", "id", "evidence_id", "doc_id"),
+            ("chunk_id", "id", "evidence_id", "doc_id", "source_chunk_id"),
             label="evidence_chunk_identifier",
         )
         if not chunk_id:
@@ -416,9 +579,101 @@ def _validate_strict_row(kind: str, row: JsonlObjectRow, *, filename: str) -> No
             raise ValueError(f"{prefix}:evidence_source_or_citation_missing")
 
 
-def _strict_identity(kind: str, value: dict[str, Any]) -> str:
+PROVENANCE_TEXT_REFERENCE_KEYS = (
+    "source_id",
+    "citation",
+    "url",
+    "source_url",
+    "document_id",
+    "file",
+    "path",
+)
+PROVENANCE_IDENTIFIER_REFERENCE_KEYS = (
+    "chunk_id",
+    "source_chunk_id",
+    "evidence_id",
+    "doc_id",
+    "evidence_chunk_id",
+    "supporting_chunk_id",
+)
+PROVENANCE_IDENTIFIER_LIST_REFERENCE_KEYS = (
+    "source_chunk_ids",
+    "evidence_chunk_ids",
+)
+
+
+def _provenance_reference(value: dict[str, Any]) -> str:
+    """Canonicalize every declared provenance reference without coercion.
+
+    Protocol aliases share one semantic group so changing ``chunk_id`` to
+    ``source_chunk_id`` (or ``url`` to ``source_url``) does not manufacture a
+    distinct provenance identity.
+    """
+    groups: dict[str, set[str]] = {
+        "source": set(),
+        "citation": set(),
+        "evidence": set(),
+    }
+    text_groups = {
+        "source_id": "source",
+        "document_id": "source",
+        "citation": "citation",
+        "url": "citation",
+        "source_url": "citation",
+        "file": "citation",
+        "path": "citation",
+    }
+    for key in PROVENANCE_TEXT_REFERENCE_KEYS:
+        if key in value and value[key] is not None:
+            groups[text_groups[key]].add(
+                _exact_nonempty_text_field(
+                    value,
+                    (key,),
+                    label=f"triple_{key}",
+                )
+            )
+    for key in PROVENANCE_IDENTIFIER_REFERENCE_KEYS:
+        if key in value and value[key] is not None:
+            groups["evidence"].add(
+                _entity_identifier_field(
+                    value,
+                    (key,),
+                    label="triple_evidence_reference_identifier",
+                )
+            )
+    for key in PROVENANCE_IDENTIFIER_LIST_REFERENCE_KEYS:
+        if key in value and value[key] is not None:
+            raw_values = value[key]
+            if type(raw_values) is not list:
+                raise ValueError(
+                    "triple_evidence_reference_identifier_must_be_list"
+                )
+            canonical_values = [
+                _entity_identifier_field(
+                    {key: item},
+                    (key,),
+                    label="triple_evidence_reference_identifier",
+                )
+                for item in raw_values
+            ]
+            groups["evidence"].update(canonical_values)
+    references = [
+        [group, *sorted(values)]
+        for group, values in groups.items()
+        if values
+    ]
+    return json.dumps(references, ensure_ascii=False, separators=(",", ":"))
+
+
+def _strict_identity(kind: str, value: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(identity_kind, identity)`` for duplicate detection.
+
+    ``identity_kind`` is ``"id"`` for explicit protocol identifiers and
+    ``"provenance"`` for fact identities that include the evidence reference,
+    so the same fact recorded under different provenance is not a duplicate.
+    """
     if kind == "entities":
-        return _entity_identifier_field(
+        identity = _entity_identifier_field(
             value,
             ("entity_id", "id", "uid", "node_id"),
             label="entity_identifier",
@@ -427,10 +682,11 @@ def _strict_identity(kind: str, value: dict[str, Any]) -> str:
             ("name", "label", "entity", "text", "entity_name", "title"),
             label="entity_name",
         )
+        return "id", identity
     if kind == "evidence_chunks":
-        return _entity_identifier_field(
+        return "id", _entity_identifier_field(
             value,
-            ("chunk_id", "id", "evidence_id", "doc_id"),
+            ("chunk_id", "id", "evidence_id", "doc_id", "source_chunk_id"),
             label="evidence_chunk_identifier",
         )
     if kind == "relations":
@@ -440,7 +696,7 @@ def _strict_identity(kind: str, value: dict[str, Any]) -> str:
             label="relation_identifier",
         )
         if explicit:
-            return explicit
+            return "id", explicit
     if kind == "triples":
         explicit = _entity_identifier_field(
             value,
@@ -448,7 +704,7 @@ def _strict_identity(kind: str, value: dict[str, Any]) -> str:
             label="triple_identifier",
         )
         if explicit:
-            return explicit
+            return "id", explicit
     if kind in {"relations", "triples"}:
         head = _entity_identifier_field(
             value,
@@ -465,25 +721,64 @@ def _strict_identity(kind: str, value: dict[str, Any]) -> str:
             ("tail", "target", "object", "to", "t", "tail_entity", "dst"),
             label="triple_tail_identifier",
         )
+        provenance = _provenance_reference(value)
         if head or tail:
-            return f"{head}|{relation}|{tail}"
-        return relation
-    return ""
+            return "provenance", json.dumps(
+                [head, relation, tail, provenance],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return "provenance", json.dumps(
+            [relation, provenance],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return "id", ""
 
 
-def _reject_duplicate_identities(kind: str, rows: list[JsonlObjectRow]) -> None:
-    error_names = {
+def _reject_duplicate_identities(
+    kind: str,
+    rows: list[JsonlObjectRow],
+    *,
+    filename: str | None = None,
+) -> None:
+    id_error_names = {
         "entities": "kg_duplicate_entity_id",
         "relations": "kg_duplicate_relation_id",
-        "triples": "kg_duplicate_triple",
+        "triples": "kg_duplicate_triple_id",
         "evidence_chunks": "kg_duplicate_evidence_chunk_id",
     }
-    seen: set[str] = set()
+    provenance_error_names = {
+        "relations": "kg_duplicate_relation_provenance",
+        "triples": "kg_duplicate_triple_provenance",
+    }
+    seen: dict[tuple[str, str], int] = {}
     for row in rows:
-        identity = _strict_identity(kind, row.value)
-        if identity in seen:
-            raise ValueError(f"{error_names[kind]}:{identity}")
-        seen.add(identity)
+        identity_kind, identity = _strict_identity(kind, row.value)
+        key = (identity_kind, identity)
+        if key in seen:
+            location = (
+                f":{filename}:line_{row.line_no}:first_line_{seen[key]}"
+                if filename
+                else f":line_{row.line_no}:first_line_{seen[key]}"
+            )
+            if identity_kind == "provenance":
+                identity_digest = sha256_json({"identity": identity})
+                try:
+                    identity_parts = json.loads(identity)
+                    fact_parts = identity_parts[:3]
+                    fact = "|".join(str(part) for part in fact_parts)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    fact = kind
+                raise ValueError(
+                    f"{provenance_error_names[kind]}:{fact}|"
+                    f"provenance_sha256={identity_digest}{location}:"
+                    "field=triple_provenance"
+                )
+            raise ValueError(
+                f"{id_error_names[kind]}:{identity}{location}:field=identifier"
+            )
+        seen[key] = row.line_no
 
 
 def load_kg_strict(
@@ -516,7 +811,7 @@ def load_kg_strict(
         rows = read_jsonl_object_records_strict(path, require_nonempty=required)
         for row in rows:
             _validate_strict_row(kind, row, filename=filename)
-        _reject_duplicate_identities(kind, rows)
+        _reject_duplicate_identities(kind, rows, filename=filename)
         data[kind] = [row.value for row in rows]
     return FireKG(
         entities=data["entities"],

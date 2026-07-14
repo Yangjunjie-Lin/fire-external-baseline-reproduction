@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import yaml
 
@@ -212,40 +213,57 @@ def _write_experiment(
 
 
 def _invoke(manifest: Path, tmp_path: Path) -> tuple[int, dict[str, Any]]:
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+    import external_baselines.common.formal_config_validator as formal_validator
+
     output = tmp_path / "report.json"
-    try:
-        builder.main(
-            [
-                "--experiment-manifest",
-                str(manifest),
-                "--validate-only",
-                "--output",
-                str(output),
-            ]
-        )
-    except SystemExit as exc:
-        code = int(exc.code)
-    else:
-        code = 0
+    with (
+        patch.object(builder, "ROOT", tmp_path),
+        patch.object(experiment_manifest_module, "REPOSITORY_ROOT", tmp_path),
+        patch.object(formal_validator, "ROOT_REL", tmp_path),
+    ):
+        try:
+            builder.main(
+                [
+                    "--experiment-manifest",
+                    str(manifest),
+                    "--validate-only",
+                    "--output",
+                    str(output),
+                ]
+            )
+        except SystemExit as exc:
+            code = int(exc.code)
+        else:
+            code = 0
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["ok"] is (code == 0)
     return code, report
 
 
 def _invoke_build(manifest: Path, output: Path) -> tuple[int, dict[str, Any]]:
-    try:
-        builder.main(
-            [
-                "--experiment-manifest",
-                str(manifest),
-                "--output",
-                str(output),
-            ]
-        )
-    except SystemExit as exc:
-        code = int(exc.code)
-    else:
-        code = 0
+    import external_baselines.common.experiment_manifest as experiment_manifest_module
+    import external_baselines.common.formal_config_validator as formal_validator
+
+    repository_root = manifest.parent
+    with (
+        patch.object(builder, "ROOT", repository_root),
+        patch.object(experiment_manifest_module, "REPOSITORY_ROOT", repository_root),
+        patch.object(formal_validator, "ROOT_REL", repository_root),
+    ):
+        try:
+            builder.main(
+                [
+                    "--experiment-manifest",
+                    str(manifest),
+                    "--output",
+                    str(output),
+                ]
+            )
+        except SystemExit as exc:
+            code = int(exc.code)
+        else:
+            code = 0
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["ok"] is (code == 0)
     return code, report

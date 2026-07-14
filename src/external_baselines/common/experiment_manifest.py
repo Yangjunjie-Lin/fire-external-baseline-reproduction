@@ -17,7 +17,6 @@ from external_baselines.common.io import load_config, read_json, read_yaml
 from external_baselines.common.path_resolution import (
     PathContext,
     ResolvedPathReference,
-    resolve_declared_path,
     resolve_path_reference,
 )
 from external_baselines.common.strict_config_types import require_exact_nonempty_string
@@ -130,11 +129,12 @@ def _resolve_experiment_resource(
     declared: str,
     *,
     manifest_path: Path,
+    repository_root: Path,
 ) -> tuple[ResolvedPathReference, bool]:
     """Prefer manifest-relative resources, then deterministic repository-relative ones."""
     candidate = Path(declared)
     context = PathContext(
-        repository_root=REPOSITORY_ROOT,
+        repository_root=repository_root,
         experiment_manifest_path=manifest_path,
     )
     if candidate.is_absolute():
@@ -180,19 +180,23 @@ def _resource_fields(prefix: str, reference: ResolvedPathReference | None) -> di
         f"{prefix}_canonical_path": reference.canonical_path,
     }
 
-def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
+def load_experiment_manifest(
+    path: str | Path,
+    *,
+    repository_root: str | Path | None = None,
+) -> dict[str, Any]:
+    repository_root = Path(repository_root or REPOSITORY_ROOT).resolve()
     declared_manifest_path = str(path)
     path = Path(declared_manifest_path)
-    manifest_input_is_absolute = path.is_absolute()
-    if not manifest_input_is_absolute:
-        path = resolve_declared_path(
-            path,
-            context=PathContext(repository_root=REPOSITORY_ROOT),
-            policy="repository_relative",
-            must_exist=False,
-        )
-    else:
-        path = path.resolve(strict=False)
+    manifest_ref = resolve_path_reference(
+        path,
+        context=PathContext(repository_root=repository_root),
+        policy="repository_relative",
+        must_exist=False,
+        expected_kind="either",
+        allow_external_absolute=True,
+    )
+    path = manifest_ref.resolved_path
     if not path.exists():
         raise FileNotFoundError(path)
     name = path.name.lower()
@@ -207,21 +211,31 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
     shared_model_ref, shared_alternate = _resolve_experiment_resource(
         shared_model_declared,
         manifest_path=path,
+        repository_root=repository_root,
     )
     base_declared = _optional_manifest_string(raw, "base_config") or "configs/default.yaml"
     base_config_ref, base_alternate = _resolve_experiment_resource(
         base_declared,
         manifest_path=path,
+        repository_root=repository_root,
     )
     bundle_declared = _optional_manifest_string(raw, "bundle")
     bundle_ref, bundle_alternate = (
-        _resolve_experiment_resource(bundle_declared, manifest_path=path)
+        _resolve_experiment_resource(
+            bundle_declared,
+            manifest_path=path,
+            repository_root=repository_root,
+        )
         if bundle_declared is not None
         else (None, False)
     )
     freeze_declared = _optional_manifest_string(raw, "freeze_manifest")
     freeze_ref, freeze_alternate = (
-        _resolve_experiment_resource(freeze_declared, manifest_path=path)
+        _resolve_experiment_resource(
+            freeze_declared,
+            manifest_path=path,
+            repository_root=repository_root,
+        )
         if freeze_declared is not None
         else (None, False)
     )
@@ -269,6 +283,7 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
             method_config_ref, method_config_alternate = _resolve_experiment_resource(
                 method_config_declared,
                 manifest_path=path,
+                repository_root=repository_root,
             )
             method_config_path = str(method_config_ref.resolved_path)
             method_config_policy = method_config_ref.path_policy
@@ -290,24 +305,8 @@ def load_experiment_manifest(path: str | Path) -> dict[str, Any]:
         })
 
     shared_model = str(shared_model_ref.resolved_path)
-    try:
-        manifest_repository_identity = path.relative_to(REPOSITORY_ROOT).as_posix()
-        manifest_external = False
-    except ValueError:
-        manifest_repository_identity = path.as_posix()
-        manifest_external = True
     path_provenance = {
-        "experiment_manifest": {
-            "declared_path": declared_manifest_path,
-            "resolved_path": str(path),
-            "resolved_path_authoritative": False,
-            "path_policy": (
-                "absolute_external" if manifest_external else "repository_relative"
-            ),
-            "canonical_path": manifest_repository_identity,
-            "authoritative_path": manifest_repository_identity,
-            "external": manifest_external,
-        },
+        "experiment_manifest": manifest_ref.to_dict(),
         "base_config": {
             **base_config_ref.to_dict(),
             "alternate_repository_candidate_exists": base_alternate,

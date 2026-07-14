@@ -910,7 +910,7 @@ def validate_experiment_manifest(
         allow_placeholders = True
 
     try:
-        manifest = load_experiment_manifest(path)
+        manifest = load_experiment_manifest(path, repository_root=ROOT_REL)
     except ValueError as exc:
         raise FormalConfigError(str(exc)) from exc
     manifest_path = Path(manifest["manifest_path"])

@@ -72,6 +72,35 @@ strings or protocol-approved integers for identifier fields (never booleans or
 floats), while evidence text, relation labels, citations, URLs, and source paths
 must be exact non-empty strings and are never accepted by numeric coercion.
 
+### Formal path and strict FireKG closure contract
+
+- An absolute path whose resolved target is inside the declared repository,
+  experiment-manifest directory, or Runner Bundle root is stored under the
+  corresponding relative policy with a POSIX canonical path. Classification
+  is CWD-independent, and a symlink cannot escape an internal root.
+- A complete freeze rejects genuinely external base/shared/method configs,
+  Runner Bundle, selected DEV evidence, E-KELL prompts, Dense/E-KELL indexes,
+  and freeze manifest with
+  `complete_freeze_external_resource_not_portable:<resource>`. Draft freezes
+  may diagnose them only as `external=true`, `portable=false`, and
+  `resolved_path_authoritative=false`.
+- Selected DEV authority is the canonical repository-relative path plus
+  SHA-256. Legacy string-only complete freezes must be regenerated.
+- Strict FireKG identifiers are exact: strings are never trimmed; surrounding
+  whitespace and control characters fail; exact integers are canonicalized to
+  decimal identity; booleans, floats, lists, and objects fail.
+- Alias list elements and triple `evidence`/`description`/`text`/`content`
+  fields that enter retrieval text must be exact strings. The documented
+  comma/semicolon scalar alias compatibility form remains string-only.
+- Explicit `triple_id`/`edge_id` values are unique. Without one, duplicate
+  identity includes the fact and all declared provenance references, including
+  source/chunk/citation aliases: same provenance fails, different provenance is
+  allowed.
+- `index_build_candidate` completes before embedding initialization or index
+  writes. The offline fake-embedding lifecycle and local tests are structural
+  evidence only, not real Formal results or proof that remote GitHub Actions
+  passed.
+
 Readiness gates:
 
 | Flag | Value |

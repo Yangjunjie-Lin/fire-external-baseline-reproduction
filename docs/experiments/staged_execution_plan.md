@@ -78,6 +78,23 @@ protocol-approved integer IDs are allowed, but booleans and floats are not;
 evidence text, relation labels, citations, URLs, and source paths must be exact
 non-empty strings without numeric coercion.
 
+Closure rule: absolute declarations that resolve inside the repository,
+manifest directory, or Runner Bundle are converted to POSIX relative canonical
+identities. Symlink escape is rejected. A complete freeze cannot contain a
+genuinely external base/shared/method config, Bundle, selected DEV artifact,
+prompt tree, Dense/E-KELL index, or freeze manifest; draft diagnostics label
+such resources external, nonportable, and non-authoritative. Selected DEV is
+bound by canonical path + SHA-256.
+
+Strict identifiers are never trimmed: surrounding whitespace/control
+characters, booleans, floats, and containers fail, while exact integers are
+allowed. Alias list items and triple retrieval-text fields must be exact
+strings. Duplicate explicit triple IDs fail; ID-less triples use fact plus all
+declared source/chunk/citation provenance, permitting the same fact from a
+different provenance source. The offline fake-embedding lifecycle includes
+repository relocation, but is neither a real Formal result nor remote CI
+evidence. `index_build_candidate` remains a pre-embedding, pre-write gate.
+
 Taxonomy note: structured decision IDs must match the FireBench taxonomy snapshot. Formal aliases mirror main-project `taxonomy.py` (commit `f228867480eb369c2b55cde3185af548965a23a5`). DEV-only aliases require explicit enable and are forbidden in formal runs. Final prediction JSONL must contain canonical IDs only; parser requires all decision/response/action fields to be explicitly present in formal mode. Unknown IDs fail formal validation. Freeze taxonomy before TEST.
 
 After DEV selection, the complete freeze binds the prompt directory selected by

@@ -120,6 +120,21 @@ jobs:
             tests/test_formal_compliance.py \
             tests/test_ekell_index_persistence.py \
             -k "manifest_relative or resolved_path or freeze_manifest_path or selected_dev_identity or repository_relocation or index_build_candidate or before_embedding or strict_kg_type or numeric_evidence or relation_must_be_string"
+      - name: Targeted internal-absolute, external-resource, and strict-FireKG closure
+        run: |
+          python -m pytest -q \
+            tests/test_path_resolution.py \
+            tests/test_experiment_manifest.py \
+            tests/test_formal_enforcement_and_freeze.py \
+            tests/test_ekell_index_persistence.py \
+            tests/test_comparison_index_builder.py \
+            tests/test_official_formal_lifecycle.py \
+            -k "internal_absolute or external_resource or portable or repository_relocation or identifier_whitespace or identifier_control or surrounding_whitespace or control_character or alias_type or entity_alias or triple_evidence or duplicate_provenance or same_fact or strict_firekg or strict_kg or official_lifecycle or cwd_independent"
+      - name: Strict FireKG public DEV corpus audit
+        run: |
+          python scripts/audit/audit_strict_firekg.py \
+            --corpus-dir data/corpus \
+            --output outputs/diagnostics/strict_firekg_ci_audit.json
       - name: Formal config validator (template example)
         run: |
           python scripts/validate_formal_config.py \

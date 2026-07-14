@@ -54,6 +54,23 @@ integers for IDs (not booleans or floats), while evidence text, relation labels,
 citations, URLs, and source paths require exact non-empty strings without
 numeric coercion.
 
+Path/freeze closure now classifies resolved absolute paths against explicit
+repository, manifest, and Bundle roots. Internal paths become portable POSIX
+relative identities; symlink escapes fail. Complete freezes reject genuinely
+external experiment/base/shared/method/Bundle/selected-DEV/prompt/index/freeze
+resources. Draft diagnostics may report them only as external, nonportable,
+and non-authoritative. Selected DEV authority remains canonical path + SHA-256.
+
+Strict FireKG no longer trims identifiers. Exact strings and protocol integer
+IDs are accepted; surrounding whitespace, controls, booleans, floats, and
+containers fail. Alias list elements and triple retrieval-text fields require
+exact strings. Explicit duplicate triple IDs fail; ID-less triples are unique
+by fact plus all declared source/chunk/citation provenance, allowing independent
+evidence for the same fact. `index_build_candidate` runs before embedding or
+index writes. The fake-embedding relocation lifecycle is a local structural
+test only: it is not a Formal experiment result, and GitHub Actions remote
+status has not been verified.
+
 Formal pre-checks (read-only against main project):
 
 ```bash

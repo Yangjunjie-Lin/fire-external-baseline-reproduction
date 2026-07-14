@@ -19,6 +19,24 @@ protocol-approved integers, excluding booleans and floats. Evidence text,
 relation labels, citations, URLs, and source paths require exact non-empty
 strings and are never accepted through numeric string coercion.
 
+Formal complete-freeze paths must be portable. An absolute declaration inside
+the repository, experiment directory, or Runner Bundle is canonicalized to a
+POSIX relative identity; a real external absolute base/shared/method config,
+Bundle, selected DEV file, prompt directory, Dense/E-KELL index, or freeze
+manifest is rejected. Draft diagnostics may retain such paths only with
+`external=true`, `portable=false`, and a non-authoritative resolved path.
+Selected DEV authority is always canonical path + SHA-256.
+
+Strict FireKG never trims identifiers. Surrounding whitespace, controls,
+booleans, floats, and containers fail; exact integers are allowed. Alias list
+elements and triple retrieval-text fields (`evidence`, `description`, `text`,
+`content`) must be exact strings. Duplicate explicit triple IDs fail; without
+an explicit ID, the fact plus all source/chunk/citation provenance is unique,
+so distinct evidence sources may support the same fact. These checks and
+`index_build_candidate` run before embedding initialization or index writes.
+Local offline/fake-embedding success is not a real Formal experiment result and
+does not establish a successful remote GitHub Actions run.
+
 ## A. Five-method comparison suite (recommended system contrast)
 
 **Artifact layouts (do not mix):**

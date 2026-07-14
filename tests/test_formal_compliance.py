@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -1308,6 +1309,16 @@ def _build_fake_ekell_index(
 
 
 def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name: str = "published") -> dict:
+    # Formal complete-freeze fixtures must themselves live under a declared
+    # repository root. Keep an isolated temporary directory under ignored
+    # outputs so absolute fixture declarations canonicalize as repository paths.
+    fixture_parent = ROOT / "outputs" / "test-fixtures"
+    fixture_parent.mkdir(parents=True, exist_ok=True)
+    fixture_tempdir = tempfile.TemporaryDirectory(
+        prefix=f"{tmp_path.name}-",
+        dir=fixture_parent,
+    )
+    tmp_path = Path(fixture_tempdir.name)
     bundle_dir = _make_runner_bundle(tmp_path, n_cases=n_cases)
     bundle = _finalize_bundle_checksums(bundle_dir)
     corpus_dir = Path(bundle["corpus_dir"])
@@ -1493,7 +1504,25 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
             "seed": 20260710,
             "enable_thinking": False,
         },
+        repository_root=ROOT,
     )
+    provenance = freeze_payload["path_provenance"]
+    for label, declared in (
+        ("dense_index", dense_idx),
+        ("ekell_index", ekell_idx),
+        ("freeze_manifest", freeze_path),
+    ):
+        reference = resolve_path_reference(
+            declared,
+            context=PathContext(repository_root=ROOT),
+            policy="repository_relative",
+            must_exist=False,
+        )
+        entry = reference.to_dict()
+        entry["resolved_path_at_freeze"] = str(reference.resolved_path)
+        entry["resolved_path_authoritative"] = False
+        entry["portable"] = True
+        provenance[label] = entry
     freeze_path.write_text(json.dumps(freeze_payload, ensure_ascii=False), encoding="utf-8")
     run_root, pred_dir, dec_dir = _formal_run_dirs(tmp_path, name=run_name)
     return {
@@ -1505,6 +1534,7 @@ def _build_offline_formal_fixture(tmp_path: Path, *, n_cases: int = 2, run_name:
         "control_root": _formal_control_root(tmp_path, name=run_name),
         "dense_idx": dense_idx,
         "ekell_idx": ekell_idx,
+        "_fixture_tempdir": fixture_tempdir,
     }
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from external_baselines.common.checksums import sha256_file
@@ -45,6 +45,20 @@ REQUIRED_COMPLETE_FIELDS = (
     "llm",
     "embedding",
     "indexes",
+    "path_provenance",
+)
+
+CRITICAL_PORTABLE_PROVENANCE = (
+    "experiment_manifest",
+    "base_config",
+    "shared_model_config",
+    "method_configs",
+    "runner_bundle",
+    "selected_dev_evidence",
+    "prompt_dir",
+    "dense_index",
+    "ekell_index",
+    "freeze_manifest",
 )
 
 RUNNER_BUNDLE_IDENTITY_FIELDS = (
@@ -175,10 +189,14 @@ def _freeze_config_identities(
     experiment_manifest_path: str | Path,
     experiment: dict[str, Any],
     method_config_paths: dict[str, str] | None,
+    repository_root: Path,
 ) -> tuple[str | None, str | None, dict[str, str | None], dict[str, str | None]]:
     """Compute file-level and canonical merged-config identities from one merge path."""
     try:
-        resolved = load_experiment_manifest(experiment_manifest_path)
+        resolved = load_experiment_manifest(
+            experiment_manifest_path,
+            repository_root=repository_root,
+        )
     except (FileNotFoundError, ValueError):
         resolved = experiment if "base_config" in experiment else {}
 
@@ -221,6 +239,8 @@ def _freeze_config_identities(
 
 def _ekell_prompt_bundle_from_experiment(
     experiment: dict[str, Any],
+    *,
+    repository_root: Path,
 ) -> dict[str, Any] | None:
     try:
         entry = get_method_entry(
@@ -240,11 +260,9 @@ def _ekell_prompt_bundle_from_experiment(
     )
     if _is_placeholder(prompt_dir):
         raise FormalConfigError("ekell_style.prompt_dir must not be a placeholder")
-    from external_baselines.common.formal_config_validator import ROOT_REL
-
     return validate_and_hash_prompt_bundle(
         prompt_dir,
-        path_context=PathContext(repository_root=ROOT_REL),
+        path_context=PathContext(repository_root=repository_root),
     )
 
 
@@ -270,6 +288,34 @@ def _index_block(
     return block
 
 
+def _provenance_entry_is_external(entry: dict[str, Any]) -> bool:
+    return (
+        entry.get("external") is True
+        or entry.get("path_policy") in {"absolute_external", "absolute"}
+    )
+
+
+def _provenance_entry_is_portable(entry: dict[str, Any]) -> bool:
+    if _provenance_entry_is_external(entry) or entry.get("portable") is False:
+        return False
+    if entry.get("path_policy") not in {
+        "repository_relative",
+        "experiment_relative",
+        "bundle_relative",
+    }:
+        return False
+    canonical = entry.get("canonical_path") or entry.get(
+        "canonical_relative_path"
+    )
+    if type(canonical) is not str or not canonical:
+        return False
+    posix = PurePosixPath(canonical.replace("\\", "/"))
+    windows = PureWindowsPath(canonical)
+    if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts:
+        return False
+    return True
+
+
 def _freeze_path_provenance_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """Add machine-local freeze diagnostics without making them authoritative."""
     frozen = dict(entry)
@@ -282,7 +328,49 @@ def _freeze_path_provenance_entry(entry: dict[str, Any]) -> dict[str, Any]:
     if resolved is not None:
         frozen["resolved_path_at_freeze"] = str(resolved)
         frozen["resolved_path_authoritative"] = False
+    frozen["portable"] = _provenance_entry_is_portable(frozen)
     return frozen
+
+
+def assert_freeze_provenance_portable(
+    provenance: dict[str, Any],
+    *,
+    require_complete_entries: bool = False,
+) -> None:
+    """Fail closed when any complete-freeze critical resource is external."""
+    def _check(label: str, entry: Any) -> None:
+        if not isinstance(entry, dict):
+            return
+        if not _provenance_entry_is_portable(entry):
+            raise FormalConfigError(
+                f"complete_freeze_external_resource_not_portable:{label}"
+            )
+
+    provenance = provenance or {}
+    if require_complete_entries:
+        for label in CRITICAL_PORTABLE_PROVENANCE:
+            if label not in provenance or provenance[label] in (None, ""):
+                raise FormalConfigError(
+                    f"complete_freeze_path_provenance_missing:{label}"
+                )
+        method_entries = provenance.get("method_configs")
+        if not isinstance(method_entries, dict):
+            raise FormalConfigError(
+                "complete_freeze_path_provenance_missing:method_configs"
+            )
+        for method_id in COMPARISON_METHOD_IDS:
+            if not isinstance(method_entries.get(method_id), dict):
+                raise FormalConfigError(
+                    "complete_freeze_path_provenance_missing:"
+                    f"method_configs.{method_id}"
+                )
+
+    for label, entry in provenance.items():
+        if label == "method_configs" and isinstance(entry, dict):
+            for method_id, method_entry in entry.items():
+                _check(f"method_configs.{method_id}", method_entry)
+        else:
+            _check(label, entry)
 
 
 def _freeze_experiment_path_provenance(
@@ -319,15 +407,19 @@ def build_freeze_manifest_payload(
     llm: dict[str, Any] | None = None,
     producer_checksum_available: bool | None = None,
     include_legacy_compat_fields: bool = False,
+    repository_root: str | Path | None = None,
 ) -> dict[str, Any]:
     experiment_manifest_path = Path(experiment_manifest_path)
+    repository_root = Path(
+        repository_root or Path(__file__).resolve().parents[3]
+    ).resolve()
     if isinstance(selected_dev_run, ResolvedPathReference):
         selected_ref = selected_dev_run
     else:
         selected_ref = resolve_path_reference(
             selected_dev_run,
             context=PathContext(
-                repository_root=Path(__file__).resolve().parents[3],
+                repository_root=repository_root,
                 experiment_manifest_path=experiment_manifest_path,
             ),
             policy="repository_relative",
@@ -335,7 +427,10 @@ def build_freeze_manifest_payload(
             expected_kind="file",
         )
     try:
-        resolved_experiment = load_experiment_manifest(experiment_manifest_path)
+        resolved_experiment = load_experiment_manifest(
+            experiment_manifest_path,
+            repository_root=repository_root,
+        )
     except (FileNotFoundError, ValueError):
         resolved_experiment = experiment_raw
     raw_experiment = _raw_experiment_mapping(resolved_experiment)
@@ -346,8 +441,12 @@ def build_freeze_manifest_payload(
         experiment_manifest_path=experiment_manifest_path,
         experiment=experiment_raw,
         method_config_paths=method_config_paths,
+        repository_root=repository_root,
     )
-    prompt_bundle = _ekell_prompt_bundle_from_experiment(resolved_experiment)
+    prompt_bundle = _ekell_prompt_bundle_from_experiment(
+        resolved_experiment,
+        repository_root=repository_root,
+    )
 
     llm_out = dict(llm or {})
     shared_path = Path(str(shared)) if shared else None
@@ -433,6 +532,8 @@ def build_freeze_manifest_payload(
                 "path_policy": selected_ref.path_policy,
                 "resolved_path_at_freeze": str(selected_ref.resolved_path),
                 "resolved_path_authoritative": False,
+                "external": selected_ref.external,
+                "portable": not selected_ref.external,
             },
             "prompt_dir": (
                 {
@@ -447,6 +548,8 @@ def build_freeze_manifest_payload(
                         "resolved_prompt_dir"
                     ),
                     "resolved_path_authoritative": False,
+                    "external": prompt_bundle.get("external") is True,
+                    "portable": prompt_bundle.get("external") is not True,
                 }
                 if prompt_bundle
                 else None
@@ -771,7 +874,12 @@ def validate_freeze_manifest(
         )
 
     try:
-        current_experiment = load_experiment_manifest(experiment_manifest_path)
+        current_experiment = load_experiment_manifest(
+            experiment_manifest_path,
+            repository_root=Path(
+                repository_root or Path(__file__).resolve().parents[3]
+            ),
+        )
     except (FileNotFoundError, ValueError):
         current_experiment = experiment_raw
     raw_experiment = _raw_experiment_mapping(current_experiment)
@@ -799,6 +907,9 @@ def validate_freeze_manifest(
             experiment_manifest_path=experiment_manifest_path,
             experiment=experiment_raw,
             method_config_paths=method_config_paths,
+            repository_root=Path(
+                repository_root or Path(__file__).resolve().parents[3]
+            ).resolve(),
         )
     )
     if freeze.get("base_config_sha256") is not None or require_complete:
@@ -883,7 +994,12 @@ def validate_freeze_manifest(
             )
         raise FormalConfigError("freeze_manifest missing ekell_prompt_bundle.")
     if isinstance(frozen_prompt_bundle, dict):
-        actual_prompt_bundle = _ekell_prompt_bundle_from_experiment(current_experiment)
+        actual_prompt_bundle = _ekell_prompt_bundle_from_experiment(
+            current_experiment,
+            repository_root=Path(
+                repository_root or Path(__file__).resolve().parents[3]
+            ).resolve(),
+        )
         if actual_prompt_bundle is None:
             raise FormalConfigError("ekell_prompt_bundle_actual_identity_unavailable")
         frozen_tree = _require_sha256_value(
@@ -1209,6 +1325,10 @@ def validate_freeze_manifest(
         frozen_normalize = emb["normalize_embeddings"]
         if not (dense_normalize is ekell_normalize is frozen_normalize):
             raise FormalConfigError("cross_method_normalize_embeddings_mismatch")
+        assert_freeze_provenance_portable(
+            freeze.get("path_provenance") or {},
+            require_complete_entries=True,
+        )
 
     result = {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
     if migration_warning:
