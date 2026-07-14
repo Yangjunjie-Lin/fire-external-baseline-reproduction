@@ -61,6 +61,13 @@ CRITICAL_PORTABLE_PROVENANCE = (
     "freeze_manifest",
 )
 
+PROVENANCE_IDENTITY_FIELDS = (
+    "path_policy",
+    "canonical_path",
+    "external",
+    "portable",
+)
+
 RUNNER_BUNDLE_IDENTITY_FIELDS = (
     "consumer_computed_hash",
     "input_cases_sha256",
@@ -296,7 +303,7 @@ def _provenance_entry_is_external(entry: dict[str, Any]) -> bool:
 
 
 def _provenance_entry_is_portable(entry: dict[str, Any]) -> bool:
-    if _provenance_entry_is_external(entry) or entry.get("portable") is False:
+    if _provenance_entry_is_external(entry):
         return False
     if entry.get("path_policy") not in {
         "repository_relative",
@@ -314,6 +321,126 @@ def _provenance_entry_is_portable(entry: dict[str, Any]) -> bool:
     if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts:
         return False
     return True
+
+
+def _canonical_provenance_path(entry: dict[str, Any]) -> str | None:
+    canonical = entry.get("canonical_path") or entry.get(
+        "canonical_relative_path"
+    )
+    if type(canonical) is not str or not canonical:
+        return None
+    return PurePosixPath(canonical.replace("\\", "/")).as_posix()
+
+
+def _live_provenance_entry(reference: ResolvedPathReference) -> dict[str, Any]:
+    entry = reference.to_dict()
+    entry["canonical_path"] = reference.canonical_path.replace("\\", "/")
+    entry["resolved_path_authoritative"] = False
+    entry["portable"] = _provenance_entry_is_portable(entry)
+    return entry
+
+
+def _loaded_live_provenance_entry(entry: Any) -> dict[str, Any] | None:
+    """Normalize provenance freshly produced by ``load_experiment_manifest``."""
+    if not isinstance(entry, dict):
+        return None
+    live = dict(entry)
+    canonical = _canonical_provenance_path(live)
+    if canonical is not None:
+        live["canonical_path"] = canonical
+    live["resolved_path_authoritative"] = False
+    live["portable"] = _provenance_entry_is_portable(live)
+    return live
+
+
+def _provenance_resource_entries(
+    provenance: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for label in CRITICAL_PORTABLE_PROVENANCE:
+        if label == "method_configs":
+            methods = provenance.get(label)
+            if isinstance(methods, dict):
+                for method_id in COMPARISON_METHOD_IDS:
+                    method_entry = methods.get(method_id)
+                    if isinstance(method_entry, dict):
+                        entries[f"method_configs.{method_id}"] = method_entry
+            continue
+        entry = provenance.get(label)
+        if isinstance(entry, dict):
+            entries[label] = entry
+    return entries
+
+
+def compare_frozen_and_live_provenance(
+    frozen_provenance: dict[str, Any],
+    live_provenance: dict[str, Any],
+    *,
+    require_complete: bool,
+) -> list[dict[str, object]]:
+    """Compare portable path identity without comparing machine-local paths."""
+    frozen_entries = _provenance_resource_entries(frozen_provenance or {})
+    live_entries = _provenance_resource_entries(live_provenance or {})
+    labels = [
+        label
+        for resource in CRITICAL_PORTABLE_PROVENANCE
+        for label in (
+            [f"method_configs.{method_id}" for method_id in COMPARISON_METHOD_IDS]
+            if resource == "method_configs"
+            else [resource]
+        )
+    ]
+    errors: list[dict[str, object]] = []
+    for label in labels:
+        frozen = frozen_entries.get(label)
+        live = live_entries.get(label)
+        if frozen is None:
+            if require_complete:
+                errors.append(
+                    {
+                        "code": f"freeze_path_provenance_missing:{label}",
+                        "resource": label,
+                    }
+                )
+            continue
+        if live is None:
+            errors.append(
+                {
+                    "code": f"live_path_provenance_missing:{label}",
+                    "resource": label,
+                }
+            )
+            continue
+
+        frozen_values: dict[str, object] = {
+            "path_policy": frozen.get("path_policy"),
+            "canonical_path": _canonical_provenance_path(frozen),
+            "external": frozen.get("external"),
+            "portable": _provenance_entry_is_portable(frozen),
+        }
+        live_values: dict[str, object] = {
+            "path_policy": live.get("path_policy"),
+            "canonical_path": _canonical_provenance_path(live),
+            "external": live.get("external"),
+            "portable": _provenance_entry_is_portable(live),
+        }
+        for field in PROVENANCE_IDENTITY_FIELDS:
+            mismatch = frozen_values[field] != live_values[field]
+            if field == "portable":
+                mismatch = (
+                    mismatch
+                    or type(frozen.get("portable")) is not bool
+                    or frozen.get("portable") is not frozen_values[field]
+                )
+            if mismatch:
+                errors.append(
+                    {
+                        "code": f"freeze_path_provenance_mismatch:{label}:{field}",
+                        "resource": label,
+                        "field": field,
+                    }
+                )
+    return errors
 
 
 def _freeze_path_provenance_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -341,7 +468,16 @@ def assert_freeze_provenance_portable(
     def _check(label: str, entry: Any) -> None:
         if not isinstance(entry, dict):
             return
-        if not _provenance_entry_is_portable(entry):
+        if entry.get("resolved_path_authoritative") is not False:
+            raise FormalConfigError(
+                f"freeze_path_provenance_mismatch:{label}:resolved_path_authoritative"
+            )
+        portable = _provenance_entry_is_portable(entry)
+        if type(entry.get("portable")) is not bool or entry.get("portable") is not portable:
+            raise FormalConfigError(
+                f"freeze_path_provenance_mismatch:{label}:portable"
+            )
+        if not portable:
             raise FormalConfigError(
                 f"complete_freeze_external_resource_not_portable:{label}"
             )
@@ -351,17 +487,17 @@ def assert_freeze_provenance_portable(
         for label in CRITICAL_PORTABLE_PROVENANCE:
             if label not in provenance or provenance[label] in (None, ""):
                 raise FormalConfigError(
-                    f"complete_freeze_path_provenance_missing:{label}"
+                    f"freeze_path_provenance_missing:{label}"
                 )
         method_entries = provenance.get("method_configs")
         if not isinstance(method_entries, dict):
             raise FormalConfigError(
-                "complete_freeze_path_provenance_missing:method_configs"
+                "freeze_path_provenance_missing:method_configs"
             )
         for method_id in COMPARISON_METHOD_IDS:
             if not isinstance(method_entries.get(method_id), dict):
                 raise FormalConfigError(
-                    "complete_freeze_path_provenance_missing:"
+                    "freeze_path_provenance_missing:"
                     f"method_configs.{method_id}"
                 )
 
@@ -371,6 +507,25 @@ def assert_freeze_provenance_portable(
                 _check(f"method_configs.{method_id}", method_entry)
         else:
             _check(label, entry)
+
+
+def assert_live_provenance_portable(provenance: dict[str, Any]) -> None:
+    """Fail closed on the freshly resolved critical resource paths."""
+    entries = _provenance_resource_entries(provenance or {})
+    for resource in CRITICAL_PORTABLE_PROVENANCE:
+        labels = (
+            [f"method_configs.{method_id}" for method_id in COMPARISON_METHOD_IDS]
+            if resource == "method_configs"
+            else [resource]
+        )
+        for label in labels:
+            entry = entries.get(label)
+            if entry is None:
+                raise FormalConfigError(f"live_path_provenance_missing:{label}")
+            if not _provenance_entry_is_portable(entry):
+                raise FormalConfigError(
+                    f"live_path_provenance_not_portable:{label}"
+                )
 
 
 def _freeze_experiment_path_provenance(
@@ -710,6 +865,218 @@ def _identity_match_report(checks: list[dict[str, Any]]) -> dict[str, bool]:
     }
 
 
+def _resolve_experiment_or_repository_path(
+    declared: str | Path,
+    *,
+    repository_root: Path,
+    experiment_manifest_path: Path,
+    must_exist: bool,
+) -> ResolvedPathReference:
+    context = PathContext(
+        repository_root=repository_root,
+        experiment_manifest_path=experiment_manifest_path,
+    )
+    candidate = Path(str(declared))
+    if candidate.is_absolute():
+        return resolve_path_reference(
+            declared,
+            context=context,
+            policy="absolute_external",
+            must_exist=must_exist,
+            allow_external_absolute=True,
+        )
+    experiment_ref = resolve_path_reference(
+        declared,
+        context=context,
+        policy="experiment_relative",
+        must_exist=False,
+    )
+    if experiment_ref.resolved_path.exists():
+        if must_exist and not experiment_ref.resolved_path.exists():
+            raise FileNotFoundError(experiment_ref.resolved_path)
+        return experiment_ref
+    return resolve_path_reference(
+        declared,
+        context=context,
+        policy="repository_relative",
+        must_exist=must_exist,
+    )
+
+
+def _resolve_live_selected_evidence(
+    evidence: dict[str, Any],
+    *,
+    repository_root: Path,
+    experiment_manifest_path: Path,
+) -> ResolvedPathReference:
+    declared = require_exact_nonempty_string(
+        evidence.get("declared_path"),
+        field="selected_dev_run_evidence.declared_path",
+    )
+    context = PathContext(
+        repository_root=repository_root,
+        experiment_manifest_path=experiment_manifest_path,
+    )
+    candidate = Path(declared)
+    if candidate.is_absolute():
+        reference = resolve_path_reference(
+            declared,
+            context=context,
+            policy="absolute_external",
+            must_exist=False,
+            allow_external_absolute=True,
+        )
+        # An internal absolute declaration from the freeze machine is only a
+        # diagnostic after relocation.  Fall back to the canonical repository
+        # identity when the old machine-local path no longer exists.
+        if (
+            reference.external
+            and not reference.resolved_path.exists()
+            and evidence.get("path_policy") == "repository_relative"
+        ):
+            canonical = require_exact_nonempty_string(
+                evidence.get("canonical_path"),
+                field="selected_dev_run_evidence.canonical_path",
+            )
+            return resolve_path_reference(
+                canonical,
+                context=context,
+                policy="repository_relative",
+                expected_kind="file",
+                allow_external_absolute=False,
+            )
+        return reference
+    return resolve_path_reference(
+        declared,
+        context=context,
+        policy="repository_relative",
+        expected_kind="file",
+        allow_external_absolute=False,
+    )
+
+
+def derive_live_freeze_path_provenance(
+    *,
+    freeze: dict[str, Any],
+    current_experiment: dict[str, Any],
+    experiment_manifest_path: Path,
+    repository_root: Path,
+    freeze_manifest_path: str | Path,
+) -> dict[str, Any]:
+    """Rebuild critical provenance from the resources used by this validation."""
+    loaded = dict(current_experiment.get("path_provenance") or {})
+    live: dict[str, Any] = {}
+    for label in ("experiment_manifest", "base_config", "shared_model_config"):
+        entry = _loaded_live_provenance_entry(loaded.get(label))
+        if entry is not None:
+            live[label] = entry
+
+    method_entries: dict[str, Any] = {}
+    loaded_methods = loaded.get("method_configs")
+    if isinstance(loaded_methods, dict):
+        for method_id in COMPARISON_METHOD_IDS:
+            entry = _loaded_live_provenance_entry(loaded_methods.get(method_id))
+            if entry is not None:
+                method_entries[method_id] = entry
+    live["method_configs"] = method_entries
+
+    runner_entry = _loaded_live_provenance_entry(loaded.get("runner_bundle"))
+    if runner_entry is not None:
+        live["runner_bundle"] = runner_entry
+    bundle_root = (
+        Path(str(current_experiment.get("bundle_resolved")))
+        if current_experiment.get("bundle_resolved")
+        else None
+    )
+
+    evidence = freeze.get("selected_dev_run_evidence")
+    if isinstance(evidence, dict):
+        live["selected_dev_evidence"] = _live_provenance_entry(
+            _resolve_live_selected_evidence(
+                evidence,
+                repository_root=repository_root,
+                experiment_manifest_path=experiment_manifest_path,
+            )
+        )
+
+    try:
+        ekell_entry = get_method_entry(
+            current_experiment,
+            "ekell_style_controlled_shared_llm",
+            require_enabled=False,
+        )
+        ekell_config = build_method_config(current_experiment, ekell_entry)
+        prompt_declared = require_exact_nonempty_string(
+            (ekell_config.get("ekell_style") or {}).get("prompt_dir"),
+            field="ekell_style.prompt_dir",
+        )
+        validate_and_hash_prompt_bundle(
+            prompt_declared,
+            path_context=PathContext(
+                repository_root=repository_root,
+                experiment_manifest_path=experiment_manifest_path,
+                bundle_root=bundle_root,
+            ),
+        )
+        prompt_ref = resolve_path_reference(
+            prompt_declared,
+            context=PathContext(
+                repository_root=repository_root,
+                experiment_manifest_path=experiment_manifest_path,
+                bundle_root=bundle_root,
+            ),
+            policy="repository_relative",
+            expected_kind="directory",
+            allow_external_absolute=True,
+        )
+        live["prompt_dir"] = _live_provenance_entry(prompt_ref)
+
+        dense_entry = get_method_entry(
+            current_experiment,
+            "dense_rag",
+            require_enabled=False,
+        )
+        dense_config = build_method_config(current_experiment, dense_entry)
+        dense_declared = require_exact_nonempty_string(
+            (dense_config.get("dense_rag") or {}).get("index_path"),
+            field="dense_rag.index_path",
+        )
+        ekell_index_declared = require_exact_nonempty_string(
+            (ekell_config.get("ekell_vector") or {}).get("index_path"),
+            field="ekell_vector.index_path",
+        )
+        resource_context = PathContext(
+            repository_root=repository_root,
+            experiment_manifest_path=experiment_manifest_path,
+            bundle_root=bundle_root,
+        )
+        for label, declared in (
+            ("dense_index", dense_declared),
+            ("ekell_index", ekell_index_declared),
+        ):
+            live[label] = _live_provenance_entry(
+                resolve_path_reference(
+                    declared,
+                    context=resource_context,
+                    policy="repository_relative",
+                    must_exist=False,
+                    allow_external_absolute=True,
+                )
+            )
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
+        raise FormalConfigError(f"live_path_provenance_derivation_failed:{exc}") from exc
+
+    live["freeze_manifest"] = _live_provenance_entry(
+        _resolve_experiment_or_repository_path(
+            freeze_manifest_path,
+            repository_root=repository_root,
+            experiment_manifest_path=experiment_manifest_path,
+            must_exist=False,
+        )
+    )
+    return live
+
+
 def validate_freeze_manifest(
     freeze_path: str | Path,
     *,
@@ -723,8 +1090,29 @@ def validate_freeze_manifest(
     loaded_index_manifests: dict[str, Any] | None = None,
     method_config_paths: dict[str, str] | None = None,
     repository_root: str | Path | None = None,
+    live_freeze_manifest_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    freeze = freeze_path if isinstance(freeze_path, dict) else read_json(freeze_path)
+    repository_root_path = Path(
+        repository_root or Path(__file__).resolve().parents[3]
+    ).resolve()
+    experiment_manifest_path_obj = resolve_path_reference(
+        experiment_manifest_path,
+        context=PathContext(repository_root=repository_root_path),
+        policy="repository_relative",
+        must_exist=False,
+        allow_external_absolute=True,
+    ).resolved_path
+    freeze_source_ref: ResolvedPathReference | None = None
+    if isinstance(freeze_path, dict):
+        freeze = freeze_path
+    else:
+        freeze_source_ref = _resolve_experiment_or_repository_path(
+            freeze_path,
+            repository_root=repository_root_path,
+            experiment_manifest_path=experiment_manifest_path_obj,
+            must_exist=True,
+        )
+        freeze = read_json(freeze_source_ref.resolved_path)
     if not isinstance(freeze, dict):
         raise FormalConfigError("freeze_manifest must be a JSON object.")
     if str(freeze.get("freeze_status") or "").lower() != "frozen":
@@ -761,11 +1149,56 @@ def validate_freeze_manifest(
                         "legacy_freeze_prompt_identity_requires_regeneration"
                     )
                 raise FormalConfigError(f"freeze_manifest incomplete: missing {field}.")
+        if not isinstance(freeze.get("selected_dev_run_evidence"), dict):
+            raise FormalConfigError(
+                "legacy_selected_dev_evidence_identity_requires_regeneration"
+            )
     elif any(
         freeze.get(key)
         for key in ("runner_bundle_checksum", "corpus_checksum", "prediction_schema_checksum")
     ) and not isinstance(freeze.get("runner_bundle"), dict):
         migration_warning = "legacy_freeze_requires_regeneration"
+
+    try:
+        current_experiment = load_experiment_manifest(
+            experiment_manifest_path_obj,
+            repository_root=repository_root_path,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        if require_complete:
+            raise FormalConfigError(
+                f"live_path_provenance_derivation_failed:experiment_manifest:{exc}"
+            ) from exc
+        current_experiment = experiment_raw
+
+    if require_complete:
+        effective_freeze_path = live_freeze_manifest_path
+        if effective_freeze_path is None and freeze_source_ref is not None:
+            effective_freeze_path = freeze_source_ref.resolved_path
+        if effective_freeze_path is None:
+            effective_freeze_path = current_experiment.get("freeze_manifest_resolved")
+        if effective_freeze_path is None:
+            raise FormalConfigError("live_path_provenance_missing:freeze_manifest")
+        live_provenance = derive_live_freeze_path_provenance(
+            freeze=freeze,
+            current_experiment=current_experiment,
+            experiment_manifest_path=experiment_manifest_path_obj,
+            repository_root=repository_root_path,
+            freeze_manifest_path=effective_freeze_path,
+        )
+        frozen_provenance = freeze.get("path_provenance") or {}
+        assert_freeze_provenance_portable(
+            frozen_provenance,
+            require_complete_entries=True,
+        )
+        provenance_errors = compare_frozen_and_live_provenance(
+            frozen_provenance,
+            live_provenance,
+            require_complete=True,
+        )
+        if provenance_errors:
+            raise FormalConfigError(str(provenance_errors[0]["code"]))
+        assert_live_provenance_portable(live_provenance)
 
     evidence = freeze.get("selected_dev_run_evidence")
     if not evidence:
@@ -821,43 +1254,31 @@ def validate_freeze_manifest(
                     "selected_dev_evidence_path_policy_must_be_repository_relative"
                 )
         try:
-            if evidence_policy == "absolute_external":
-                evidence_ref = resolve_path_reference(
-                    evidence_canonical,
-                    context=PathContext(
-                        repository_root=Path(
-                            repository_root or Path(__file__).resolve().parents[3]
-                        ),
-                        experiment_manifest_path=Path(experiment_manifest_path),
-                    ),
-                    policy="absolute_external",
-                    expected_kind="file",
-                )
-            elif evidence_policy in {"repository_relative", "experiment_relative"}:
-                if Path(evidence_canonical).is_absolute():
-                    raise FormalConfigError(
-                        "selected_dev_evidence_canonical_path_must_be_relative"
-                    )
-                evidence_ref = resolve_path_reference(
-                    evidence_canonical,
-                    context=PathContext(
-                        repository_root=Path(
-                            repository_root or Path(__file__).resolve().parents[3]
-                        ),
-                        experiment_manifest_path=Path(experiment_manifest_path),
-                    ),
-                    policy=evidence_policy,  # type: ignore[arg-type]
-                    expected_kind="file",
-                    allow_external_absolute=False,
-                )
-            else:
+            if evidence_policy not in {
+                "repository_relative",
+                "experiment_relative",
+                "absolute_external",
+            }:
                 raise FormalConfigError(
                     f"selected_dev_run_evidence.path_policy invalid: {evidence_policy!r}"
                 )
+            evidence_ref = _resolve_live_selected_evidence(
+                evidence,
+                repository_root=repository_root_path,
+                experiment_manifest_path=experiment_manifest_path_obj,
+            )
         except (FileNotFoundError, TypeError, ValueError) as exc:
             if isinstance(exc, FormalConfigError):
                 raise
             raise FormalConfigError(str(exc)) from exc
+        if evidence_ref.path_policy != evidence_policy:
+            raise FormalConfigError(
+                "freeze_path_provenance_mismatch:selected_dev_evidence:path_policy"
+            )
+        if evidence_ref.canonical_path != evidence_canonical.replace("\\", "/"):
+            raise FormalConfigError(
+                "freeze_path_provenance_mismatch:selected_dev_evidence:canonical_path"
+            )
         if _is_placeholder(evidence_declared) or _is_placeholder(evidence_canonical):
             raise FormalConfigError("selected_dev_run_evidence path must not be a placeholder")
         evidence_path = evidence_ref.resolved_path
@@ -873,15 +1294,6 @@ def validate_freeze_manifest(
             "legacy_selected_dev_evidence_identity_requires_regeneration"
         )
 
-    try:
-        current_experiment = load_experiment_manifest(
-            experiment_manifest_path,
-            repository_root=Path(
-                repository_root or Path(__file__).resolve().parents[3]
-            ),
-        )
-    except (FileNotFoundError, ValueError):
-        current_experiment = experiment_raw
     raw_experiment = _raw_experiment_mapping(current_experiment)
     frozen_core = freeze.get("experiment_core_sha256")
     if frozen_core is not None or require_complete:
@@ -907,9 +1319,7 @@ def validate_freeze_manifest(
             experiment_manifest_path=experiment_manifest_path,
             experiment=experiment_raw,
             method_config_paths=method_config_paths,
-            repository_root=Path(
-                repository_root or Path(__file__).resolve().parents[3]
-            ).resolve(),
+            repository_root=repository_root_path,
         )
     )
     if freeze.get("base_config_sha256") is not None or require_complete:
@@ -1325,10 +1735,6 @@ def validate_freeze_manifest(
         frozen_normalize = emb["normalize_embeddings"]
         if not (dense_normalize is ekell_normalize is frozen_normalize):
             raise FormalConfigError("cross_method_normalize_embeddings_mismatch")
-        assert_freeze_provenance_portable(
-            freeze.get("path_provenance") or {},
-            require_complete_entries=True,
-        )
 
     result = {"ok": True, "freeze_id": freeze.get("freeze_id"), "require_complete": require_complete}
     if migration_warning:

@@ -400,6 +400,7 @@ def main(argv: list[str] | None = None) -> None:
             bundle_ref.resolved_path
         )
         bundle_provenance["resolved_path_authoritative"] = False
+        bundle_provenance["portable"] = bundle_provenance.get("external") is False
         provenance["runner_bundle"] = bundle_provenance
     if args.draft:
         payload["freeze_status"] = "draft"
@@ -436,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
                 },
                 method_config_paths=method_paths,
                 repository_root=ROOT,
+                live_freeze_manifest_path=output_path,
             )
             temp_path.replace(output_path)
         except Exception as exc:  # noqa: BLE001

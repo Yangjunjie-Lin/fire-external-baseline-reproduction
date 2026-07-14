@@ -386,3 +386,62 @@ def test_official_lifecycle_survives_repository_relocation(
     for entry in freeze["path_provenance"].values():
         if isinstance(entry, dict) and "resolved_path_authoritative" in entry:
             assert entry["resolved_path_authoritative"] is False
+
+
+def test_live_provenance_mismatch_fails_before_runtime_initialization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import external_baselines.common.llm_client as llm_client
+    import external_baselines.dense_rag.pipeline as dense_pipeline
+    import external_baselines.retrieval.embedding_backends as embedding_backends
+    import scripts.run_interop_baselines as interop_runner
+
+    result = _complete_lifecycle(tmp_path, monkeypatch)
+    freeze = json.loads(result["freeze"].read_text(encoding="utf-8"))
+    freeze["path_provenance"]["base_config"]["canonical_path"] = (
+        "configs/tampered-base.yaml"
+    )
+    result["freeze"].write_text(json.dumps(freeze), encoding="utf-8")
+
+    calls = {"llm": 0, "embedding": 0, "index_write": 0, "prediction": 0}
+
+    def forbidden(label: str):
+        def _forbidden(*_args, **_kwargs):
+            calls[label] += 1
+            raise AssertionError(f"{label} must not run after provenance mismatch")
+
+        return _forbidden
+
+    monkeypatch.setattr(llm_client, "build_llm_client", forbidden("llm"))
+    monkeypatch.setattr(
+        embedding_backends,
+        "create_embedding_backend",
+        forbidden("embedding"),
+    )
+    monkeypatch.setattr(dense_pipeline, "build_dense_index", forbidden("index_write"))
+    monkeypatch.setattr(
+        interop_runner,
+        "generate_predictions",
+        forbidden("prediction"),
+    )
+    attempted_output = tmp_path / "must-not-exist.jsonl"
+
+    with pytest.raises(SystemExit, match="freeze_path_provenance_mismatch:base_config"):
+        interop_runner.main(
+            [
+                "--execution-stage",
+                "formal",
+                "--method-set",
+                "comparison_suite",
+                "--experiment-manifest",
+                str(result["manifest"]),
+                "--bundle",
+                str(result["bundle"]),
+                "--output",
+                str(attempted_output),
+            ]
+        )
+
+    assert calls == {"llm": 0, "embedding": 0, "index_write": 0, "prediction": 0}
+    assert not attempted_output.exists()

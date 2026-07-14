@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -973,7 +974,14 @@ def _complete_freeze_payload(
     methods: dict[str, str] = {}
     for mid in comparison_suite_methods():
         method = tmp_path / f"{mid}.yaml"
-        method.write_text(f"method_id: {mid}\n", encoding="utf-8")
+        extra = ""
+        if mid == "dense_rag":
+            extra = "dense_rag:\n  index_path: dense_index\n"
+        elif mid == "hybrid_rag":
+            extra = "dense_rag:\n  index_path: dense_index\n"
+        elif mid == "ekell_style_controlled_shared_llm":
+            extra = "ekell_vector:\n  index_path: ekell_index\n"
+        method.write_text(f"method_id: {mid}\n{extra}", encoding="utf-8")
         methods[mid] = str(method)
     evidence = tmp_path / "selected.json"
     evidence.write_text('{"selected": true}\n', encoding="utf-8")
@@ -982,6 +990,7 @@ def _complete_freeze_payload(
         "base_config": "configs/default.yaml",
         "shared_model_config": shared.name,
         "bundle": "bundle",
+        "freeze_manifest": "freeze.json",
         "methods": [
             {"method_id": mid, "config": Path(path).name}
             for mid, path in methods.items()
@@ -1097,6 +1106,7 @@ def _validate_complete_payload(
         loaded_index_manifests=payload["indexes"],
         method_config_paths=methods,
         repository_root=repository_root,
+        live_freeze_manifest_path=repository_root / "freeze.json",
     )
 
 
@@ -1239,7 +1249,7 @@ def test_complete_freeze_rejects_external_selected_dev_path(tmp_path: Path) -> N
 
     with pytest.raises(
         FormalConfigError,
-        match="selected_dev_evidence_external_path_not_portable",
+        match="freeze_path_provenance_mismatch:selected_dev_evidence:path_policy",
     ):
         _validate_complete_payload(
             experiment,
@@ -1314,6 +1324,195 @@ def test_complete_freeze_rejects_external_freeze_manifest(tmp_path: Path) -> Non
     _assert_complete_rejects_external_resource(tmp_path, "freeze_manifest")
 
 
+@pytest.mark.parametrize(
+    ("resource", "expected_label"),
+    [
+        ("experiment_manifest", "experiment_manifest"),
+        ("base_config", "base_config"),
+        ("shared_model_config", "shared_model_config"),
+        ("method_config", "method_configs.dense_rag"),
+        ("runner_bundle", "runner_bundle"),
+        ("selected_dev_evidence", "selected_dev_evidence"),
+        ("prompt_dir", "prompt_dir"),
+        ("dense_index", "dense_index"),
+        ("ekell_index", "ekell_index"),
+    ],
+)
+def test_complete_freeze_compares_tampered_frozen_provenance_to_live_external_resource(
+    tmp_path: Path,
+    resource: str,
+    expected_label: str,
+) -> None:
+    repository = tmp_path / "repository"
+    external_root = tmp_path / "external"
+    repository.mkdir()
+    external_root.mkdir()
+    experiment, payload, methods = _complete_freeze_payload(repository)
+    raw = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+
+    if resource == "experiment_manifest":
+        external = external_root / "experiment.yaml"
+        shutil.copy2(experiment, external)
+        experiment = external
+    elif resource == "base_config":
+        external = external_root / "base.yaml"
+        shutil.copy2(repository / "configs" / "default.yaml", external)
+        assert sha256_file(external) == payload["base_config_sha256"]
+        raw["base_config"] = str(external)
+    elif resource == "shared_model_config":
+        external = external_root / "shared.yaml"
+        shutil.copy2(repository / "shared.yaml", external)
+        assert sha256_file(external) == payload["shared_model_config_sha256"]
+        raw["shared_model_config"] = str(external)
+    elif resource == "method_config":
+        external = external_root / "dense_rag.yaml"
+        shutil.copy2(repository / "dense_rag.yaml", external)
+        assert sha256_file(external) == payload["method_config_sha256"]["dense_rag"]
+        next(
+            entry for entry in raw["methods"] if entry["method_id"] == "dense_rag"
+        )["config"] = str(external)
+    elif resource == "runner_bundle":
+        external = external_root / "bundle"
+        shutil.copytree(repository / "bundle", external)
+        raw["bundle"] = str(external)
+    elif resource == "selected_dev_evidence":
+        external = external_root / "selected.json"
+        shutil.copy2(repository / "selected.json", external)
+        assert sha256_file(external) == payload["selected_dev_run_evidence"]["sha256"]
+        payload["selected_dev_run_evidence"]["declared_path"] = str(external)
+    elif resource == "prompt_dir":
+        external = external_root / "prompts"
+        shutil.copytree(
+            repository / "configs" / "prompts" / "paper_fidelity",
+            external,
+        )
+        method = repository / "ekell_style_controlled_shared_llm.yaml"
+        method_raw = yaml.safe_load(method.read_text(encoding="utf-8"))
+        method_raw["ekell_style"] = {"prompt_dir": str(external)}
+        method.write_text(yaml.safe_dump(method_raw), encoding="utf-8")
+    elif resource == "dense_index":
+        external = external_root / "dense_index"
+        external.mkdir()
+        method = repository / "dense_rag.yaml"
+        method_raw = yaml.safe_load(method.read_text(encoding="utf-8"))
+        method_raw["dense_rag"]["index_path"] = str(external)
+        method.write_text(yaml.safe_dump(method_raw), encoding="utf-8")
+    else:
+        external = external_root / "ekell_index"
+        external.mkdir()
+        method = repository / "ekell_style_controlled_shared_llm.yaml"
+        method_raw = yaml.safe_load(method.read_text(encoding="utf-8"))
+        method_raw["ekell_vector"]["index_path"] = str(external)
+        method.write_text(yaml.safe_dump(method_raw), encoding="utf-8")
+
+    if resource in {
+        "base_config",
+        "shared_model_config",
+        "method_config",
+        "runner_bundle",
+    }:
+        experiment.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    frozen_entry = payload["path_provenance"]
+    if resource == "method_config":
+        frozen_entry = frozen_entry["method_configs"]["dense_rag"]
+    else:
+        frozen_entry = frozen_entry[expected_label]
+    assert frozen_entry["external"] is False
+    assert frozen_entry["portable"] is True
+
+    with pytest.raises(
+        FormalConfigError,
+        match=rf"freeze_path_provenance_mismatch:{re.escape(expected_label)}:",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=repository,
+        )
+
+
+def test_complete_freeze_compares_actual_external_freeze_location(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    experiment, payload, methods = _complete_freeze_payload(repository)
+    external_freeze = tmp_path / "external-freeze.json"
+    external_freeze.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        FormalConfigError,
+        match="freeze_path_provenance_mismatch:freeze_manifest:path_policy",
+    ):
+        validate_freeze_manifest(
+            external_freeze,
+            experiment_manifest_path=experiment,
+            experiment_raw=yaml.safe_load(experiment.read_text(encoding="utf-8")),
+            require_complete=True,
+            expected_runner_bundle_checksum="c" * 64,
+            expected_corpus_checksum="a" * 64,
+            expected_prediction_schema_checksum="e" * 64,
+            loaded_index_manifests=payload["indexes"],
+            method_config_paths=methods,
+            repository_root=repository,
+        )
+
+
+def test_complete_freeze_rejects_tampered_canonical_path_with_identical_content(
+    tmp_path: Path,
+) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["path_provenance"]["base_config"]["canonical_path"] = "configs/a.yaml"
+
+    with pytest.raises(
+        FormalConfigError,
+        match="freeze_path_provenance_mismatch:base_config:canonical_path",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_complete_freeze_recomputes_frozen_portable_assertion(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["path_provenance"]["base_config"]["portable"] = False
+
+    with pytest.raises(
+        FormalConfigError,
+        match="freeze_path_provenance_mismatch:base_config:portable",
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
+def test_complete_freeze_compares_each_method_config_provenance(tmp_path: Path) -> None:
+    experiment, payload, methods = _complete_freeze_payload(tmp_path)
+    payload["path_provenance"]["method_configs"]["dense_rag"][
+        "canonical_path"
+    ] = "configs/not-dense.yaml"
+
+    with pytest.raises(
+        FormalConfigError,
+        match=(
+            "freeze_path_provenance_mismatch:"
+            "method_configs.dense_rag:canonical_path"
+        ),
+    ):
+        _validate_complete_payload(
+            experiment,
+            payload,
+            methods,
+            repository_root=tmp_path,
+        )
+
+
 def test_draft_freeze_can_report_external_resource_as_nonportable(
     tmp_path: Path,
 ) -> None:
@@ -1384,7 +1583,10 @@ def test_selected_dev_path_cannot_escape_repository_root(tmp_path: Path) -> None
     experiment, payload, methods = _complete_freeze_payload(tmp_path)
     payload["selected_dev_run_evidence"]["canonical_path"] = "../selected.json"
 
-    with pytest.raises(FormalConfigError, match="escapes_repository_relative_root"):
+    with pytest.raises(
+        FormalConfigError,
+        match="freeze_path_provenance_mismatch:selected_dev_evidence:canonical_path",
+    ):
         _validate_complete_payload(
             experiment,
             payload,
