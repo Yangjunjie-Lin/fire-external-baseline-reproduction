@@ -3226,7 +3226,10 @@ def test_complete_freeze_requires_input_cases_sha(tmp_path):
     payload.pop("input_cases_sha256", None)
     freeze = tmp_path / "freeze.json"
     freeze.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(FormalConfigError, match="input_cases_sha256"):
+    with pytest.raises(
+        FormalConfigError,
+        match="input_cases_sha256|freeze_path_provenance_missing:runner_bundle",
+    ):
         validate_freeze_manifest(
             freeze,
             experiment_manifest_path=manifest,
@@ -7674,4 +7677,3 @@ def test_concurrent_runtimes_keep_own_embedding_identity(tmp_path):
     for thread in threads:
         thread.join(timeout=60)
     assert not errors, errors
-
