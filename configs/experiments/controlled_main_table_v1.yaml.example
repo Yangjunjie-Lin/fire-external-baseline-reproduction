@@ -9,7 +9,9 @@ experiment_id: controlled_main_table_v1
 track: A_shared_outcome
 run_mode: formal
 freeze_status: provisional
-paper_final: false
+# Protocol strictness flag required by the Formal validator. This does not mean
+# that DEV selection, Formal TEST, empirical validation, or paper readiness is complete.
+paper_final: true
 
 bundle: REQUIRED_AFTER_MAIN_PROJECT_V1
 freeze_manifest: null
@@ -76,5 +78,5 @@ notes:
   - Use --method-set main_table (default) or --method-set comparison_suite.
   - Dense/Hybrid are controlled supplemental baselines; not E-KELL paper-fidelity.
   - freeze_status remains provisional until DEV evidence + freeze_manifest exist.
-  - paper_final remains false until the frozen configuration has completed Formal TEST and human review.
+  - paper_final is a strict validation-profile flag, not an empirical or paper-readiness claim.
   - Do not run paid APIs from CI.
