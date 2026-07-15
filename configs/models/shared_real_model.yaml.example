@@ -2,7 +2,9 @@
 # Copy to configs/models/shared_real_model.yaml and set env vars.
 # NEVER commit API keys.
 # Formal model identity comes from this YAML (not SILICONFLOW_MODEL).
-paper_final: true
+# This template is a paper candidate only; final identity is selected on DEV,
+# frozen in a complete manifest, and reviewed before Formal TEST.
+paper_final: false
 require_bundle_checksum: true
 
 llm:
