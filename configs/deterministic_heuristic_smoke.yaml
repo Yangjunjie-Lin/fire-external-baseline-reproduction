@@ -7,5 +7,11 @@ llm:
   top_p: 1.0
   max_tokens: 1200
   seed: 7
+
+# Stable repository-relative identity used only by offline freeze/provenance tests.
+# Real and Formal E-KELL runs must override this with a persisted validated index.
+ekell_vector:
+  index_path: outputs/indexes/ekell/smoke/
+
 normalization:
   infer_structured_safety_fields: false
