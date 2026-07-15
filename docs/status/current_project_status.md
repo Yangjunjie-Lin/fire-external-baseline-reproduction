@@ -5,6 +5,7 @@
 ```text
 unified decision I/O ready for five-method comparison
 FireBench taxonomy contract ready
+Stage 0 engineering scope closed
 real resources not yet installed
 real indexes not yet built
 real dry run not yet executed
@@ -12,6 +13,15 @@ formal experiment not yet executed
 ```
 
 Five methods share one Runner Bundle input protocol and independently emit taxonomy-compliant structured decision JSON, natural-language response, and per-method `firebench-interop-v1` prediction JSONL. Native retrieval/reasoning designs are preserved. Formal evaluation remains owned by `fire-agent-demo`.
+
+## Stage 0 closeout
+
+The repository is now closed as **v0.2.0 — Stage 0 Engineering Complete / Pre-Experiment**. This records engineering readiness without claiming empirical or paper readiness.
+
+- Closeout record: [`stage0_engineering_closeout.md`](stage0_engineering_closeout.md)
+- Future restart sequence: [`baseline_handoff_checklist.md`](baseline_handoff_checklist.md)
+
+No new baseline method, semantic Judge, or additional freeze layer should be added before the main project publishes a stable Runner Bundle or a real dry run reveals a concrete defect.
 
 Structured IDs use the FireBench taxonomy snapshot (`configs/contracts/firebench_taxonomy_v1.json`). Formal aliases mirror main-project `taxonomy.py` at commit `f228867480eb369c2b55cde3185af548965a23a5`. Development-only aliases live in `configs/contracts/firebench_taxonomy_dev_aliases_v1.json` and are disabled in formal runs. Character-level normalization and exact aliases only; final prediction JSONL must contain canonical IDs only. Unknown/unmapped IDs fail formal validation.
 
@@ -89,6 +99,8 @@ It is **not** paper-ready, **not** empirically validated, and **not** an officia
 
 | Item | Status |
 |---|---|
+| Stage 0 engineering closeout | `docs/status/stage0_engineering_closeout.md` |
+| Future baseline handoff checklist | `docs/status/baseline_handoff_checklist.md` |
 | Shared real LLM config | prepared (env vars only; gitignored) |
 | `main_table` + `comparison_suite` method sets | implemented |
 | Unified `DecisionOutput` + strict formal parser | implemented |
