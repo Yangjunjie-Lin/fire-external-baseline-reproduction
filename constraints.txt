@@ -1,5 +1,6 @@
-# Pinned runtime constraints (generated for reproducibility tooling).
-# Regenerate with: pip freeze > constraints.txt  (review before committing)
+# Minimum compatible runtime constraints for the current engineering package.
+# This file is not a lock file and does not guarantee byte-for-byte environment reproduction.
+# Generate and review an exact environment snapshot separately when preparing a formal run.
 PyYAML>=6.0
 openai>=1.0.0
 python-dotenv>=1.0.0
