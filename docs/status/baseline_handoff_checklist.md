@@ -117,6 +117,15 @@ Use this checklist only after `fire-agent-demo` publishes a stable comparison co
 - [ ] Confirm one prediction JSONL exists for every approved method.
 - [ ] Confirm every method covers the identical case set.
 - [ ] Confirm `real_world_execution_allowed` remains false.
+- [ ] Validate `fireagent-external-prediction-v1` snapshot parity.
+- [ ] Export one DeepEval handoff JSONL per method.
+- [ ] Verify Direct LLM has no fabricated retrieval context.
+- [ ] Verify RAG methods preserve real ranked retrieval contexts.
+- [ ] Verify handoff top-k and original-rank-prefix policy.
+- [ ] Verify all method case sets are identical.
+- [ ] Verify Gold was not accessed.
+- [ ] Verify `deepeval_executed=false`.
+- [ ] Hand the complete handoff bundle to `fire-agent-demo`.
 - [ ] Hand `outputs/formal/test_public/predictions/` to `fire-agent-demo`.
 - [ ] Keep Gold and scoring exclusively in the main-project evaluator.
 

@@ -1,0 +1,12 @@
+{
+  "execution_stage": "dry_run",
+  "formal": false,
+  "methods": ["direct_llm", "bm25_rag"],
+  "formal_compliance": {
+    "formal_result": false,
+    "transactional_publish_committed": false
+  },
+  "transactional_publish": {
+    "committed": false
+  }
+}

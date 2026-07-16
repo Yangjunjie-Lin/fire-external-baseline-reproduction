@@ -1,0 +1,11 @@
+{
+  "schema_version": "deepeval-handoff-contract-provenance-v1",
+  "contract_id": "fireagent-external-prediction-v1",
+  "source_repository": "Yangjunjie-Lin/fire-agent-demo",
+  "source_commit": "2c80d5fc5362049e1273b30bad2e417faded4963",
+  "source_path": "schemas/deepeval_external_v1/external_prediction.schema.json",
+  "source_sha256": "f28a043cbaec1bc1ded9ff9a60ca92a9af302ae5aa6a8f0cbf9e665ed2497e3b",
+  "local_snapshot_path": "schemas/deepeval_handoff/fireagent_external_prediction_v1.snapshot.schema.json",
+  "local_snapshot_sha256": "f28a043cbaec1bc1ded9ff9a60ca92a9af302ae5aa6a8f0cbf9e665ed2497e3b",
+  "snapshot_matches_source": true
+}

@@ -29,6 +29,40 @@ jobs:
         run: ruff check src scripts tests
       - name: Pytest
         run: python -m pytest -q
+      - name: DeepEval handoff compatibility tests
+        run: |
+          python -m pytest -q tests/interop/deepeval_handoff
+      - name: DeepEval handoff offline smoke
+        run: |
+          python scripts/export_deepeval_handoff.py \
+            --formal-run-root tests/fixtures/deepeval_handoff/formal_run \
+            --main-repo tests/fixtures/deepeval_handoff/main_project \
+            --output outputs/ci_deepeval_handoff \
+            --top-k 5 \
+            --allow-development-source
+
+          python scripts/validate_deepeval_handoff.py \
+            --handoff outputs/ci_deepeval_handoff \
+            --main-repo tests/fixtures/deepeval_handoff/main_project
+      - name: DeepEval handoff dependency isolation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          offenders = []
+          for path in [
+              *Path("src/external_baselines/interop/deepeval_handoff").rglob("*.py"),
+              Path("scripts/export_deepeval_handoff.py"),
+              Path("scripts/validate_deepeval_handoff.py"),
+          ]:
+              text = path.read_text(encoding="utf-8")
+              for forbidden in ("import deepeval", "from deepeval", "import fire_agent_demo"):
+                  if forbidden in text:
+                      offenders.append(f"{path}: {forbidden}")
+
+          if offenders:
+              raise SystemExit("\n".join(offenders))
+          PY
       - name: Repository hygiene
         run: python scripts/check_repository_hygiene.py
 

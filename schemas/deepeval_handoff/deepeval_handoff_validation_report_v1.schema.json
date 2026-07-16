@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deepeval-handoff-validation-report-v1",
+  "type": "object",
+  "required": ["schema_version", "ok", "errors", "warnings", "method_reports", "contract_report", "coverage_report"],
+  "properties": {
+    "schema_version": {"const": "deepeval-handoff-validation-report-v1"},
+    "ok": {"type": "boolean"},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "method_reports": {"type": "object"},
+    "contract_report": {"type": "object"},
+    "coverage_report": {"type": "object"},
+    "manifest_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
