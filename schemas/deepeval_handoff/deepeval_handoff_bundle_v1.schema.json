@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deepeval-handoff-bundle-v1",
+  "type": "object",
+  "required": ["schema_version", "archive", "archive_sha256", "handoff_manifest_sha256", "file_count"],
+  "properties": {
+    "schema_version": {"const": "deepeval-handoff-bundle-v1"},
+    "archive": {"type": "string", "minLength": 1},
+    "archive_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "handoff_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "file_count": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

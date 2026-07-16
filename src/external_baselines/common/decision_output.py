@@ -588,6 +588,29 @@ def decision_output_to_interop(decision: DecisionOutput) -> dict[str, Any]:
         latency_ms = round(float(decision.runtime["latency_sec"]) * 1000.0, 3)
 
     method_metadata = dict(decision.method_metadata)
+    retrieved_contexts = list(decision.retrieved_contexts)
+    method_metadata["retrieved_contexts"] = retrieved_contexts
+    method_metadata["retrieved_evidence"] = [
+        {
+            key: value
+            for key, value in (
+                ("text", context.get("text", context.get("content", context.get("document", context.get("passage"))))),
+                ("rank", context.get("rank", context.get("retrieval_rank", index))),
+                ("source_id", context.get("source_id", context.get("document_id"))),
+                (
+                    "chunk_id",
+                    context.get(
+                        "chunk_id",
+                        context.get("context_id", context.get("evidence_id", context.get("citation"))),
+                    ),
+                ),
+                ("score", context.get("score", context.get("retrieval_score", context.get("similarity")))),
+            )
+            if value is not None
+        }
+        for index, context in enumerate(retrieved_contexts, start=1)
+        if isinstance(context, dict)
+    ]
     if decision.safety_violations:
         method_metadata["safety_violations"] = list(decision.safety_violations)
     if decision.parsing_failure:

@@ -1,0 +1,14 @@
+{
+  "execution_stage": "dry_run",
+  "formal_result": false,
+  "method_ids": ["direct_llm", "bm25_rag"],
+  "case_count": 1,
+  "input_cases_provenance": {
+    "input_cases_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "runner_bundle_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "runtime_config_sha256": {
+    "direct_llm": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "bm25_rag": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

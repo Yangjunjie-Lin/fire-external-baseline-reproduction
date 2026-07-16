@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deepeval-handoff-contract-provenance-v1",
+  "type": "object",
+  "required": ["schema_version", "contract_id", "source_repository", "source_commit", "source_path", "source_sha256", "local_snapshot_path", "local_snapshot_sha256", "snapshot_matches_source"],
+  "properties": {
+    "schema_version": {"const": "deepeval-handoff-contract-provenance-v1"},
+    "contract_id": {"const": "fireagent-external-prediction-v1"},
+    "source_repository": {"const": "Yangjunjie-Lin/fire-agent-demo"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_path": {"type": "string", "minLength": 1},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "local_snapshot_path": {"type": "string", "minLength": 1},
+    "local_snapshot_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "snapshot_matches_source": {"const": true}
+  },
+  "additionalProperties": false
+}

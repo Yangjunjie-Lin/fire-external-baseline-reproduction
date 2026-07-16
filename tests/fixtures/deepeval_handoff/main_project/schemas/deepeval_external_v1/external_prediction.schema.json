@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fireagent-external-prediction-v1",
+  "title": "FireAgent External Prediction v1",
+  "type": "object",
+  "required": ["schema_version", "case_id", "system_name", "actual_output"],
+  "properties": {
+    "schema_version": {"const": "fireagent-external-prediction-v1"},
+    "case_id": {"type": "string", "minLength": 1},
+    "system_name": {"type": "string", "minLength": 1},
+    "system_type": {"type": "string", "minLength": 1},
+    "actual_output": {"type": "string", "minLength": 1},
+    "retrieval_context": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["text", "rank"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "rank": {"type": "integer", "minimum": 1},
+          "source_id": {"type": ["string", "null"]},
+          "chunk_id": {"type": ["string", "null"]},
+          "score": {"type": ["number", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "structured_prediction": {
+      "type": "object",
+      "properties": {
+        "risk_signals": {"type": "array", "items": {"type": "string"}},
+        "required_tools": {"type": "array", "items": {"type": "string"}},
+        "routing_decisions": {"type": "array", "items": {"type": "string"}},
+        "required_actions": {"type": "array", "items": {"type": "string"}},
+        "blocked_actions": {"type": "array", "items": {"type": "string"}},
+        "missing_confirmations": {"type": "array", "items": {"type": "string"}},
+        "hitl_required": {"type": ["boolean", "null"]},
+        "final_status": {"type": ["string", "null"]},
+        "real_world_execution_allowed": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "latency_ms": {"type": ["number", "null"], "minimum": 0},
+        "llm_calls": {"type": ["integer", "null"], "minimum": 0},
+        "token_usage": {"type": "object"},
+        "cost_estimate": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "source_artifacts": {
+      "type": "object",
+      "properties": {
+        "prediction_path": {"type": ["string", "null"]},
+        "prediction_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "resource_bundle_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "runtime_config_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "dataset_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}

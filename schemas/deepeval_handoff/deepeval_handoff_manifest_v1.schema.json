@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deepeval-handoff-manifest-v1",
+  "type": "object",
+  "required": ["schema_version", "protocol", "created_at", "source", "contract", "dataset", "evaluation_handoff", "methods", "validation"],
+  "properties": {
+    "schema_version": {"const": "deepeval-handoff-manifest-v1"},
+    "protocol": {"const": "fireagent_deepeval_handoff_v1"},
+    "created_at": {"type": "string", "minLength": 1},
+    "source": {"type": "object"},
+    "contract": {"type": "object"},
+    "dataset": {"type": "object"},
+    "evaluation_handoff": {
+      "type": "object",
+      "required": ["handoff_top_k", "context_selection_policy", "gold_accessed", "deepeval_executed", "judge_called", "paid_api_used", "real_world_execution_allowed"],
+      "properties": {
+        "handoff_top_k": {"type": "integer", "minimum": 1},
+        "context_selection_policy": {"const": "original_rank_prefix"},
+        "gold_accessed": {"const": false},
+        "deepeval_executed": {"const": false},
+        "judge_called": {"const": false},
+        "paid_api_used": {"const": false},
+        "real_world_execution_allowed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "methods": {"type": "object", "minProperties": 1},
+    "validation": {"type": "object"}
+  },
+  "additionalProperties": false
+}
