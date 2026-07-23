@@ -1,4 +1,4 @@
-"""Formal execution guard for the five-method decision comparison suite."""
+"""Formal execution guard for the full suite and atomic method checkpoints."""
 
 from __future__ import annotations
 
@@ -126,10 +126,14 @@ def validate_decision_suite_execution(
 
     canonical_methods = [canonicalize_method_id(m) for m in method_ids]
     expected = sorted(FORMAL_EXECUTION_METHODS)
-    if sorted(canonical_methods) != expected:
+    full_suite = sorted(canonical_methods) == expected
+    single_method_checkpoint = (
+        len(canonical_methods) == 1 and canonical_methods[0] in FORMAL_EXECUTION_METHODS
+    )
+    if not (full_suite or single_method_checkpoint):
         raise FormalSuiteExecutionError(
-            f"Formal execution requires the exact five-method comparison set {expected}; "
-            f"got {sorted(canonical_methods)}."
+            "Formal execution requires either the exact five-method comparison set "
+            f"{expected} or one explicit atomic method checkpoint; got {sorted(canonical_methods)}."
         )
 
     validate_experiment_manifest(
