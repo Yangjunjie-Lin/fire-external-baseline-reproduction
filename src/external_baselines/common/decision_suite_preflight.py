@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 from dataclasses import dataclass, field
@@ -660,6 +661,22 @@ def _preflight_method_resources(
     return result
 
 
+_INDEX_METHODS = frozenset({"dense_rag", "hybrid_rag", "ekell_style_controlled_shared_llm"})
+
+
+def _scoped_runtime_freeze(
+    freeze: dict[str, Any], method_ids: list[str]
+) -> tuple[dict[str, Any], bool]:
+    """Limit live index validation to checkpoints that can access an index."""
+
+    if any(canonicalize_method_id(method_id) in _INDEX_METHODS for method_id in method_ids):
+        return freeze, True
+    scoped = copy.deepcopy(freeze)
+    scoped["indexes"] = {}
+    scoped["embedding"] = {}
+    return scoped, False
+
+
 def preflight_decision_suite(
     *,
     method_ids: list[str],
@@ -836,6 +853,8 @@ def preflight_decision_suite(
         else:
             from external_baselines.common.freeze_manifest import validate_frozen_runtime_inputs
 
+            runtime_freeze, require_complete_indexes = _scoped_runtime_freeze(freeze, method_ids)
+
             dense_identity = (method_reports.get("dense_rag") or {}).get("index_identity") or {}
             hybrid_identity: dict[str, Any] = {}
             if dense_identity:
@@ -855,11 +874,16 @@ def preflight_decision_suite(
             }
             try:
                 formal_runtime_validation = validate_frozen_runtime_inputs(
-                    freeze,
+                    runtime_freeze,
                     bundle=bundle,
                     method_configs=method_configs,
                     loaded_index_manifests=live_index_identities,
-                    require_complete_indexes=True,
+                    require_complete_indexes=require_complete_indexes,
+                )
+                formal_runtime_validation["index_validation_scope"] = (
+                    "complete_comparison_indexes"
+                    if require_complete_indexes
+                    else "not_applicable_non_embedding_checkpoint"
                 )
                 if "hybrid_rag" in method_reports:
                     method_reports["hybrid_rag"]["index_identity"] = dict(hybrid_identity)
