@@ -509,6 +509,11 @@ def compute_suite_formal_compliance(
             and hybrid_ev.dense_dependency_smoke_fallback_used is False
         )
 
+    required_methods = set(method_ids or method_evidences)
+    require_dense_gate = bool({"dense_rag", "hybrid_rag"} & required_methods)
+    require_ekell_gate = "ekell_style_controlled_shared_llm" in required_methods
+    require_hybrid_gate = "hybrid_rag" in required_methods
+
     pre_publish_compliance_passed = bool(
         formal
         and preflight_ok
@@ -522,10 +527,10 @@ def compute_suite_formal_compliance(
         and real_llm
         and shared_generation_identity_match
         and runtime_generation_identity_match
-        and real_dense
-        and real_ekell
-        and hybrid_dense_identity_match
-        and ekell_prompt_bundle_valid
+        and (real_dense if require_dense_gate else True)
+        and (real_ekell if require_ekell_gate else True)
+        and (hybrid_dense_identity_match if require_hybrid_gate else True)
+        and (ekell_prompt_bundle_valid if require_ekell_gate else True)
         and no_runtime_build
     )
     if not formal:
@@ -557,10 +562,14 @@ def compute_suite_formal_compliance(
         "shared_generation_identity_match": shared_generation_identity_match if formal else False,
         "runtime_generation_identity_match": runtime_generation_identity_match if formal else False,
         "real_llm": real_llm if formal else False,
-        "real_dense_index": real_dense if formal else False,
-        "real_ekell_index": real_ekell if formal else False,
-        "hybrid_dense_identity_match": hybrid_dense_identity_match if formal else False,
-        "ekell_prompt_bundle_valid": ekell_prompt_bundle_valid if formal else False,
+        "real_dense_index": real_dense if formal and require_dense_gate else None,
+        "real_ekell_index": real_ekell if formal and require_ekell_gate else None,
+        "hybrid_dense_identity_match": (
+            hybrid_dense_identity_match if formal and require_hybrid_gate else None
+        ),
+        "ekell_prompt_bundle_valid": (
+            ekell_prompt_bundle_valid if formal and require_ekell_gate else None
+        ),
         "formal_aliases_only": bool(formal and not dev_aliases_enabled),
         "canonical_ids_only": True,
         "explicit_required_fields": formal,
@@ -573,6 +582,10 @@ def compute_suite_formal_compliance(
         "preflight_ok": preflight_ok,
         "limit_used": limit_used,
         "formal_result": formal_result,
+        "formal_scope": (
+            "single_method_checkpoint" if formal and len(required_methods) == 1 else "comparison_suite"
+        ),
+        "required_methods": sorted(required_methods),
     }
 
 
