@@ -1,0 +1,65 @@
+schema_version: firebench-interop-v1
+experiment_id: comparison_real_v1_bm25_repair
+track: A_shared_outcome
+run_mode: formal
+freeze_status: frozen
+paper_final: true
+
+bundle: outputs/interop/runner_bundle_real_v1/runner
+freeze_manifest: outputs/formal/deepeval_system_comparison_v1/real-v1-20260722T043500Z-formal-v1/bm25_repair.freeze.json
+base_config: configs/default.yaml
+shared_model_config: configs/models/ainsv_shared_real_v1.yaml
+
+require_bundle_checksum: true
+require_external_schema: true
+require_complete_case_match: true
+fail_on_schema_error: true
+fail_on_duplicate_case_id: true
+fail_on_missing_case: true
+fail_on_extra_case: true
+
+main_table_methods:
+  - direct_llm
+  - bm25_rag
+  - ekell_style_controlled_shared_llm
+
+comparison_suite_methods:
+  - direct_llm
+  - bm25_rag
+  - dense_rag
+  - hybrid_rag
+  - ekell_style_controlled_shared_llm
+
+supplemental_methods: []
+
+methods:
+  - method_id: direct_llm
+    paper_table_role: main_table
+    config: configs/frozen/direct_llm_v1.yaml
+    enabled: true
+  - method_id: bm25_rag
+    paper_table_role: main_table
+    config: configs/frozen/bm25_rag_real_v2.yaml
+    enabled: true
+  - method_id: dense_rag
+    paper_table_role: comparison_suite
+    config: configs/frozen/dense_rag_real_v1.yaml
+    enabled: true
+  - method_id: hybrid_rag
+    paper_table_role: comparison_suite
+    config: configs/frozen/hybrid_rag_real_v1.yaml
+    enabled: true
+  - method_id: ekell_style_controlled_shared_llm
+    paper_table_role: main_table
+    config: configs/frozen/ekell_controlled_shared_llm_real_v1.yaml
+    enabled: true
+
+output: outputs/formal/comparison_real_v1_bm25_repair/predictions.jsonl
+legacy_output: outputs/formal/comparison_real_v1_bm25_repair/legacy_predictions.jsonl
+run_manifest: outputs/formal/comparison_real_v1_bm25_repair/run_manifest.json
+
+notes:
+  - Only bm25_rag is authorized for regeneration in this repair release.
+  - BM25 remains pure lexical retrieval with deterministic bilingual normalization.
+  - No evaluator gold, dense embedding, LLM query rewriting, or zero-score fallback is used.
+  - The other five formal systems are reused byte-for-byte by the main evaluation release.

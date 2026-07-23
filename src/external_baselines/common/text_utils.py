@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 from typing import Iterable
 
 _WORD_RE = re.compile(r"[A-Za-z0-9_\-]+")
@@ -68,10 +69,17 @@ def compact_text(text: object, max_chars: int = 500) -> str:
     return text[: max(0, max_chars - 3)].rstrip() + "..."
 
 
-def bm25_scores(query: str, docs: Iterable[str], *, k1: float = 1.5, b: float = 0.75) -> list[float]:
+def bm25_scores(
+    query: str,
+    docs: Iterable[str],
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+    tokenizer: Callable[[object], list[str]] = tokenize,
+) -> list[float]:
     """Small deterministic BM25 implementation for lexical baseline retrieval."""
-    doc_tokens = [tokenize(doc) for doc in docs]
-    q_tokens = tokenize(query)
+    doc_tokens = [tokenizer(doc) for doc in docs]
+    q_tokens = tokenizer(query)
     if not doc_tokens or not q_tokens:
         return [0.0 for _ in doc_tokens]
 

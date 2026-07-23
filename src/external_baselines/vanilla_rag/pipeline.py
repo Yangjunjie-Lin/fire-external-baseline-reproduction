@@ -90,11 +90,23 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
     corpus_dir = Path(config.get("paths", {}).get("corpus_dir", "data/corpus"))
     top_k = int(config.get("retrieval", {}).get("top_k", 5))
     max_chunk_chars = int(config.get("retrieval", {}).get("max_chunk_chars", 1000))
+    tokenizer_version = str(config.get("retrieval", {}).get("tokenizer_version", "latin_word_cjk_unigram_v1"))
+    k1 = float(config.get("retrieval", {}).get("k1", 1.5))
+    b = float(config.get("retrieval", {}).get("b", 0.75))
+    minimum_score = float(config.get("retrieval", {}).get("minimum_score", 0.0))
     start = time.perf_counter()
     unified = use_unified_decision_output(config)
 
-    retriever = LexicalRetriever.from_jsonl(str(corpus_dir / "evidence_chunks.jsonl"), max_chunk_chars=max_chunk_chars)
-    contexts = [retrieved_context_to_dict(c) for c in retriever.retrieve(scenario["scenario_text"], top_k=top_k)]
+    retriever = LexicalRetriever.from_jsonl(
+        str(corpus_dir / "evidence_chunks.jsonl"),
+        max_chunk_chars=max_chunk_chars,
+        tokenizer_version=tokenizer_version,
+        k1=k1,
+        b=b,
+        minimum_score=minimum_score,
+    )
+    retrieved, retrieval_trace = retriever.retrieve_with_trace(scenario["scenario_text"], top_k=top_k)
+    contexts = [retrieved_context_to_dict(c) for c in retrieved]
     system, user = build_prompt(
         scenario["scenario_text"],
         contexts,
@@ -126,6 +138,12 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
                 "retrieval_backend": "deterministic_lexical_bm25",
                 "kg_used": False,
                 "top_k": top_k,
+                "tokenizer_version": tokenizer_version,
+                "bm25_parameters": {"k1": k1, "b": b},
+                "minimum_score": minimum_score,
+                "corpus_checksum": retriever.corpus_checksum,
+                "corpus_document_count": len(retriever.documents),
+                "retrieval_trace": retrieval_trace,
                 "duplicate_suppression": True,
                 "multilingual_tokenization": True,
                 "no_result": len(contexts) == 0,
@@ -133,7 +151,12 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
                 "structured_safety_fields": "baseline_generated_only",
                 "normalizer_policy_injection": False,
             },
-            provenance={"retrieval_backend": "deterministic_lexical_bm25", "top_k": top_k},
+            provenance={
+                "retrieval_backend": "deterministic_lexical_bm25",
+                "top_k": top_k,
+                "tokenizer_version": tokenizer_version,
+                "corpus_checksum": retriever.corpus_checksum,
+            },
         )
         assert isinstance(result, dict)
         return result
@@ -153,6 +176,12 @@ def run_scenario(scenario: dict[str, Any], *, config: dict[str, Any] | None = No
         "retrieval_backend": "deterministic_lexical_bm25",
         "kg_used": False,
         "top_k": top_k,
+        "tokenizer_version": tokenizer_version,
+        "bm25_parameters": {"k1": k1, "b": b},
+        "minimum_score": minimum_score,
+        "corpus_checksum": retriever.corpus_checksum,
+        "corpus_document_count": len(retriever.documents),
+        "retrieval_trace": retrieval_trace,
         "duplicate_suppression": True,
         "multilingual_tokenization": True,
         "no_result": len(contexts) == 0,
